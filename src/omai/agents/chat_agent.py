@@ -1,0 +1,210 @@
+from __future__ import annotations
+
+import re
+from datetime import date
+from time import perf_counter
+from typing import Any
+
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import BaseTool
+from langchain_openai import ChatOpenAI
+
+
+MAX_TOOL_ROUNDS = 6
+
+
+def build_model(api_key: str, model: str, base_url: str) -> ChatOpenAI:
+    return ChatOpenAI(
+        api_key=api_key,
+        model=model,
+        base_url=base_url,
+        temperature=0,
+        timeout=60,
+        max_retries=2,
+    )
+
+
+def answer_report_question(
+    model: ChatOpenAI,
+    tools: list[BaseTool],
+    site_id: int,
+    history: list[dict[str, str]],
+    question: str,
+    site_name: str | None = None,
+) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+    started_at = perf_counter()
+    tool_map = {tool.name: tool for tool in tools}
+    model_with_tools = model.bind_tools(tools, parallel_tool_calls=False)
+
+    messages = [
+        SystemMessage(
+            content=(
+                "You are a read-only oil-field reporting assistant. "
+                f"The selected site is {site_name or 'the selected site'}. "
+                f"The internal site_id is {site_id}; use it only for tool calls and never mention it in answers. "
+                f"Today is {date.today().isoformat()}. "
+                "Use search_ometrics_capabilities for questions about Ometrics "
+                "capabilities, workflows, how to do something in the product, or "
+                "which feature or report the user should use. Questions phrased "
+                "as 'how to know', 'how can I know', or 'which report' are workflow "
+                "guidance questions even when they include a date range. "
+                "Use report tools for factual questions about calculated production, "
+                "sales, gas, water, battery, injection, and allocation reports. "
+                "Only run report tools when the user clearly asks to run, show, "
+                "calculate, get, compare, or return actual report values, or when "
+                "the user accepts a previous offer to run a specific report for a "
+                "specific date range. "
+                "Use reading tools for raw daily readings such as LACT, tank, "
+                "water plant, flow meter, well test, pump, treater, flare, or "
+                "knock-out readings, including missing-reading questions. Use "
+                "find_all_missing_readings when the user asks which readings are "
+                "missing for a date without naming a specific reading type. "
+                "Use search_readings for reading questions that ask for a date "
+                "range, all entities, a specific entity name, or numeric filters "
+                "such as pressure greater than a threshold. "
+                "Use search_well_tests for well-test questions that ask for a "
+                "date range, all wells, or numeric filters such as oil greater "
+                "than a threshold. "
+                "Use shutdown tools for well shutdown, downtime, shut-in, current "
+                "long shutdown, and downtime-code questions. "
+                "Use the well timeline tool when the user asks for a timeline, "
+                "sequence of events, or investigation for a specific well over a date range. "
+                "For workflow guidance, explain the relevant Ometrics feature and "
+                "do not query operational data unless the user asks for actual values. "
+                "Keep workflow guidance limited to facts present in retrieved capability "
+                "documents. Do not invent UI steps, menus, field names, filters, exports, "
+                "pre-checklists, or options that are not in the capability tool result. "
+                "For questions asking which report or feature to use, answer with only "
+                "the report or feature name and a short purpose statement unless the "
+                "user asks for details. If the matching report and date range are clear, "
+                "ask whether the user wants you to run that report for that date range. "
+                "For questions asking how to register, enter, or create a reading, "
+                "answer with only the matching create action, such as 'Create a new "
+                "LACT reading.', unless the user asks for details. "
+                "Translate relative dates such as 'this month' into exact ISO dates. "
+                "Do not invent values or claim a report was run when no tool succeeded. "
+                "Explain results clearly and include the exact date range. Do not mention "
+                "units, missing unit labels, or unspecified units unless the user asks about units. "
+                "Mention missing data when it affects the result. "
+                "Do not mention report dimensions, breakdowns, filters, or labels such as "
+                "'Battery = No Battery' unless they are explicitly present in the successful "
+                "tool result and relevant to the user's question. "
+                "When referring to field entities, use the entity display name or the "
+                "equipment type plus name, such as 'Tank - 2-1 Float Over'. Do not refer "
+                "to entities by database ID, and do not call them assets. "
+                "Only say you can perform actions that are backed by the available tools. "
+                "You do not have tools to send emails, create or export files, create records, "
+                "update records, delete records, schedule tasks, acknowledge alarms, or control "
+                "equipment. Do not offer to perform those actions. If the user asks for an "
+                "unsupported action, say this version is read-only and explain what data you "
+                "can retrieve instead. Do not add generic follow-up offers at the end of an "
+                "answer."
+            )
+        )
+    ]
+
+    for item in history[-10:]:
+        if item["role"] == "user":
+            messages.append(HumanMessage(content=item["content"]))
+        elif item["role"] == "assistant":
+            messages.append(AIMessage(content=item["content"]))
+
+    messages.append(HumanMessage(content=question))
+    traces: list[dict[str, Any]] = []
+    stats: dict[str, Any] = {
+        "total_seconds": 0.0,
+        "model_seconds": 0.0,
+        "tool_seconds": 0.0,
+        "model_calls": 0,
+        "tool_calls": [],
+    }
+
+    for _ in range(MAX_TOOL_ROUNDS):
+        model_started_at = perf_counter()
+        response = model_with_tools.invoke(messages)
+        stats["model_seconds"] += perf_counter() - model_started_at
+        stats["model_calls"] += 1
+        messages.append(response)
+
+        if not response.tool_calls:
+            stats["total_seconds"] = perf_counter() - started_at
+            return _clean_answer(_message_text(response.content)), traces, _rounded_stats(stats)
+
+        for call in response.tool_calls:
+            tool_name = call["name"]
+            arguments = call.get("args", {})
+            trace = {"tool": tool_name, "arguments": arguments}
+
+            tool_started_at = perf_counter()
+            tool = tool_map.get(tool_name)
+            if tool is None:
+                result = f"Unknown tool: {tool_name}"
+            else:
+                try:
+                    result = tool.invoke(arguments)
+                except Exception as exc:  # LangChain schema errors are user-facing here.
+                    result = f"Tool validation failed: {exc}"
+            tool_seconds = perf_counter() - tool_started_at
+            stats["tool_seconds"] += tool_seconds
+            stats["tool_calls"].append(
+                {
+                    "tool": tool_name,
+                    "seconds": tool_seconds,
+                }
+            )
+
+            traces.append(trace)
+            messages.append(
+                ToolMessage(content=str(result), tool_call_id=call["id"])
+            )
+
+    stats["total_seconds"] = perf_counter() - started_at
+    return (
+        "I could not complete the request within the tool-call limit.",
+        traces,
+        _rounded_stats(stats),
+    )
+
+
+def _message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(str(block.get("text", "")))
+            elif isinstance(block, str):
+                parts.append(block)
+        return "\n".join(part for part in parts if part)
+    return str(content)
+
+
+def _clean_answer(answer: str) -> str:
+    answer = re.sub(
+        r"(?im)^\s*the report did not specify units\.?\s*$\n?",
+        "",
+        answer,
+    )
+    answer = re.sub(
+        r"(?i)(?:\n\s*)?the report did not specify units\.?\s*$",
+        "",
+        answer,
+    )
+    return answer.strip()
+
+
+def _rounded_stats(stats: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "total_seconds": round(stats["total_seconds"], 3),
+        "model_seconds": round(stats["model_seconds"], 3),
+        "tool_seconds": round(stats["tool_seconds"], 3),
+        "model_calls": stats["model_calls"],
+        "tool_calls": [
+            {
+                "tool": tool_call["tool"],
+                "seconds": round(tool_call["seconds"], 3),
+            }
+            for tool_call in stats["tool_calls"]
+        ],
+    }

@@ -1,0 +1,374 @@
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any, Literal
+
+from langchain_core.tools import StructuredTool
+from pydantic import BaseModel, Field
+
+from omai.clients.reading_client import (
+    READING_DEFINITIONS,
+    ReadingClient,
+    ReadingClientError,
+)
+
+
+logger = logging.getLogger(__name__)
+
+ReadingType = Literal[
+    "tank",
+    "lact",
+    "flare",
+    "linear_tank",
+    "mixed_tank",
+    "non_linear_tank",
+    "water_plant",
+    "flow_meter",
+    "well_test",
+    "well_fluid",
+    "well_injection",
+    "run_ticket",
+    "water_draw",
+    "treater",
+    "knock_out",
+    "pump",
+]
+
+
+class GetReadingsInput(BaseModel):
+    reading_type: ReadingType = Field(description="The type of reading to retrieve.")
+    reading_date: str = Field(description="Date in YYYY-MM-DD format.")
+
+
+class CompareReadingsInput(BaseModel):
+    reading_type: ReadingType = Field(description="The type of reading to compare.")
+    first_date: str = Field(description="First date in YYYY-MM-DD format.")
+    second_date: str = Field(description="Second date in YYYY-MM-DD format.")
+
+
+class MissingReadingsInput(BaseModel):
+    reading_type: ReadingType = Field(description="The type of reading to check.")
+    reading_date: str = Field(description="Date in YYYY-MM-DD format.")
+
+
+class AllMissingReadingsInput(BaseModel):
+    reading_date: str = Field(description="Date in YYYY-MM-DD format.")
+
+
+class SearchWellTestsInput(BaseModel):
+    start_date: str = Field(description="Start date in YYYY-MM-DD format.")
+    end_date: str = Field(description="End date in YYYY-MM-DD format.")
+    well_name: str | None = Field(
+        default=None,
+        description="Optional well name or partial well name to filter by.",
+    )
+    min_oil: float | None = Field(
+        default=None,
+        description="Optional minimum oil value, inclusive.",
+    )
+    max_oil: float | None = Field(
+        default=None,
+        description="Optional maximum oil value, inclusive.",
+    )
+    min_water: float | None = Field(
+        default=None,
+        description="Optional minimum water value, inclusive.",
+    )
+    max_water: float | None = Field(
+        default=None,
+        description="Optional maximum water value, inclusive.",
+    )
+    min_gas: float | None = Field(
+        default=None,
+        description="Optional minimum gas value, inclusive.",
+    )
+    max_gas: float | None = Field(
+        default=None,
+        description="Optional maximum gas value, inclusive.",
+    )
+    min_runtime: float | None = Field(
+        default=None,
+        description="Optional minimum runtime value, inclusive.",
+    )
+    max_runtime: float | None = Field(
+        default=None,
+        description="Optional maximum runtime value, inclusive.",
+    )
+
+
+class ReadingNumericFilter(BaseModel):
+    field: str = Field(
+        description="Reading field to filter, such as oil, water, gas, reading, pressure, level, or total.",
+    )
+    operator: Literal[">", ">=", "<", "<=", "=", "=="] = Field(
+        description="Numeric comparison operator.",
+    )
+    value: float = Field(description="Numeric comparison value.")
+
+
+class SearchReadingsInput(BaseModel):
+    reading_type: ReadingType = Field(description="The type of reading to search.")
+    start_date: str = Field(description="Start date in YYYY-MM-DD format.")
+    end_date: str = Field(description="End date in YYYY-MM-DD format.")
+    entity_name: str | None = Field(
+        default=None,
+        description="Optional entity name or partial name to filter by.",
+    )
+    filters: list[ReadingNumericFilter] = Field(
+        default_factory=list,
+        description=(
+            "Optional numeric filters on fields supported by the selected reading type. "
+            "Examples: oil > 20 for well_test, reading > 100 for lact, pressure > 50 for flare."
+        ),
+    )
+
+
+def _json_result(value: Any) -> str:
+    return json.dumps(value, default=str, separators=(",", ":"))
+
+
+def build_reading_tools(client: ReadingClient, site_id: int) -> list[StructuredTool]:
+    def list_reading_types() -> str:
+        """List reading types that can be queried by the assistant."""
+        return _json_result(
+            {
+                "site_id": site_id,
+                "reading_types": client.list_reading_types(),
+            }
+        )
+
+    def get_readings_for_date(reading_type: str, reading_date: str) -> str:
+        """Retrieve readings of one type for the selected site and one date."""
+        logger.info(
+            "Getting readings site_id=%s type=%s date=%s",
+            site_id,
+            reading_type,
+            reading_date,
+        )
+        try:
+            return _json_result(
+                {
+                    "ok": True,
+                    **client.get_readings_for_date(site_id, reading_type, reading_date),
+                }
+            )
+        except ReadingClientError as exc:
+            logger.warning("Reading lookup failed: %s", exc)
+            return _json_result({"ok": False, "error": str(exc)})
+
+    def compare_readings_between_dates(
+        reading_type: str, first_date: str, second_date: str
+    ) -> str:
+        """Retrieve one reading type for two dates and summarize presence changes."""
+        logger.info(
+            "Comparing readings site_id=%s type=%s first=%s second=%s",
+            site_id,
+            reading_type,
+            first_date,
+            second_date,
+        )
+        try:
+            return _json_result(
+                {
+                    "ok": True,
+                    **client.compare_readings_between_dates(
+                        site_id, reading_type, first_date, second_date
+                    ),
+                }
+            )
+        except ReadingClientError as exc:
+            logger.warning("Reading comparison failed: %s", exc)
+            return _json_result({"ok": False, "error": str(exc)})
+
+    def find_missing_readings(reading_type: str, reading_date: str) -> str:
+        """Find configured entities missing a daily reading of the selected type."""
+        logger.info(
+            "Finding missing readings site_id=%s type=%s date=%s",
+            site_id,
+            reading_type,
+            reading_date,
+        )
+        try:
+            return _json_result(
+                {
+                    "ok": True,
+                    **client.missing_readings_for_date(
+                        site_id, reading_type, reading_date
+                    ),
+                }
+            )
+        except ReadingClientError as exc:
+            logger.warning("Missing reading lookup failed: %s", exc)
+            return _json_result({"ok": False, "error": str(exc)})
+
+    def find_all_missing_readings(reading_date: str) -> str:
+        """Find all configured entities missing supported daily readings on one date."""
+        logger.info(
+            "Finding all missing readings site_id=%s date=%s",
+            site_id,
+            reading_date,
+        )
+        try:
+            return _json_result(
+                {
+                    "ok": True,
+                    **client.all_missing_readings_for_date(site_id, reading_date),
+                }
+            )
+        except ReadingClientError as exc:
+            logger.warning("All missing readings lookup failed: %s", exc)
+            return _json_result({"ok": False, "error": str(exc)})
+
+    def search_well_tests(
+        start_date: str,
+        end_date: str,
+        well_name: str | None = None,
+        min_oil: float | None = None,
+        max_oil: float | None = None,
+        min_water: float | None = None,
+        max_water: float | None = None,
+        min_gas: float | None = None,
+        max_gas: float | None = None,
+        min_runtime: float | None = None,
+        max_runtime: float | None = None,
+    ) -> str:
+        """Search well tests over a date range with optional numeric filters."""
+        logger.info(
+            "Searching well tests site_id=%s start=%s end=%s well=%s",
+            site_id,
+            start_date,
+            end_date,
+            well_name,
+        )
+        try:
+            return _json_result(
+                {
+                    "ok": True,
+                    **client.search_well_tests(
+                        site_id=site_id,
+                        start_date=start_date,
+                        end_date=end_date,
+                        well_name=well_name,
+                        min_oil=min_oil,
+                        max_oil=max_oil,
+                        min_water=min_water,
+                        max_water=max_water,
+                        min_gas=min_gas,
+                        max_gas=max_gas,
+                        min_runtime=min_runtime,
+                        max_runtime=max_runtime,
+                    ),
+                }
+            )
+        except ReadingClientError as exc:
+            logger.warning("Well test search failed: %s", exc)
+            return _json_result({"ok": False, "error": str(exc)})
+
+    def search_readings(
+        reading_type: str,
+        start_date: str,
+        end_date: str,
+        entity_name: str | None = None,
+        filters: list[ReadingNumericFilter] | None = None,
+    ) -> str:
+        """Search readings over a date range with optional field filters."""
+        filter_values = [
+            filter_item.model_dump() if hasattr(filter_item, "model_dump") else filter_item
+            for filter_item in (filters or [])
+        ]
+        logger.info(
+            "Searching readings site_id=%s type=%s start=%s end=%s entity=%s filters=%s",
+            site_id,
+            reading_type,
+            start_date,
+            end_date,
+            entity_name,
+            filter_values,
+        )
+        try:
+            return _json_result(
+                {
+                    "ok": True,
+                    **client.search_readings(
+                        site_id=site_id,
+                        reading_type=reading_type,
+                        start_date=start_date,
+                        end_date=end_date,
+                        entity_name=entity_name,
+                        filters=filter_values,
+                    ),
+                }
+            )
+        except ReadingClientError as exc:
+            logger.warning("Reading search failed: %s", exc)
+            return _json_result({"ok": False, "error": str(exc)})
+
+    return [
+        StructuredTool.from_function(
+            func=list_reading_types,
+            name="list_reading_types",
+            description=(
+                "List raw daily reading types available from the Ometrics database."
+            ),
+        ),
+        StructuredTool.from_function(
+            func=get_readings_for_date,
+            name="get_readings_for_date",
+            description=(
+                "Get raw readings such as LACT, tank, water plant, well test, "
+                "or flow meter readings for one date."
+            ),
+            args_schema=GetReadingsInput,
+        ),
+        StructuredTool.from_function(
+            func=compare_readings_between_dates,
+            name="compare_readings_between_dates",
+            description=(
+                "Compare raw readings of one type between two dates. Returns "
+                "compact precomputed comparison rows; use those rows directly "
+                "instead of recalculating differences."
+            ),
+            args_schema=CompareReadingsInput,
+        ),
+        StructuredTool.from_function(
+            func=find_missing_readings,
+            name="find_missing_readings",
+            description=(
+                "Find configured entities that are missing a reading on a date. "
+                f"Supported types: {', '.join(k for k, v in READING_DEFINITIONS.items() if v.supports_missing)}."
+            ),
+            args_schema=MissingReadingsInput,
+        ),
+        StructuredTool.from_function(
+            func=find_all_missing_readings,
+            name="find_all_missing_readings",
+            description=(
+                "Find all configured entities missing any supported daily reading "
+                "on a date. Use this when the user asks which readings are missing "
+                "without naming a specific reading type."
+            ),
+            args_schema=AllMissingReadingsInput,
+        ),
+        StructuredTool.from_function(
+            func=search_readings,
+            name="search_readings",
+            description=(
+                "Search any raw reading type across a date range, optionally filtered "
+                "by entity name and numeric field conditions. Use for LACT, flare, "
+                "tank, flow meter, well test, well fluid, well injection, run ticket, "
+                "water draw, treater, knock-out, pump, and similar range queries."
+            ),
+            args_schema=SearchReadingsInput,
+        ),
+        StructuredTool.from_function(
+            func=search_well_tests,
+            name="search_well_tests",
+            description=(
+                "Search well tests across a date range, optionally filtered by well "
+                "name and numeric oil, water, gas, or runtime thresholds. Use this "
+                "for questions like 'show all well tests between two dates with oil > 20'."
+            ),
+            args_schema=SearchWellTestsInput,
+        ),
+    ]
