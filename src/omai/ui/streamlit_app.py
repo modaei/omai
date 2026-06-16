@@ -65,7 +65,7 @@ def main() -> None:
     with st.sidebar:
         st.header("Configuration")
         site_id = st.number_input("Site ID", min_value=1, value=1, step=1)
-        st.text_input("Model", value=settings.openrouter_model, disabled=True)
+        st.text_input("Model", value=settings.llm_model, disabled=True)
         st.text_input("Report API", value=settings.omreports_api_url, disabled=True)
         if st.button("Clear conversation", use_container_width=True):
             st.session_state.messages = []
@@ -166,9 +166,9 @@ def main() -> None:
                     *build_well_timeline_tools(well_timeline_client, int(site_id)),
                 ]
                 model = build_model(
-                    api_key=settings.openrouter_api_key,
-                    model=settings.openrouter_model,
-                    base_url=settings.openrouter_base_url,
+                    api_key=settings.llm_api_key,
+                    model=settings.llm_model,
+                    base_url=settings.llm_base_url,
                 )
                 answer, tool_calls, stats = answer_report_question(
                     model=model,

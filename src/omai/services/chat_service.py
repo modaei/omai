@@ -65,9 +65,9 @@ def answer_chat(
         *build_well_timeline_tools(well_timeline_client, site_id),
     ]
     model = build_model(
-        api_key=settings.openrouter_api_key,
-        model=settings.openrouter_model,
-        base_url=settings.openrouter_base_url,
+        api_key=settings.llm_api_key,
+        model=settings.llm_model,
+        base_url=settings.llm_base_url,
     )
     return answer_report_question(
         model=model,

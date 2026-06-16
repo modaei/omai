@@ -12,9 +12,9 @@ from omai.repositories.conversation_repository import ConversationRepository
 
 def make_settings() -> Settings:
     return Settings(
-        openrouter_api_key="test-key",
-        openrouter_model="openai/gpt-5-mini",
-        openrouter_base_url="https://openrouter.ai/api/v1",
+        llm_api_key="test-key",
+        llm_model="gpt-5-mini",
+        llm_base_url="https://api.openai.com/v1",
         omreports_api_url="http://127.0.0.1:50008/report/",
         omreports_timeout_seconds=30,
         max_report_days=366,

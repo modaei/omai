@@ -21,6 +21,8 @@ class CapabilityDocument:
 class CapabilityClient:
     def __init__(self, knowledge_dir: Path | str):
         self.knowledge_dir = Path(knowledge_dir)
+        # Load once at startup/request construction time. Capability docs are small
+        # markdown files, so keeping tokenized copies in memory avoids repeated disk IO.
         self.documents = self._load_documents()
 
     @classmethod
@@ -35,10 +37,15 @@ class CapabilityClient:
             raise CapabilityClientError("limit must be positive.")
 
         query_tokens = _tokenize(query)
+        # Capability questions often use user-facing words that differ from the
+        # internal feature names. Expand those terms before matching against docs.
         expanded_tokens = query_tokens | _expand_query_tokens(query_tokens)
         scored = []
         for document in self.documents:
             overlap = expanded_tokens & document.tokens
+            # Exact domain phrases are stronger signals than single-token overlap.
+            # This keeps targeted guidance like "production allocation" above more
+            # generic report/readings documents.
             phrase_bonus = _phrase_bonus(query, document.content)
             score = len(overlap) + phrase_bonus
             if score <= 0:
@@ -75,6 +82,8 @@ class CapabilityClient:
             content = path.read_text(encoding="utf-8").strip()
             if not content:
                 continue
+            # Tokenize the full document once; search only needs set overlap and a
+            # short summary, not a heavier vector index for this small knowledge base.
             documents.append(
                 CapabilityDocument(
                     title=_title_from_content(content, path),
@@ -96,6 +105,8 @@ class UnavailableCapabilityClient:
         self.reason = reason
 
     def search(self, query: str, limit: int = 3) -> dict[str, Any]:
+        # Allows agent/tool wiring to fail fast with a clear reason when capability
+        # documents are missing, while preserving the same public search interface.
         raise CapabilityClientError(self.reason)
 
 
@@ -107,6 +118,8 @@ def _title_from_content(content: str, path: Path) -> str:
 
 
 def _tokenize(text: str) -> set[str]:
+    # Keep tokenization deliberately simple and deterministic. The capability
+    # corpus is curated markdown, so lowercased alphanumeric tokens are enough.
     return {
         token
         for token in re.findall(r"[a-zA-Z0-9]+", text.lower())
@@ -132,6 +145,8 @@ def _phrase_bonus(query: str, content: str) -> int:
 
 
 def _summary(content: str, max_chars: int = 1_800) -> str:
+    # Return compact context for the LLM/tool result. Headings are metadata and the
+    # cap prevents capability guidance from crowding out the user's actual request.
     lines = [
         line.strip()
         for line in content.splitlines()

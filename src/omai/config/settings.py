@@ -11,9 +11,9 @@ load_dotenv()
 
 @dataclass(frozen=True)
 class Settings:
-    openrouter_api_key: str
-    openrouter_model: str
-    openrouter_base_url: str
+    llm_api_key: str
+    llm_model: str
+    llm_base_url: str
     omreports_api_url: str
     omreports_timeout_seconds: float
     max_report_days: int
@@ -35,12 +35,15 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         return cls(
-            openrouter_api_key=os.getenv("OPENROUTER_API_KEY", "").strip(),
-            openrouter_model=os.getenv(
-                "OPENROUTER_MODEL", "openai/gpt-5-mini"
+            llm_api_key=os.getenv(
+                "LLM_API_KEY", os.getenv("OPENROUTER_API_KEY", "")
             ).strip(),
-            openrouter_base_url=os.getenv(
-                "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
+            llm_model=os.getenv(
+                "LLM_MODEL", os.getenv("OPENROUTER_MODEL", "gpt-5-mini")
+            ).strip(),
+            llm_base_url=os.getenv(
+                "LLM_BASE_URL",
+                os.getenv("OPENROUTER_BASE_URL", "https://api.openai.com/v1"),
             ).rstrip("/"),
             omreports_api_url=os.getenv(
                 "OMREPORTS_API_URL", "http://127.0.0.1:50008/report/"
@@ -70,8 +73,8 @@ class Settings:
         )
 
     def validate(self) -> None:
-        if not self.openrouter_api_key:
-            raise ValueError("OPENROUTER_API_KEY is not configured.")
+        if not self.llm_api_key:
+            raise ValueError("LLM_API_KEY is not configured.")
         if self.omreports_timeout_seconds <= 0:
             raise ValueError("OMREPORTS_TIMEOUT_SECONDS must be positive.")
         if self.max_report_days <= 0:

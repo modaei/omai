@@ -6,8 +6,8 @@ that uses LangChain tool calling to answer questions through the existing
 
 ## Current capabilities
 
-- Uses OpenRouter through LangChain's OpenAI-compatible client.
-- Defaults to `openai/gpt-5-mini`; the model is configurable.
+- Uses an OpenAI-compatible chat API through LangChain.
+- Defaults to `gpt-5-mini`; the model and API base URL are configurable.
 - Translates natural-language date ranges into exact report dates.
 - Lists the available reports.
 - Runs one report for a selected site and period.
@@ -38,7 +38,23 @@ The project uses a `src` package layout. Running `streamlit run app.py` from the
 project root works without an editable install because `app.py` adds `src` to
 the import path.
 
-Set `OPENROUTER_API_KEY` in `.env`.
+Set `LLM_API_KEY` in `.env`.
+
+For OpenAI directly:
+
+```bash
+LLM_API_KEY=your-openai-key
+LLM_MODEL=gpt-5-mini
+LLM_BASE_URL=https://api.openai.com/v1
+```
+
+For OpenRouter:
+
+```bash
+LLM_API_KEY=your-openrouter-key
+LLM_MODEL=openai/gpt-5-mini
+LLM_BASE_URL=https://openrouter.ai/api/v1
+```
 
 Set the `DB_*` values in `.env` if you want to use raw-reading tools. Prefer a
 read-only MySQL user.
@@ -76,4 +92,4 @@ pytest -q
 ```
 
 The unit tests validate the report request boundary and do not require a live
-database or OpenRouter key.
+database or LLM API key.
