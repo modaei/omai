@@ -32,6 +32,9 @@ from omai.config.settings import Settings
 from omai.rag.document_models import RagDocument, chunk_document
 
 
+DEFAULT_UPSERT_BATCH_SIZE = 200
+
+
 class OperationalContextStoreError(RuntimeError):
     """Raised when vector operational context cannot be indexed or searched."""
 
@@ -50,10 +53,12 @@ class VectorOperationalContextStore:
         engine: Engine,
         embeddings: OpenAIEmbeddings,
         embedding_dimensions: int,
+        upsert_batch_size: int = DEFAULT_UPSERT_BATCH_SIZE,
     ):
         self.engine = engine
         self.embeddings = embeddings
         self.embedding_dimensions = embedding_dimensions
+        self.upsert_batch_size = upsert_batch_size
         self.metadata = MetaData()
         self.chunks = _rag_chunks_table(self.metadata, embedding_dimensions)
 
@@ -141,24 +146,27 @@ class VectorOperationalContextStore:
             }
             for chunk, vector in zip(chunks, vectors)
         ]
+        try:
+            with self.engine.begin() as connection:
+                for batch in _batched(rows, self.upsert_batch_size):
+                    connection.execute(self._upsert_statement(batch))
+        except SQLAlchemyError as exc:
+            raise OperationalContextStoreError(
+                f"Could not upsert operational context: {exc}"
+            ) from exc
+        return len(rows)
+
+    def _upsert_statement(self, rows: list[dict[str, Any]]):
         statement = insert(self.chunks).values(rows)
         update_columns = {
             column.name: getattr(statement.excluded, column.name)
             for column in self.chunks.columns
             if column.name not in {"id", "created_at", "updated_at"}
         }
-        statement = statement.on_conflict_do_update(
+        return statement.on_conflict_do_update(
             index_elements=[self.chunks.c.chunk_id],
             set_=update_columns | {"updated_at": func.now()},
         )
-        try:
-            with self.engine.begin() as connection:
-                connection.execute(statement)
-        except SQLAlchemyError as exc:
-            raise OperationalContextStoreError(
-                f"Could not upsert operational context: {exc}"
-            ) from exc
-        return len(rows)
 
     def search(
         self,
@@ -277,6 +285,13 @@ def _engine_from_settings(settings: Settings) -> Engine:
         pool_recycle=settings.vector_db_pool_recycle,
         pool_pre_ping=True,
     )
+
+
+def _batched(rows: list[dict[str, Any]], batch_size: int):
+    if batch_size <= 0:
+        raise OperationalContextStoreError("upsert_batch_size must be positive.")
+    for start in range(0, len(rows), batch_size):
+        yield rows[start : start + batch_size]
 
 
 def _pgvector_extension_exists(connection) -> bool:

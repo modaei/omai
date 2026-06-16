@@ -5,6 +5,7 @@ from sqlalchemy import MetaData, create_engine, text
 from omai.rag.document_models import RagDocument, chunk_document
 from omai.rag.extractors.operational_text import OperationalTextExtractor
 from omai.rag.vector_store import (
+    _batched,
     _chunk_row,
     _extra_metadata,
     _pgvector_extension_exists,
@@ -106,6 +107,16 @@ def test_vector_store_table_uses_configured_embedding_dimensions():
     assert table.c.embedding.type.dim == 1536
     assert "idx_rag_chunks_site_date" in {index.name for index in table.indexes}
     assert "idx_rag_chunks_source" in {index.name for index in table.indexes}
+
+
+def test_vector_store_batches_large_upserts():
+    rows = [{"id": value} for value in range(5)]
+
+    assert list(_batched(rows, 2)) == [
+        [{"id": 0}, {"id": 1}],
+        [{"id": 2}, {"id": 3}],
+        [{"id": 4}],
+    ]
 
 
 def test_vector_store_search_row_format_matches_tool_contract():
