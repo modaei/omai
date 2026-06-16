@@ -26,6 +26,10 @@ class Settings:
     db_max_overflow: int
     db_pool_timeout: int
     db_pool_recycle: int
+    omai_max_concurrent: int
+    omai_slot_timeout: float
+    omai_conversation_history_limit: int
+    omai_conversation_ttl_hours: int
     log_level: str
 
     @classmethod
@@ -54,6 +58,14 @@ class Settings:
             db_max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "5")),
             db_pool_timeout=int(os.getenv("DB_POOL_TIMEOUT", "15")),
             db_pool_recycle=int(os.getenv("DB_POOL_RECYCLE", "1800")),
+            omai_max_concurrent=int(os.getenv("OMAI_MAX_CONCURRENT", "10")),
+            omai_slot_timeout=float(os.getenv("OMAI_SLOT_TIMEOUT", "15")),
+            omai_conversation_history_limit=int(
+                os.getenv("OMAI_CONVERSATION_HISTORY_LIMIT", "20")
+            ),
+            omai_conversation_ttl_hours=int(
+                os.getenv("OMAI_CONVERSATION_TTL_HOURS", "168")
+            ),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
         )
 
@@ -64,6 +76,14 @@ class Settings:
             raise ValueError("OMREPORTS_TIMEOUT_SECONDS must be positive.")
         if self.max_report_days <= 0:
             raise ValueError("MAX_REPORT_DAYS must be positive.")
+        if self.omai_max_concurrent <= 0:
+            raise ValueError("OMAI_MAX_CONCURRENT must be positive.")
+        if self.omai_slot_timeout <= 0:
+            raise ValueError("OMAI_SLOT_TIMEOUT must be positive.")
+        if self.omai_conversation_history_limit <= 0:
+            raise ValueError("OMAI_CONVERSATION_HISTORY_LIMIT must be positive.")
+        if self.omai_conversation_ttl_hours <= 0:
+            raise ValueError("OMAI_CONVERSATION_TTL_HOURS must be positive.")
 
     def validate_database(self) -> None:
         missing = []
