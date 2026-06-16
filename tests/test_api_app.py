@@ -6,8 +6,8 @@ from sqlalchemy import create_engine, text
 
 from omai.api.app import create_app, is_allowed_client_host
 from omai.api.schemas import ChatRequest
-from omai.clients.conversation_store import ConversationStore
 from omai.config.settings import Settings
+from omai.repositories.conversation_repository import ConversationRepository
 
 
 def make_settings() -> Settings:
@@ -50,7 +50,7 @@ def fake_chat_handler(settings, site_id, site_name, history, question):
     )
 
 
-def make_conversation_store() -> ConversationStore:
+def make_conversation_repository() -> ConversationRepository:
     engine = create_engine("sqlite:///:memory:")
     with engine.begin() as connection:
         connection.execute(
@@ -83,7 +83,7 @@ def make_conversation_store() -> ConversationStore:
                 """
             )
         )
-    return ConversationStore(engine, ttl_hours=168, history_limit=20)
+    return ConversationRepository(engine, ttl_hours=168, history_limit=20)
 
 
 def route_endpoint(app, path: str, method: str):
@@ -100,11 +100,11 @@ def test_localhost_host_check():
 
 
 def test_chat_endpoint_creates_conversation_and_returns_answer_only():
-    store = make_conversation_store()
+    repository = make_conversation_repository()
     app = create_app(
         settings=make_settings(),
         chat_handler=fake_chat_handler,
-        conversation_store=store,
+        conversation_repository=repository,
     )
     endpoint = route_endpoint(app, "/chat", "POST")
 
@@ -123,19 +123,19 @@ def test_chat_endpoint_creates_conversation_and_returns_answer_only():
     assert body["conversation_id"]
     assert "tool_calls" not in body
     assert "stats" not in body
-    conversation = store.get(body["conversation_id"], user_id=9, site_id=4)
-    assert store.load_history(conversation) == [
+    conversation = repository.get(body["conversation_id"], user_id=9, site_id=4)
+    assert repository.load_history(conversation) == [
         {"role": "user", "content": "How much gas was flared in May?"},
         {"role": "assistant", "content": body["answer"]},
     ]
 
 
 def test_chat_endpoint_continues_existing_conversation():
-    store = make_conversation_store()
+    repository = make_conversation_repository()
     app = create_app(
         settings=make_settings(),
         chat_handler=fake_chat_handler,
-        conversation_store=store,
+        conversation_repository=repository,
     )
     endpoint = route_endpoint(app, "/chat", "POST")
 
@@ -157,17 +157,17 @@ def test_chat_endpoint_continues_existing_conversation():
 
     assert second.conversation_id == first.conversation_id
     assert "Second" in second.answer
-    conversation = store.get(second.conversation_id, user_id=9, site_id=4)
-    assert len(store.load_history(conversation)) == 4
+    conversation = repository.get(second.conversation_id, user_id=9, site_id=4)
+    assert len(repository.load_history(conversation)) == 4
 
 
 def test_chat_endpoint_rejects_conversation_for_wrong_site():
-    store = make_conversation_store()
-    conversation = store.create(user_id=9, site_id=4)
+    repository = make_conversation_repository()
+    conversation = repository.create(user_id=9, site_id=4)
     app = create_app(
         settings=make_settings(),
         chat_handler=fake_chat_handler,
-        conversation_store=store,
+        conversation_repository=repository,
     )
     endpoint = route_endpoint(app, "/chat", "POST")
 
@@ -187,9 +187,9 @@ def test_chat_endpoint_rejects_conversation_for_wrong_site():
 
 
 def test_chat_endpoint_rejects_expired_conversation():
-    store = make_conversation_store()
-    conversation = store.create(user_id=9, site_id=4)
-    with store.engine.begin() as connection:
+    repository = make_conversation_repository()
+    conversation = repository.create(user_id=9, site_id=4)
+    with repository.engine.begin() as connection:
         connection.execute(
             text(
                 """
@@ -207,7 +207,7 @@ def test_chat_endpoint_rejects_expired_conversation():
     app = create_app(
         settings=make_settings(),
         chat_handler=fake_chat_handler,
-        conversation_store=store,
+        conversation_repository=repository,
     )
     endpoint = route_endpoint(app, "/chat", "POST")
 
@@ -289,7 +289,7 @@ def test_app_registers_chat_and_health_routes():
     app = create_app(
         settings=make_settings(),
         chat_handler=fake_chat_handler,
-        conversation_store=make_conversation_store(),
+        conversation_repository=make_conversation_repository(),
     )
 
     assert route_endpoint(app, "/chat", "POST")

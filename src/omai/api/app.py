@@ -9,9 +9,9 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from omai.api.schemas import ChatRequest, ChatResponse
-from omai.clients.conversation_store import (
+from omai.repositories.conversation_repository import (
     ConversationNotFoundError,
-    ConversationStore,
+    ConversationRepository,
 )
 from omai.config.settings import Settings
 from omai.services.chat_service import answer_chat
@@ -30,13 +30,13 @@ ChatHandler = Callable[
 def create_app(
     settings: Settings | None = None,
     chat_handler: ChatHandler = answer_chat,
-    conversation_store: ConversationStore | None = None,
+    conversation_repository: ConversationRepository | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
     app = FastAPI(title="ometrics-ai")
     app.state.settings = settings
     app.state.chat_handler = chat_handler
-    app.state.conversation_store = conversation_store
+    app.state.conversation_repository = conversation_repository
     app.state.chat_slots = BoundedSemaphore(settings.omai_max_concurrent)
 
     @app.middleware("http")
@@ -61,15 +61,16 @@ def create_app(
             raise HTTPException(status_code=503, detail="Omai service is busy")
 
         try:
-            store = app.state.conversation_store or ConversationStore.from_settings(
-                settings
+            repository = (
+                app.state.conversation_repository
+                or ConversationRepository.from_settings(settings)
             )
-            conversation = store.get_or_create(
+            conversation = repository.get_or_create(
                 payload.conversation_id_text(),
                 payload.user_id,
                 payload.site_id,
             )
-            history = store.load_history(conversation)
+            history = repository.load_history(conversation)
             answer, _tool_calls, _stats = app.state.chat_handler(
                 settings,
                 payload.site_id,
@@ -77,8 +78,8 @@ def create_app(
                 history,
                 payload.message,
             )
-            store.append_message(conversation, "user", payload.message)
-            store.append_message(conversation, "assistant", answer)
+            repository.append_message(conversation, "user", payload.message)
+            repository.append_message(conversation, "assistant", answer)
             return ChatResponse(conversation_id=conversation.uuid, answer=answer)
         except ConversationNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc

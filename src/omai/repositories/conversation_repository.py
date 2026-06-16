@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import create_engine, text
@@ -12,11 +11,11 @@ from sqlalchemy.exc import SQLAlchemyError
 from omai.config.settings import Settings
 
 
-class ConversationStoreError(RuntimeError):
+class ConversationRepositoryError(RuntimeError):
     """Raised when a conversation cannot be loaded or saved."""
 
 
-class ConversationNotFoundError(ConversationStoreError):
+class ConversationNotFoundError(ConversationRepositoryError):
     """Raised when a conversation does not belong to the given user/site."""
 
 
@@ -28,7 +27,7 @@ class Conversation:
     site_id: int
 
 
-class ConversationStore:
+class ConversationRepository:
     def __init__(
         self,
         engine: Engine,
@@ -40,7 +39,7 @@ class ConversationStore:
         self.history_limit = history_limit
 
     @classmethod
-    def from_settings(cls, settings: Settings) -> "ConversationStore":
+    def from_settings(cls, settings: Settings) -> "ConversationRepository":
         settings.validate_database()
         url = URL.create(
             drivername="mysql+pymysql",
@@ -100,7 +99,7 @@ class ConversationStore:
                 )
                 conversation_pk = int(result.lastrowid)
         except SQLAlchemyError as exc:
-            raise ConversationStoreError(
+            raise ConversationRepositoryError(
                 f"Could not create conversation: {exc}"
             ) from exc
 
@@ -144,7 +143,7 @@ class ConversationStore:
                     .first()
                 )
         except SQLAlchemyError as exc:
-            raise ConversationStoreError(
+            raise ConversationRepositoryError(
                 f"Could not load conversation: {exc}"
             ) from exc
 
@@ -181,7 +180,9 @@ class ConversationStore:
                     ).mappings()
                 ]
         except SQLAlchemyError as exc:
-            raise ConversationStoreError(f"Could not load history: {exc}") from exc
+            raise ConversationRepositoryError(
+                f"Could not load history: {exc}"
+            ) from exc
 
         rows.reverse()
         return [
@@ -196,7 +197,7 @@ class ConversationStore:
         content: str,
     ) -> None:
         if role not in {"user", "assistant"}:
-            raise ConversationStoreError(f"Unsupported message role: {role}")
+            raise ConversationRepositoryError(f"Unsupported message role: {role}")
 
         now = _utcnow()
         expires_at = now + timedelta(hours=self.ttl_hours)
@@ -233,8 +234,11 @@ class ConversationStore:
                     },
                 )
         except SQLAlchemyError as exc:
-            raise ConversationStoreError(f"Could not append message: {exc}") from exc
+            raise ConversationRepositoryError(
+                f"Could not append message: {exc}"
+            ) from exc
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
