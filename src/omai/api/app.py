@@ -15,6 +15,7 @@ from omai.repositories.conversation_repository import (
 )
 from omai.config.settings import Settings
 from omai.services.chat_service import answer_chat
+from omai.services.domain_guard import OUT_OF_DOMAIN_RESPONSE, is_in_domain
 
 
 ALLOWED_HOSTS = {"127.0.0.1", "::1"}
@@ -71,6 +72,15 @@ def create_app(
                 payload.site_id,
             )
             history = repository.load_history(conversation)
+            if not history and not is_in_domain(payload.message):
+                repository.append_message(conversation, "user", payload.message)
+                repository.append_message(
+                    conversation, "assistant", OUT_OF_DOMAIN_RESPONSE
+                )
+                return ChatResponse(
+                    conversation_id=conversation.uuid,
+                    answer=OUT_OF_DOMAIN_RESPONSE,
+                )
             answer, _tool_calls, _stats = app.state.chat_handler(
                 settings,
                 payload.site_id,

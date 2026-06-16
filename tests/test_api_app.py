@@ -8,6 +8,7 @@ from omai.api.app import create_app, is_allowed_client_host
 from omai.api.schemas import ChatRequest
 from omai.config.settings import Settings
 from omai.repositories.conversation_repository import ConversationRepository
+from omai.services.domain_guard import OUT_OF_DOMAIN_RESPONSE
 
 
 def make_settings() -> Settings:
@@ -31,6 +32,17 @@ def make_settings() -> Settings:
         omai_slot_timeout=1,
         omai_conversation_history_limit=20,
         omai_conversation_ttl_hours=168,
+        vector_db_host="127.0.0.1",
+        vector_db_port=5432,
+        vector_db_user="ometrics",
+        vector_db_password="",
+        vector_db_name="ometrics",
+        vector_db_pool_size=5,
+        vector_db_max_overflow=5,
+        vector_db_pool_timeout=15,
+        vector_db_pool_recycle=1800,
+        rag_embedding_model="text-embedding-3-small",
+        rag_embedding_dimensions=1536,
         log_level="INFO",
     )
 
@@ -48,6 +60,10 @@ def fake_chat_handler(settings, site_id, site_name, history, question):
             "history_count": len(history),
         },
     )
+
+
+def failing_chat_handler(settings, site_id, site_name, history, question):
+    raise AssertionError("chat handler should not be called")
 
 
 def make_conversation_repository() -> ConversationRepository:
@@ -141,14 +157,14 @@ def test_chat_endpoint_continues_existing_conversation():
 
     first = endpoint(
         ChatRequest.model_validate(
-            {"message": "First", "user_id": 9, "site_id": 4}
+            {"message": "How much gas was flared in May?", "user_id": 9, "site_id": 4}
         )
     )
     second = endpoint(
         ChatRequest.model_validate(
             {
                 "conversation_id": first.conversation_id,
-                "message": "Second",
+                "message": "What about June?",
                 "user_id": 9,
                 "site_id": 4,
             }
@@ -156,7 +172,7 @@ def test_chat_endpoint_continues_existing_conversation():
     )
 
     assert second.conversation_id == first.conversation_id
-    assert "Second" in second.answer
+    assert "What about June?" in second.answer
     conversation = repository.get(second.conversation_id, user_id=9, site_id=4)
     assert len(repository.load_history(conversation)) == 4
 
@@ -224,6 +240,74 @@ def test_chat_endpoint_rejects_expired_conversation():
         )
 
     assert exc.value.status_code == 404
+
+
+def test_chat_endpoint_refuses_out_of_domain_question_without_calling_model():
+    repository = make_conversation_repository()
+    app = create_app(
+        settings=make_settings(),
+        chat_handler=failing_chat_handler,
+        conversation_repository=repository,
+    )
+    endpoint = route_endpoint(app, "/chat", "POST")
+
+    response = endpoint(
+        ChatRequest.model_validate(
+            {
+                "message": "How old is Paris?",
+                "user_id": 9,
+                "site_id": 4,
+            }
+        )
+    )
+
+    body = response.model_dump()
+    assert body["answer"] == OUT_OF_DOMAIN_RESPONSE
+    conversation = repository.get(body["conversation_id"], user_id=9, site_id=4)
+    assert repository.load_history(conversation) == [
+        {"role": "user", "content": "How old is Paris?"},
+        {
+            "role": "assistant",
+            "content": OUT_OF_DOMAIN_RESPONSE,
+        },
+    ]
+
+
+def test_chat_endpoint_lets_model_handle_follow_up_even_if_short():
+    repository = make_conversation_repository()
+    app = create_app(
+        settings=make_settings(),
+        chat_handler=fake_chat_handler,
+        conversation_repository=repository,
+    )
+    endpoint = route_endpoint(app, "/chat", "POST")
+
+    first = endpoint(
+        ChatRequest.model_validate(
+            {
+                "message": "Summarize the general notes in current year.",
+                "user_id": 9,
+                "site_id": 4,
+            }
+        )
+    )
+    second = endpoint(
+        ChatRequest.model_validate(
+            {
+                "conversation_id": first.conversation_id,
+                "message": "YTD",
+                "user_id": 9,
+                "site_id": 4,
+            }
+        )
+    )
+
+    assert second.answer == "db lookup: YTD"
+    conversation = repository.get(second.conversation_id, user_id=9, site_id=4)
+    assert repository.load_history(conversation)[-2:] == [
+        {"role": "user", "content": "YTD"},
+        {"role": "assistant", "content": "db lookup: YTD"},
+    ]
 
 
 def test_chat_endpoint_rejects_blank_message():

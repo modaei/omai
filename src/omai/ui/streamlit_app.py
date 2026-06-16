@@ -15,7 +15,13 @@ from omai.clients.well_timeline_client import (
     WellTimelineClient,
 )
 from omai.config.settings import Settings
+from omai.rag.vector_store import (
+    UnavailableOperationalContextStore,
+    VectorOperationalContextStore,
+)
+from omai.services.domain_guard import OUT_OF_DOMAIN_RESPONSE, is_in_domain
 from omai.tools.capability_tools import build_capability_tools
+from omai.tools.operational_context_tools import build_operational_context_tools
 from omai.tools.reading_tools import build_reading_tools
 from omai.tools.report_tools import build_report_tools
 from omai.tools.shutdown_tools import build_shutdown_tools
@@ -125,6 +131,21 @@ def main() -> None:
         st.markdown(question)
 
     with st.chat_message("assistant"):
+        if not prior_history and not is_in_domain(question):
+            answer = OUT_OF_DOMAIN_RESPONSE
+            tool_calls = []
+            stats = {}
+            st.markdown(answer)
+            st.session_state.messages.append(
+                {
+                    "role": "assistant",
+                    "content": answer,
+                    "tool_calls": tool_calls,
+                    "stats": stats,
+                }
+            )
+            return
+
         with st.status(
             "Analyzing the question and running tools...", expanded=True
         ) as status:
@@ -151,6 +172,18 @@ def main() -> None:
                 except Exception as exc:
                     capability_client = UnavailableCapabilityClient(str(exc))
                 try:
+                    operational_context_store = (
+                        VectorOperationalContextStore.from_settings(settings)
+                    )
+                except Exception as exc:
+                    # Keep the Streamlit assistant usable even when the vector DB
+                    # has not been configured or indexed yet. The tool will
+                    # surface this as a normal retrieval error if the model tries
+                    # to use it.
+                    operational_context_store = UnavailableOperationalContextStore(
+                        str(exc)
+                    )
+                try:
                     site_name = SiteClient.from_settings(settings).get_site_name(
                         int(site_id)
                     )
@@ -160,6 +193,11 @@ def main() -> None:
 
                 tools = [
                     *build_capability_tools(capability_client),
+                    # Operational RAG: source rows come from MySQL during
+                    # indexing, but chat-time retrieval reads the vector DB.
+                    *build_operational_context_tools(
+                        operational_context_store, int(site_id)
+                    ),
                     *build_report_tools(client, int(site_id), site_name),
                     *build_reading_tools(reading_client, int(site_id)),
                     *build_shutdown_tools(shutdown_client, int(site_id)),

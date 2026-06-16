@@ -1,0 +1,127 @@
+from __future__ import annotations
+
+import json
+import logging
+from datetime import date
+from typing import Any
+
+from langchain_core.tools import StructuredTool
+from pydantic import BaseModel, Field
+
+from omai.rag.vector_store import (
+    OperationalContextStoreError,
+    VectorOperationalContextStore,
+)
+
+
+logger = logging.getLogger(__name__)
+
+
+class SearchOperationalContextInput(BaseModel):
+    """Schema exposed to the LLM for operational-context retrieval.
+
+    The current selected site is injected server-side and is not accepted from
+    the model. That prevents cross-site search from a malformed or hallucinated
+    tool call.
+    """
+
+    query: str = Field(description="Question about operational notes, comments, alarms, or history.")
+    start_date: str | None = Field(
+        default=None,
+        description="Optional start date in YYYY-MM-DD format.",
+    )
+    end_date: str | None = Field(
+        default=None,
+        description="Optional end date in YYYY-MM-DD format.",
+    )
+    entity_name: str | None = Field(
+        default=None,
+        description="Optional well or equipment name mentioned by the user.",
+    )
+    source_types: list[str] | None = Field(
+        default=None,
+        description="Optional source types such as general_note, work_order_note, well_shutdown, alarm_log.",
+    )
+    limit: int = Field(default=8, ge=1, le=20)
+
+
+def _json_result(value: Any) -> str:
+    return json.dumps(value, default=str, separators=(",", ":"))
+
+
+def _parse_tool_date(value: str | None) -> date | None:
+    if not value:
+        return None
+
+    stripped = value.strip()
+    if len(stripped) == 8 and stripped.isdigit():
+        return date(
+            int(stripped[0:4]),
+            int(stripped[4:6]),
+            int(stripped[6:8]),
+        )
+    return date.fromisoformat(stripped)
+
+
+def build_operational_context_tools(
+    store: VectorOperationalContextStore,
+    site_id: int,
+) -> list[StructuredTool]:
+    """Build the LangChain tool around the vector operational-context store."""
+
+    def search_operational_context(
+        query: str,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        entity_name: str | None = None,
+        source_types: list[str] | None = None,
+        limit: int = 8,
+    ) -> str:
+        """Search indexed Ometrics notes, comments, alarms, work, shutdowns, and history."""
+        logger.info(
+            "Searching operational context site_id=%s query=%s start=%s end=%s entity=%s",
+            site_id,
+            query,
+            start_date,
+            end_date,
+            entity_name,
+        )
+        try:
+            # Convert date strings here so the store receives typed date values.
+            # Bad dates become structured tool errors instead of uncaught crashes.
+            return _json_result(
+                {
+                    "ok": True,
+                    **store.search(
+                        query=query,
+                        site_id=site_id,
+                        start_date=_parse_tool_date(start_date),
+                        end_date=_parse_tool_date(end_date),
+                        entity_name=entity_name,
+                        source_types=source_types,
+                        limit=limit,
+                    ),
+                }
+            )
+        except (OperationalContextStoreError, ValueError) as exc:
+            # Tools return JSON errors instead of raising so the LLM can explain
+            # that operational context is unavailable or the date input is invalid.
+            logger.warning("Operational context search failed: %s", exc)
+            return _json_result({"ok": False, "error": str(exc)})
+
+    return [
+        StructuredTool.from_function(
+            func=search_operational_context,
+            name="search_operational_context",
+            description=(
+                "Search indexed Ometrics operational text from the vector DB: general notes, "
+                "chart notes, work orders and notes, shutdown comments, downtime "
+                "codes, well-test comments, reading comments, alarm logs, and well "
+                "history. Use for questions asking what happened, why something "
+                "may have happened, summaries of notes/comments, work history, "
+                "alarm context, or records mentioning a condition. Summarize only "
+                "returned records and cite source type/date."
+            ),
+            args_schema=SearchOperationalContextInput,
+        )
+    ]

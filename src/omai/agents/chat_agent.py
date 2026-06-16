@@ -9,6 +9,8 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 
+from omai.services.domain_guard import OUT_OF_DOMAIN_RESPONSE
+
 
 MAX_TOOL_ROUNDS = 6
 
@@ -43,6 +45,10 @@ def answer_report_question(
                 f"The selected site is {site_name or 'the selected site'}. "
                 f"The internal site_id is {site_id}; use it only for tool calls and never mention it in answers. "
                 f"Today is {date.today().isoformat()}. "
+                "If the user asks anything outside Ometrics, oil-field operations, "
+                "reports, readings, alarms, shutdowns, work orders, notes, "
+                "production, injection, or supported software workflows, do not "
+                f"answer the question. Reply only: \"{OUT_OF_DOMAIN_RESPONSE}\" "
                 "Use search_ometrics_capabilities for questions about Ometrics "
                 "capabilities, workflows, how to do something in the product, or "
                 "which feature or report the user should use. Questions phrased "
@@ -66,7 +72,20 @@ def answer_report_question(
                 "date range, all wells, or numeric filters such as oil greater "
                 "than a threshold. "
                 "Use shutdown tools for well shutdown, downtime, shut-in, current "
-                "long shutdown, and downtime-code questions. "
+                "long shutdown, downtime-code, and shutdown-cause summary questions. "
+                "Use summarize_shutdown_causes when the user asks for the main, "
+                "top, most common, or biggest cause/reason for shutdowns or downtime. "
+                "If the user gives a bare numeric well reference such as '5248' "
+                "with shutdown/status language, treat it as a possible well name "
+                "or well-name suffix for the selected site. "
+                "Use search_operational_context for questions asking what happened, "
+                "why something happened, summaries of operational notes/comments, "
+                "work history, alarm context, shutdown explanations, or records "
+                "mentioning a condition. For these answers, summarize only returned "
+                "records. Start directly with a short interpretation in plain language "
+                "with no heading, then include a 'Sources' section listing source type, "
+                "date, entity, and the relevant returned values. Do not use headings "
+                "named 'Interpretation', 'Facts', or 'Inference'. "
                 "Use the well timeline tool when the user asks for a timeline, "
                 "sequence of events, or investigation for a specific well over a date range. "
                 "For workflow guidance, explain the relevant Ometrics feature and "

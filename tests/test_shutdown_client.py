@@ -114,6 +114,20 @@ def test_get_current_long_shutdowns():
     assert result["long_shutdowns"][0]["well"] == "Well - 12-2-1 Oil"
 
 
+def test_summarize_shutdown_causes_ranks_by_total_hours():
+    result = make_shutdown_client().summarize_shutdown_causes(
+        1, "2026-05-01", "2026-05-10"
+    )
+
+    assert result["cause_count"] == 2
+    assert result["main_cause"]["downtime_code"] == "DH"
+    assert result["main_cause"]["downtime_reason"] == "Downhole Problems"
+    assert result["main_cause"]["long_count"] == 1
+    assert result["main_cause"]["long_overlap_hours"] == 232.0
+    assert result["causes"][1]["downtime_code"] == "PRF"
+    assert result["causes"][1]["short_hours"] == 4.5
+
+
 def test_list_downtime_codes():
     result = make_shutdown_client().list_downtime_codes()
 

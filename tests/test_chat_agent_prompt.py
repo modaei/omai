@@ -2,6 +2,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 
 from omai.agents.chat_agent import answer_report_question
+from omai.services.domain_guard import OUT_OF_DOMAIN_RESPONSE
 
 
 class FakeModel:
@@ -81,6 +82,15 @@ def test_system_prompt_rejects_unsupported_actions():
     assert "Use search_ometrics_capabilities" in system_prompt
     assert "how to know" in system_prompt
     assert "Only run report tools" in system_prompt
+    assert "outside Ometrics" in system_prompt
+    assert OUT_OF_DOMAIN_RESPONSE in system_prompt
+    assert "Use search_operational_context" in system_prompt
+    assert "Use summarize_shutdown_causes" in system_prompt
+    assert "bare numeric well reference" in system_prompt
+    assert "well-name suffix" in system_prompt
+    assert "Start directly with a short interpretation" in system_prompt
+    assert "include a 'Sources' section" in system_prompt
+    assert "named 'Interpretation', 'Facts', or 'Inference'" in system_prompt
     assert "find_all_missing_readings" in system_prompt
     assert "The selected site is HARTZOG DRAW" in system_prompt
     assert "never mention it in answers" in system_prompt

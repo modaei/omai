@@ -59,6 +59,34 @@ LLM_BASE_URL=https://openrouter.ai/api/v1
 Set the `DB_*` values in `.env` if you want to use raw-reading tools. Prefer a
 read-only MySQL user.
 
+Operational-text RAG uses a vector DB derived index backed by Postgres + pgvector.
+It reads source records from MySQL but does not create or update MySQL RAG tables.
+Configure:
+
+```bash
+VECTOR_DB_HOST=127.0.0.1
+VECTOR_DB_PORT=5432
+VECTOR_DB_USER=ometrics
+VECTOR_DB_PASSWORD=
+VECTOR_DB_NAME=ometrics
+RAG_EMBEDDING_MODEL=text-embedding-3-small
+RAG_EMBEDDING_DIMENSIONS=1536
+```
+
+Create or update the vector DB schema, then index operational text records:
+
+```bash
+pip install -e .
+# Run once with a privileged Postgres user before the app migration:
+# CREATE EXTENSION vector;
+omai-vector-db-migrate
+omai-index-operational-text --site-id 4 --from-date 2026-01-01 --reset-site
+```
+
+`CREATE EXTENSION vector` must be run inside the same database configured by
+`VECTOR_DB_NAME` using the same server/port. Installing it in the default
+`postgres` database does not make it available in `ometrics`.
+
 Start the existing report service in another terminal:
 
 ```bash

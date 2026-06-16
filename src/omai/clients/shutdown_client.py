@@ -148,6 +148,78 @@ class ShutdownClient:
             "long_shutdowns": shutdowns,
         }
 
+    def summarize_shutdown_causes(
+        self,
+        site_id: int,
+        start_date: str,
+        end_date: str,
+        shutdown_type: str = "all",
+    ) -> dict[str, Any]:
+        start_day = self._parse_date(start_date)
+        end_day = self._parse_date(end_date)
+        if start_day > end_day:
+            raise ShutdownClientError("start_date cannot be after end_date.")
+        if shutdown_type not in {"all", "short", "long"}:
+            raise ShutdownClientError("shutdown_type must be all, short, or long.")
+
+        short_shutdowns = []
+        long_shutdowns = []
+        if shutdown_type in {"all", "short"}:
+            short_shutdowns = self._short_shutdowns(site_id, start_day, end_day)
+        if shutdown_type in {"all", "long"}:
+            long_shutdowns = self._long_shutdowns(site_id, start_day, end_day)
+
+        cause_map: dict[str, dict[str, Any]] = {}
+        for shutdown in short_shutdowns:
+            cause = self._cause_bucket(cause_map, shutdown)
+            cause["short_count"] += 1
+            cause["event_count"] += 1
+            cause["short_hours"] = round(
+                cause["short_hours"] + float(shutdown.get("hours") or 0),
+                3,
+            )
+            cause["total_hours"] = round(
+                cause["short_hours"] + cause["long_overlap_hours"],
+                3,
+            )
+
+        range_start = datetime.combine(start_day, time.min)
+        range_end = datetime.combine(end_day, time.min) + timedelta(days=1)
+        for shutdown in long_shutdowns:
+            cause = self._cause_bucket(cause_map, shutdown)
+            cause["long_count"] += 1
+            cause["event_count"] += 1
+            cause["long_overlap_hours"] = round(
+                cause["long_overlap_hours"]
+                + self._long_shutdown_overlap_hours(shutdown, range_start, range_end),
+                3,
+            )
+            cause["total_hours"] = round(
+                cause["short_hours"] + cause["long_overlap_hours"],
+                3,
+            )
+
+        causes = sorted(
+            cause_map.values(),
+            key=lambda item: (
+                item["total_hours"],
+                item["event_count"],
+                item["short_count"],
+                item["long_count"],
+                item["downtime_reason"],
+            ),
+            reverse=True,
+        )
+        return {
+            "site_id": site_id,
+            "start_date": start_day.isoformat(),
+            "end_date": end_day.isoformat(),
+            "shutdown_type": shutdown_type,
+            "cause_count": len(causes),
+            "main_cause": causes[0] if causes else None,
+            "causes": causes,
+        }
+
     def _short_shutdowns(
         self, site_id: int, start_day: date, end_day: date
     ) -> list[dict[str, Any]]:
@@ -250,6 +322,44 @@ class ShutdownClient:
         return compact
 
     @staticmethod
+    def _long_shutdown_overlap_hours(
+        row: dict[str, Any],
+        range_start: datetime,
+        range_end: datetime,
+    ) -> float:
+        start = _parse_datetime_value(row.get("start"))
+        end = _parse_datetime_value(row.get("end")) or range_end
+        if start is None:
+            return 0.0
+
+        overlap_start = max(start, range_start)
+        overlap_end = min(end, range_end)
+        if overlap_end <= overlap_start:
+            return 0.0
+        return round((overlap_end - overlap_start).total_seconds() / 3600, 3)
+
+    @staticmethod
+    def _cause_bucket(
+        cause_map: dict[str, dict[str, Any]],
+        row: dict[str, Any],
+    ) -> dict[str, Any]:
+        code = row.get("downtime_code") or "UNKNOWN"
+        if code not in cause_map:
+            cause_map[code] = {
+                "downtime_code": code,
+                "downtime_reason": DOWNTIME_CODES.get(
+                    code, "Unknown" if code == "UNKNOWN" else code
+                ),
+                "event_count": 0,
+                "short_count": 0,
+                "long_count": 0,
+                "short_hours": 0.0,
+                "long_overlap_hours": 0.0,
+                "total_hours": 0.0,
+            }
+        return cause_map[code]
+
+    @staticmethod
     def _parse_date(value: str) -> date:
         try:
             return date.fromisoformat(value)
@@ -282,3 +392,28 @@ class UnavailableShutdownClient:
         self, site_id: int, as_of_date: str | None = None
     ) -> dict[str, Any]:
         raise ShutdownClientError(self.reason)
+
+    def summarize_shutdown_causes(
+        self,
+        site_id: int,
+        start_date: str,
+        end_date: str,
+        shutdown_type: str = "all",
+    ) -> dict[str, Any]:
+        raise ShutdownClientError(self.reason)
+
+
+def _parse_datetime_value(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime.combine(value, time.min)
+    text_value = str(value).strip()
+    if not text_value:
+        return None
+    try:
+        return datetime.fromisoformat(text_value)
+    except ValueError:
+        return None

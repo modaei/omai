@@ -30,6 +30,17 @@ class Settings:
     omai_slot_timeout: float
     omai_conversation_history_limit: int
     omai_conversation_ttl_hours: int
+    vector_db_host: str
+    vector_db_port: int
+    vector_db_user: str
+    vector_db_password: str
+    vector_db_name: str
+    vector_db_pool_size: int
+    vector_db_max_overflow: int
+    vector_db_pool_timeout: int
+    vector_db_pool_recycle: int
+    rag_embedding_model: str
+    rag_embedding_dimensions: int
     log_level: str
 
     @classmethod
@@ -69,6 +80,19 @@ class Settings:
             omai_conversation_ttl_hours=int(
                 os.getenv("OMAI_CONVERSATION_TTL_HOURS", "168")
             ),
+            vector_db_host=os.getenv("VECTOR_DB_HOST", "127.0.0.1").strip(),
+            vector_db_port=int(os.getenv("VECTOR_DB_PORT", "5432")),
+            vector_db_user=os.getenv("VECTOR_DB_USER", "ometrics").strip(),
+            vector_db_password=os.getenv("VECTOR_DB_PASSWORD", ""),
+            vector_db_name=os.getenv("VECTOR_DB_NAME", "ometrics").strip(),
+            vector_db_pool_size=int(os.getenv("VECTOR_DB_POOL_SIZE", "5")),
+            vector_db_max_overflow=int(os.getenv("VECTOR_DB_MAX_OVERFLOW", "5")),
+            vector_db_pool_timeout=int(os.getenv("VECTOR_DB_POOL_TIMEOUT", "15")),
+            vector_db_pool_recycle=int(os.getenv("VECTOR_DB_POOL_RECYCLE", "1800")),
+            rag_embedding_model=os.getenv(
+                "RAG_EMBEDDING_MODEL", "text-embedding-3-small"
+            ).strip(),
+            rag_embedding_dimensions=int(os.getenv("RAG_EMBEDDING_DIMENSIONS", "1536")),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
         )
 
@@ -87,6 +111,26 @@ class Settings:
             raise ValueError("OMAI_CONVERSATION_HISTORY_LIMIT must be positive.")
         if self.omai_conversation_ttl_hours <= 0:
             raise ValueError("OMAI_CONVERSATION_TTL_HOURS must be positive.")
+        if not self.vector_db_host:
+            raise ValueError("VECTOR_DB_HOST is not configured.")
+        if self.vector_db_port <= 0:
+            raise ValueError("VECTOR_DB_PORT must be positive.")
+        if not self.vector_db_user:
+            raise ValueError("VECTOR_DB_USER is not configured.")
+        if not self.vector_db_name:
+            raise ValueError("VECTOR_DB_NAME is not configured.")
+        if self.vector_db_pool_size <= 0:
+            raise ValueError("VECTOR_DB_POOL_SIZE must be positive.")
+        if self.vector_db_max_overflow < 0:
+            raise ValueError("VECTOR_DB_MAX_OVERFLOW cannot be negative.")
+        if self.vector_db_pool_timeout <= 0:
+            raise ValueError("VECTOR_DB_POOL_TIMEOUT must be positive.")
+        if self.vector_db_pool_recycle <= 0:
+            raise ValueError("VECTOR_DB_POOL_RECYCLE must be positive.")
+        if not self.rag_embedding_model:
+            raise ValueError("RAG_EMBEDDING_MODEL is not configured.")
+        if self.rag_embedding_dimensions <= 0:
+            raise ValueError("RAG_EMBEDDING_DIMENSIONS must be positive.")
 
     def validate_database(self) -> None:
         missing = []

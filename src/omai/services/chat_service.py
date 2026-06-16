@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,12 @@ from omai.clients.well_timeline_client import (
     WellTimelineClient,
 )
 from omai.config.settings import Settings
+from omai.rag.vector_store import (
+    UnavailableOperationalContextStore,
+    VectorOperationalContextStore,
+)
 from omai.tools.capability_tools import build_capability_tools
+from omai.tools.operational_context_tools import build_operational_context_tools
 from omai.tools.reading_tools import build_reading_tools
 from omai.tools.report_tools import build_report_tools
 from omai.tools.shutdown_tools import build_shutdown_tools
@@ -56,9 +62,13 @@ def answer_chat(
         capability_client = CapabilityClient(_knowledge_dir())
     except Exception as exc:
         capability_client = UnavailableCapabilityClient(str(exc))
+    operational_context_store = _operational_context_store_from_settings(settings)
 
     tools = [
         *build_capability_tools(capability_client),
+        # This tool searches the vector DB derived index for notes/comments,
+        # work-order context, shutdown explanations, alarms, and history.
+        *build_operational_context_tools(operational_context_store, site_id),
         *build_report_tools(report_client, site_id, resolved_site_name),
         *build_reading_tools(reading_client, site_id),
         *build_shutdown_tools(shutdown_client, site_id),
@@ -89,3 +99,16 @@ def _site_name_from_db(settings: Settings, site_id: int) -> str | None:
 
 def _knowledge_dir() -> Path:
     return Path(__file__).resolve().parents[3] / "knowledge" / "capabilities"
+
+
+@lru_cache(maxsize=8)
+def _operational_context_store_from_settings(
+    settings: Settings,
+) -> VectorOperationalContextStore | UnavailableOperationalContextStore:
+    try:
+        # Operational RAG is optional at runtime. Keep the initialized vector DB
+        # engine/embedding wrapper cached so each chat request does not rebuild
+        # the same retrieval client.
+        return VectorOperationalContextStore.from_settings(settings)
+    except Exception as exc:
+        return UnavailableOperationalContextStore(str(exc))

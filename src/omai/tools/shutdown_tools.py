@@ -31,6 +31,15 @@ class CurrentLongShutdownsInput(BaseModel):
     )
 
 
+class ShutdownCauseSummaryInput(BaseModel):
+    start_date: str = Field(description="Start date in YYYY-MM-DD format.")
+    end_date: str = Field(description="End date in YYYY-MM-DD format.")
+    shutdown_type: ShutdownType = Field(
+        default="all",
+        description="Which shutdowns to summarize: all, short, or long.",
+    )
+
+
 def _json_result(value: Any) -> str:
     return json.dumps(value, default=str, separators=(",", ":"))
 
@@ -84,6 +93,32 @@ def build_shutdown_tools(client: ShutdownClient, site_id: int) -> list[Structure
             logger.warning("Current long shutdown lookup failed: %s", exc)
             return _json_result({"ok": False, "error": str(exc)})
 
+    def summarize_shutdown_causes(
+        start_date: str,
+        end_date: str,
+        shutdown_type: str = "all",
+    ) -> str:
+        """Summarize and rank shutdown causes for the selected site and date range."""
+        logger.info(
+            "Summarizing shutdown causes site_id=%s start=%s end=%s type=%s",
+            site_id,
+            start_date,
+            end_date,
+            shutdown_type,
+        )
+        try:
+            return _json_result(
+                {
+                    "ok": True,
+                    **client.summarize_shutdown_causes(
+                        site_id, start_date, end_date, shutdown_type
+                    ),
+                }
+            )
+        except ShutdownClientError as exc:
+            logger.warning("Shutdown cause summary failed: %s", exc)
+            return _json_result({"ok": False, "error": str(exc)})
+
     return [
         StructuredTool.from_function(
             func=list_downtime_codes,
@@ -107,5 +142,15 @@ def build_shutdown_tools(client: ShutdownClient, site_id: int) -> list[Structure
                 "Use this for current or ongoing long shutdown questions."
             ),
             args_schema=CurrentLongShutdownsInput,
+        ),
+        StructuredTool.from_function(
+            func=summarize_shutdown_causes,
+            name="summarize_shutdown_causes",
+            description=(
+                "Summarize and rank shutdown causes for a date range. Use this "
+                "when the user asks for the main, top, most common, or biggest "
+                "cause/reason for shutdowns or downtime."
+            ),
+            args_schema=ShutdownCauseSummaryInput,
         ),
     ]
