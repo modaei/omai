@@ -120,7 +120,7 @@ def build_operational_context_tools(
                 "history. Use for questions asking what happened, why something "
                 "may have happened, summaries of notes/comments, work history, "
                 "alarm context, or records mentioning a condition. Summarize only "
-                "returned records and cite source type/date."
+                "returned records."
             ),
             args_schema=SearchOperationalContextInput,
         )
