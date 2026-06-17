@@ -38,6 +38,7 @@ DOMAIN_TERMS = {
     "flowmeter",
     "gas",
     "hartzog",
+    "hdu",
     "injected",
     "injection",
     "knockout",
@@ -170,7 +171,27 @@ def _looks_like_domain_identifier(question: str) -> bool:
     return bool(
         re.search(r"\b\d{1,2}-\d{1,2}-\d{1,2}\b", question)
         or re.search(r"\bwell\s*\d+\b", question, flags=re.IGNORECASE)
+        or _looks_like_operational_identifier_lookup(question)
         or _looks_like_bare_well_status_question(question, tokens)
+    )
+
+
+def _looks_like_operational_identifier_lookup(question: str) -> bool:
+    """Accept common field shorthand for asking about a numbered entity.
+
+    A bare number is still not enough. This covers phrases users use for RAG
+    lookup, such as "what can you tell me about 4293" or "what happened with
+    5144H", while keeping math/age questions out of domain.
+    """
+    if not re.search(r"\b(?:hdu[_\s-]?)?\d{3,6}[a-z]?\b", question, flags=re.IGNORECASE):
+        return False
+
+    return bool(
+        re.search(
+            r"\b(?:what\s+can\s+you\s+tell\s+me\s+about|tell\s+me\s+about|what\s+happened\s+(?:with|to)|summarize|summary\s+for)\s+(?:hdu[_\s-]?)?\d{3,6}[a-z]?\b",
+            question,
+            flags=re.IGNORECASE,
+        )
     )
 
 

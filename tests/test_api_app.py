@@ -273,6 +273,28 @@ def test_chat_endpoint_refuses_out_of_domain_question_without_calling_model():
     ]
 
 
+def test_chat_endpoint_accepts_first_turn_numbered_operational_lookup():
+    repository = make_conversation_repository()
+    app = create_app(
+        settings=make_settings(),
+        chat_handler=fake_chat_handler,
+        conversation_repository=repository,
+    )
+    endpoint = route_endpoint(app, "/chat", "POST")
+
+    response = endpoint(
+        ChatRequest.model_validate(
+            {
+                "message": "What can you tell me about 4293?",
+                "user_id": 9,
+                "site_id": 4,
+            }
+        )
+    )
+
+    assert response.answer == "db lookup: What can you tell me about 4293?"
+
+
 def test_chat_endpoint_lets_model_handle_follow_up_even_if_short():
     repository = make_conversation_repository()
     app = create_app(

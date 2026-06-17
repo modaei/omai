@@ -93,6 +93,12 @@ def test_system_prompt_rejects_unsupported_actions():
     assert "Start directly with a short interpretation" in system_prompt
     assert "Do not include a 'Sources' section" in system_prompt
     assert "unless the user explicitly asks for sources" in system_prompt
+    assert "Do not add replacement record-list sections" in system_prompt
+    assert "Summary of returned records" in system_prompt
+    assert "Do not list each returned record by date" in system_prompt
+    assert "Do not add default breakdowns" in system_prompt
+    assert "counts by level" in system_prompt
+    assert "dates with entries" in system_prompt
     assert "named 'Interpretation', 'Facts', or 'Inference'" in system_prompt
     assert "find_all_missing_readings" in system_prompt
     assert "Use reading tools for tank volume questions" in system_prompt

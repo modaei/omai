@@ -19,6 +19,12 @@ def test_accepts_bare_numeric_well_status_question():
     assert is_in_domain("What is the status of 4048 offline?") is True
 
 
+def test_accepts_operational_lookup_for_numbered_entity():
+    assert is_in_domain("What can you tell me about 4293?") is True
+    assert is_in_domain("Tell me about HDU_4293") is True
+    assert is_in_domain("What happened with 5144H?") is True
+
+
 def test_rejects_unrelated_bare_numeric_question():
     assert is_in_domain("How old is 5248?") is False
     assert is_in_domain("What is 5248 divided by 2?") is False
