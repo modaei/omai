@@ -82,6 +82,8 @@ def test_system_prompt_rejects_unsupported_actions():
     assert "Use search_ometrics_capabilities" in system_prompt
     assert "how to know" in system_prompt
     assert "Only run report tools" in system_prompt
+    assert "Use summarize_report_by_month" in system_prompt
+    assert "do not call run_report separately for each" in system_prompt
     assert "outside Ometrics" in system_prompt
     assert OUT_OF_DOMAIN_RESPONSE in system_prompt
     assert "Use search_operational_context" in system_prompt
@@ -92,6 +94,9 @@ def test_system_prompt_rejects_unsupported_actions():
     assert "include a 'Sources' section" in system_prompt
     assert "named 'Interpretation', 'Facts', or 'Inference'" in system_prompt
     assert "find_all_missing_readings" in system_prompt
+    assert "Use reading tools for tank volume questions" in system_prompt
+    assert "oil_volume" in system_prompt
+    assert "do not say tank charts or" in system_prompt
     assert "The selected site is HARTZOG DRAW" in system_prompt
     assert "never mention it in answers" in system_prompt
     assert "Do not mention units" in system_prompt

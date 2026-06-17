@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import create_engine, text
@@ -213,6 +214,15 @@ BASE_ENTITY_LABELS = {
     "water_plants": "Water Plant",
     "wells": "Well",
 }
+
+TANK_VOLUME_FIELDS = (
+    "bbl_foot",
+    "volume",
+    "oil_volume",
+    "water_volume",
+    "total_volume",
+    "volume_status",
+)
 
 
 def list_supported_reading_types() -> list[dict[str, Any]]:
@@ -547,7 +557,7 @@ class ReadingClient:
 
         applied_filters = self._filter_conditions(definition, filters or [], conditions, params)
         where_sql = "\n                AND ".join(conditions)
-        field_sql = ",\n                ".join(f"r.{field}" for field in definition.fields)
+        field_sql = _reading_select_fields(definition)
         query = text(
             f"""
             SELECT r.time,
@@ -562,6 +572,7 @@ class ReadingClient:
             """
         )
         rows = self._execute(query, **params)
+        rows = self._with_tank_volumes(reading_type, rows)
         return {
             "reading_type": reading_type,
             "label": definition.label,
@@ -582,7 +593,7 @@ class ReadingClient:
         self, site_id: int, definition: ReadingDefinition, day: date
     ) -> list[dict[str, Any]]:
         start, end = self._day_bounds(day)
-        field_sql = ",\n                ".join(f"r.{field}" for field in definition.fields)
+        field_sql = _reading_select_fields(definition)
         query = text(
             f"""
             SELECT r.id AS reading_id,
@@ -601,7 +612,10 @@ class ReadingClient:
             """
         )
         rows = self._execute(query, site_id=site_id, start_time=start, end_time=end)
-        return self._with_entity_display(definition, rows)
+        return self._with_entity_display(
+            definition,
+            self._with_tank_volumes(_reading_type_for_definition(definition), rows),
+        )
 
     def _get_all_tank_readings(self, site_id: int, day: date) -> dict[str, Any]:
         groups = [
@@ -821,6 +835,24 @@ class ReadingClient:
         return enriched
 
     @staticmethod
+    def _with_tank_volumes(
+        reading_type: str,
+        rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        if reading_type not in {"linear_tank", "mixed_tank"}:
+            return rows
+
+        enriched = []
+        for row in rows:
+            row = dict(row)
+            if reading_type == "linear_tank":
+                row.update(_linear_tank_volume(row))
+            elif reading_type == "mixed_tank":
+                row.update(_mixed_tank_volumes(row))
+            enriched.append(row)
+        return enriched
+
+    @staticmethod
     def _compact_reading_rows(
         definition: ReadingDefinition, rows: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
@@ -838,6 +870,10 @@ class ReadingClient:
             "entity_type": row["entity_type"],
         }
         for field in definition.fields:
+            value = row.get(field)
+            if value is not None:
+                compact[field] = value
+        for field in TANK_VOLUME_FIELDS:
             value = row.get(field)
             if value is not None:
                 compact[field] = value
@@ -916,7 +952,69 @@ class ReadingClient:
 
 
 def _is_number(value: Any) -> bool:
-    return isinstance(value, int | float) and not isinstance(value, bool)
+    return isinstance(value, (int, float, Decimal)) and not isinstance(value, bool)
+
+
+def _reading_select_fields(definition: ReadingDefinition) -> str:
+    fields = [f"r.{field}" for field in definition.fields]
+    if definition.base_table == "tanks" and definition.table in {
+        "linear_tank_readings",
+        "mixed_tank_readings",
+    }:
+        fields.append("b.bbl_foot")
+    return ",\n                ".join(fields)
+
+
+def _reading_type_for_definition(definition: ReadingDefinition) -> str:
+    for reading_type, candidate in READING_DEFINITIONS.items():
+        if candidate is definition:
+            return reading_type
+    return ""
+
+
+def _linear_tank_volume(row: dict[str, Any]) -> dict[str, Any]:
+    bbl_foot = row.get("bbl_foot")
+    if not _is_number(bbl_foot):
+        return {"volume_status": "missing_bbl_foot"}
+
+    if _is_number(row.get("level")):
+        level = float(row["level"])
+    elif _is_number(row.get("feet")) and _is_number(row.get("inches")):
+        level = float(row["feet"]) + float(row["inches"]) / 12
+    else:
+        return {"bbl_foot": float(bbl_foot), "volume_status": "missing_level"}
+
+    return {
+        "bbl_foot": float(bbl_foot),
+        "volume": round(level * float(bbl_foot), 2),
+    }
+
+
+def _mixed_tank_volumes(row: dict[str, Any]) -> dict[str, Any]:
+    bbl_foot = row.get("bbl_foot")
+    if not _is_number(bbl_foot):
+        return {"volume_status": "missing_bbl_foot"}
+
+    required = (
+        row.get("top_level_feet"),
+        row.get("top_level_inches"),
+        row.get("water_level_feet"),
+        row.get("water_level_inches"),
+    )
+    if not all(_is_number(value) for value in required):
+        return {"bbl_foot": float(bbl_foot), "volume_status": "missing_levels"}
+
+    top_level = float(row["top_level_feet"]) + float(row["top_level_inches"]) / 12
+    water_level = float(row["water_level_feet"]) + float(row["water_level_inches"]) / 12
+    total_volume = top_level * float(bbl_foot)
+    water_volume = water_level * float(bbl_foot)
+    oil_volume = total_volume - water_volume
+    return {
+        "bbl_foot": float(bbl_foot),
+        "oil_volume": round(oil_volume, 2),
+        "water_volume": round(water_volume, 2),
+        "total_volume": round(total_volume, 2),
+    }
 
 
 def _direction(delta: float) -> str:

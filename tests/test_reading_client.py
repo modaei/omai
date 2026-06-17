@@ -123,6 +123,7 @@ def make_mixed_tank_client() -> ReadingClient:
                     site_id INTEGER NOT NULL,
                     name TEXT NOT NULL,
                     type TEXT NOT NULL,
+                    bbl_foot REAL,
                     disable_reading INTEGER NOT NULL DEFAULT 0
                 )
                 """
@@ -147,8 +148,8 @@ def make_mixed_tank_client() -> ReadingClient:
         connection.execute(
             text(
                 """
-                INSERT INTO tanks (id, site_id, name, type, disable_reading)
-                VALUES (1, 1, '2-1 Float Over', 'mixed-water-oil', 0)
+                INSERT INTO tanks (id, site_id, name, type, bbl_foot, disable_reading)
+                VALUES (1, 1, '2-1 Float Over', 'mixed-water-oil', 100.0, 0)
                 """
             )
         )
@@ -169,6 +170,121 @@ def make_mixed_tank_client() -> ReadingClient:
                 VALUES
                     (10, 1, 8, 0, 1, 2, 'first', '2026-05-09 08:00:00'),
                     (11, 1, 4, 1, 1, 2, 'second', '2026-05-10 08:00:00')
+                """
+            )
+        )
+    return ReadingClient(engine)
+
+
+def make_tank_volume_client() -> ReadingClient:
+    engine = create_engine("sqlite:///:memory:")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE tanks (
+                    id INTEGER PRIMARY KEY,
+                    site_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    type TEXT NOT NULL,
+                    bbl_foot REAL,
+                    disable_reading INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE linear_tank_readings (
+                    id INTEGER PRIMARY KEY,
+                    tank_id INTEGER NOT NULL,
+                    level REAL,
+                    feet INTEGER,
+                    inches REAL,
+                    percentage REAL,
+                    pressure REAL,
+                    temperature REAL,
+                    comments TEXT,
+                    time TEXT NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE mixed_tank_readings (
+                    id INTEGER PRIMARY KEY,
+                    tank_id INTEGER NOT NULL,
+                    top_level_feet INTEGER,
+                    top_level_inches REAL,
+                    water_level_feet INTEGER,
+                    water_level_inches REAL,
+                    comments TEXT,
+                    time TEXT NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE non_linear_tank_readings (
+                    id INTEGER PRIMARY KEY,
+                    tank_id INTEGER NOT NULL,
+                    initial_feet INTEGER,
+                    initial_inches REAL,
+                    final_feet INTEGER,
+                    final_inches REAL,
+                    comments TEXT,
+                    time TEXT NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO tanks (id, site_id, name, type, bbl_foot, disable_reading)
+                VALUES
+                    (1, 1, 'Linear A', 'linear-volume', 50.0, 0),
+                    (2, 1, 'Linear B', 'linear-volume', 40.0, 0),
+                    (3, 1, 'Mixed A', 'mixed-water-oil', 100.0, 0),
+                    (4, 1, 'Mixed Missing', 'mixed-water-oil', NULL, 0),
+                    (5, 1, 'Non Linear A', 'non-linear-volume', NULL, 0)
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO linear_tank_readings
+                    (id, tank_id, level, feet, inches, percentage, pressure, temperature, comments, time)
+                VALUES
+                    (10, 1, 2.5, NULL, NULL, NULL, NULL, NULL, 'level based', '2026-06-10 08:00:00'),
+                    (11, 2, NULL, 3, 6, NULL, NULL, NULL, 'feet inches based', '2026-06-10 08:00:00')
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO mixed_tank_readings
+                    (id, tank_id, top_level_feet, top_level_inches, water_level_feet, water_level_inches, comments, time)
+                VALUES
+                    (20, 3, 4, 6, 1, 6, 'mixed complete', '2026-06-10 08:00:00'),
+                    (21, 4, 4, 6, 1, 6, 'missing bbl foot', '2026-06-10 08:00:00')
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO non_linear_tank_readings
+                    (id, tank_id, initial_feet, initial_inches, final_feet, final_inches, comments, time)
+                VALUES
+                    (30, 5, 5, 0, 4, 0, 'non-linear unchanged', '2026-06-10 08:00:00')
                 """
             )
         )
@@ -266,6 +382,78 @@ def test_get_readings_for_date_filters_by_site_and_day():
     }
     assert "reading_id" not in result["readings"][0]
     assert "time" not in result["readings"][0]
+
+
+def test_linear_tank_readings_include_calculated_volume():
+    result = make_tank_volume_client().get_readings_for_date(
+        1, "linear_tank", "2026-06-10"
+    )
+
+    assert result["readings"] == [
+        {
+            "entity_display_name": "Tank - Linear A",
+            "entity_type": "Tank",
+            "level": 2.5,
+            "comments": "level based",
+            "bbl_foot": 50.0,
+            "volume": 125.0,
+        },
+        {
+            "entity_display_name": "Tank - Linear B",
+            "entity_type": "Tank",
+            "feet": 3,
+            "inches": 6.0,
+            "comments": "feet inches based",
+            "bbl_foot": 40.0,
+            "volume": 140.0,
+        },
+    ]
+
+
+def test_mixed_tank_readings_include_calculated_oil_water_volumes():
+    result = make_tank_volume_client().get_readings_for_date(
+        1, "mixed_tank", "2026-06-10"
+    )
+
+    assert result["readings"] == [
+        {
+            "entity_display_name": "Tank - Mixed A",
+            "entity_type": "Tank",
+            "top_level_feet": 4,
+            "top_level_inches": 6.0,
+            "water_level_feet": 1,
+            "water_level_inches": 6.0,
+            "comments": "mixed complete",
+            "bbl_foot": 100.0,
+            "oil_volume": 300.0,
+            "water_volume": 150.0,
+            "total_volume": 450.0,
+        },
+        {
+            "entity_display_name": "Tank - Mixed Missing",
+            "entity_type": "Tank",
+            "top_level_feet": 4,
+            "top_level_inches": 6.0,
+            "water_level_feet": 1,
+            "water_level_inches": 6.0,
+            "comments": "missing bbl foot",
+            "volume_status": "missing_bbl_foot",
+        },
+    ]
+
+
+def test_all_tank_readings_include_volume_enriched_linear_and_mixed_groups():
+    result = make_tank_volume_client().get_readings_for_date(1, "tank", "2026-06-10")
+
+    linear_group = result["groups"][0]
+    mixed_group = result["groups"][1]
+    non_linear_group = result["groups"][2]
+    assert linear_group["reading_type"] == "linear_tank"
+    assert linear_group["readings"][0]["volume"] == 125.0
+    assert mixed_group["reading_type"] == "mixed_tank"
+    assert mixed_group["readings"][0]["oil_volume"] == 300.0
+    assert non_linear_group["reading_type"] == "non_linear_tank"
+    assert "volume" not in non_linear_group["readings"][0]
 
 
 def test_compare_readings_between_dates_returns_entity_summary():
