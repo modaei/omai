@@ -1,26 +1,78 @@
-# Ometrics AI Report Assistant
+# Omai
 
-First implementation step for the course project: a read-only Streamlit chatbot
-that uses LangChain tool calling to answer questions through the existing
-`omreports` service.
+Ometrics is an oil-field operations platform used to monitor, control, and
+report production data. It tracks field readings, tanks, wells, shutdowns,
+alarms, work orders, notes, emails, and production reports across a selected
+site.
 
-## Current capabilities
+Omai is the read-only AI assistant service for Ometrics. It provides a
+LangChain-based chat agent that can answer operational questions by calling the
+existing Ometrics and Omreports data paths. The Laravel Ometrics application
+uses Omai through a local FastAPI `/chat` endpoint; a Streamlit UI is also
+available for local development and debugging. Omai is not intended to run
+independently; it is an AI service layer for an existing Ometrics deployment.
 
-- Uses an OpenAI-compatible chat API through LangChain.
-- Defaults to `gpt-5-mini`; the model and API base URL are configurable.
-- Translates natural-language date ranges into exact report dates.
-- Lists the available reports.
-- Runs one report for a selected site and period.
-- Retrieves two report periods for comparison.
-- Retrieves raw readings for one date.
-- Compares raw readings between two dates.
-- Finds assets missing daily readings for supported reading types.
-- Displays tool arguments and results in the UI.
-- Validates report names, dates, site IDs, and maximum date ranges.
+## Responsibilities
 
-This version does not use RAG yet. Report questions go through `omreports`;
-raw-reading questions use read-only, allowlisted SQL against the Ometrics
-database.
+Omai is responsible for:
+
+- Receiving chat requests from Ometrics and maintaining server-side
+  conversation history by `conversation_id`, `user_id`, and `site_id`.
+- Using an OpenAI-compatible chat API through LangChain. The model, API key, and
+  base URL are configurable, so it can run with OpenAI directly or a compatible
+  provider such as OpenRouter.
+- Running Omreports functions for report questions, including production,
+  sales, gas, water, injection, allocation, and monthly battery summaries.
+- Reading Ometrics MySQL data for raw readings, missing readings, comparisons,
+  tank volumes, well shutdowns, shutdown-cause summaries, current long
+  shutdowns, well timelines, alarms, notes, and work-history context.
+- Answering questions about Ometrics capabilities using curated capability
+  documents in `knowledge/capabilities`.
+- Searching operational text with RAG. Source records are read from MySQL during
+  indexing, embedded, and stored in a Postgres + pgvector index.
+- Enforcing read-only behavior. Omai can retrieve and summarize data, but it
+  does not create records, update records, send emails, acknowledge alarms,
+  control equipment, or export files.
+
+## Runtime Dependencies
+
+Omai is not a standalone application. It is designed to run as part of the
+Ometrics software bundle.
+
+At runtime it depends on:
+
+- Ometrics MySQL database for site data, readings, shutdowns, notes, alarms,
+  well history, and conversation storage.
+- Omreports service for calculated production, sales, gas, water, injection,
+  allocation, and battery reports.
+- A configured LLM provider through an OpenAI-compatible API.
+- Postgres + pgvector for operational-text RAG, if RAG questions should be
+  supported.
+
+Without the Ometrics database and Omreports service, Omai can start, but most
+domain tools will be unavailable or return errors.
+
+## Architecture
+
+- `FastAPI` serves `/health` and `/chat` for Ometrics. The API accepts only
+  localhost clients.
+- `LangChain` handles model calls and tool calling.
+- `omreports` remains the source for calculated report results.
+- Ometrics MySQL remains the source of operational records.
+- Postgres + pgvector stores the derived operational-text vector index.
+- Conversation messages are stored in the Ometrics database through Omai's
+  conversation repository.
+
+The public `/chat` response contains only:
+
+```json
+{
+  "conversation_id": "uuid",
+  "answer": "assistant response"
+}
+```
+
+Tool calls and timing statistics are internal and are not returned by the API.
 
 ## Setup
 
@@ -31,14 +83,11 @@ cd /home/mo/Projects/omai
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+pip install .
 cp .env.example .env
 ```
 
-The project uses a `src` package layout. Running `streamlit run app.py` from the
-project root works without an editable install because `app.py` adds `src` to
-the import path.
-
-Set `LLM_API_KEY` in `.env`.
+Set the LLM provider values in `.env`.
 
 For OpenAI directly:
 
@@ -56,12 +105,32 @@ LLM_MODEL=openai/gpt-5-mini
 LLM_BASE_URL=https://openrouter.ai/api/v1
 ```
 
-Set the `DB_*` values in `.env` if you want to use raw-reading tools. Prefer a
-read-only MySQL user.
+Configure the Ometrics MySQL connection for reading operational data and storing
+conversation history:
 
-Operational-text RAG uses a vector DB derived index backed by Postgres + pgvector.
-It reads source records from MySQL but does not create or update MySQL RAG tables.
-Configure:
+```bash
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_USER=ometrics_read_user
+DB_PASSWORD=secret
+DB_NAME=ometrics
+```
+
+Configure Omreports:
+
+```bash
+OMREPORTS_API_URL=http://127.0.0.1:50008/report/
+OMREPORTS_TIMEOUT_SECONDS=30
+MAX_REPORT_DAYS=366
+```
+
+## Operational RAG
+
+Operational-text RAG uses a derived vector index backed by Postgres + pgvector.
+Omai reads source records from MySQL and writes only the normalized chunks and
+embeddings to the vector database.
+
+Configure the vector database:
 
 ```bash
 VECTOR_DB_HOST=127.0.0.1
@@ -73,21 +142,27 @@ RAG_EMBEDDING_MODEL=text-embedding-3-small
 RAG_EMBEDDING_DIMENSIONS=1536
 ```
 
-Create or update the vector DB schema, then index operational text records:
+`CREATE EXTENSION vector` must be run once by a privileged Postgres user inside
+the same database configured by `VECTOR_DB_NAME`:
+
+```sql
+CREATE EXTENSION vector;
+```
+
+Then create/update the vector schema and index operational text:
 
 ```bash
-pip install -e .
-# Run once with a privileged Postgres user before the app migration:
-# CREATE EXTENSION vector;
 omai-vector-db-migrate
 omai-index-operational-text --site-id 4 --from-date 2026-01-01 --reset-site
 ```
 
-`CREATE EXTENSION vector` must be run inside the same database configured by
-`VECTOR_DB_NAME` using the same server/port. Installing it in the default
-`postgres` database does not make it available in `ometrics`.
+The indexer includes general notes, chart notes, work orders and notes,
+shutdown comments, downtime codes, well-test comments, reading comments, alarm
+logs, and well history records.
 
-Start the existing report service in another terminal:
+## Running Services
+
+Start Omreports:
 
 ```bash
 cd /home/mo/Projects/omreports
@@ -95,7 +170,15 @@ source venv/bin/activate
 python3 -m uvicorn api:app --host 127.0.0.1 --port 50008
 ```
 
-Start the chatbot:
+Start Omai API for Ometrics:
+
+```bash
+cd /home/mo/Projects/omai
+source .venv/bin/activate
+python3 -m uvicorn omai.api.app:app --host 127.0.0.1 --port 50009
+```
+
+Optional local Streamlit UI:
 
 ```bash
 cd /home/mo/Projects/omai
@@ -103,21 +186,26 @@ source .venv/bin/activate
 streamlit run app.py
 ```
 
-Select the correct site ID in the sidebar before asking report questions.
+## Example Questions
 
-Example questions:
-
-- Show oil production from the first of this month through today.
-- Compare water production this month with last month.
-- Show LACT readings for 2026-06-10.
-- Compare tank readings on 2026-06-09 and 2026-06-10.
-- Which water plant readings are missing for 2026-06-10?
+- How much gas was flared during May?
+- Compare Battery 6 oil production for each month in 2026.
+- Which readings are missing on 2026-05-20?
+- Compare mixed tank readings on 2026-05-09 and 2026-05-10.
+- What happened with 5144H on 2026-06-14?
+- What can you tell me about 4293?
+- What has been the main cause of shutdowns in the last 30 days?
+- Build a timeline for Well 4048 this year.
+- How do I register a LACT reading?
+- How can I know how much each well contributed to oil production?
 
 ## Tests
 
 ```bash
+cd /home/mo/Projects/omai
+source .venv/bin/activate
 pytest -q
 ```
 
-The unit tests validate the report request boundary and do not require a live
-database or LLM API key.
+The unit tests use fakes and in-memory databases where possible. They do not
+require a live LLM API, Omreports service, MySQL database, or vector database.
