@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
@@ -30,3 +32,19 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     conversation_id: str
     answer: str
+
+
+class RagIndexEventRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    site_id: int = Field(gt=0)
+    source_type: str = Field(min_length=1, max_length=100)
+    source_id: str = Field(min_length=1, max_length=100)
+    operation: Literal["created", "updated", "deleted"]
+
+
+class RagIndexResponse(BaseModel):
+    ok: bool
+    documents: int
+    chunks: int
+    deleted_chunks: int

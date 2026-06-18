@@ -74,6 +74,18 @@ class OperationalTextExtractor:
             documents.extend(source.extract(self.engine, site_id, start_date, end_date))
         return documents
 
+    def extract_one(
+        self,
+        site_id: int,
+        source_type: str,
+        source_id: str,
+    ) -> RagDocument | None:
+        available_tables = set(inspect(self.engine).get_table_names())
+        source = source_definition(source_type)
+        if not source.required_tables.issubset(available_tables):
+            return None
+        return source.extract_one(self.engine, site_id, source_id)
+
 
 class SourceDefinition:
     """Declarative mapping from one SQL source to normalized RAG documents.
@@ -137,6 +149,43 @@ class SourceDefinition:
             if document is not None:
                 documents.append(document)
         return documents
+
+    def extract_one(
+        self,
+        engine: Engine,
+        site_id: int,
+        source_id: str,
+    ) -> RagDocument | None:
+        query = f"""
+            SELECT *
+            FROM (
+                {self.query}
+            ) source_rows
+            WHERE source_rows.id = :source_id
+        """
+        try:
+            with engine.connect() as connection:
+                row = (
+                    connection.execute(
+                        text(query),
+                        {
+                            "site_id": site_id,
+                            "source_id": source_id,
+                            "start_date": None,
+                            "end_date": None,
+                        },
+                    )
+                    .mappings()
+                    .first()
+                )
+        except SQLAlchemyError as exc:
+            raise OperationalTextExtractorError(
+                f"Could not extract {self.source_type} {source_id}: {exc}"
+            ) from exc
+
+        if row is None:
+            return None
+        return self._row_to_document(row, site_id)
 
     def _row_to_document(self, row: dict[str, Any], site_id: int) -> RagDocument | None:
         # Build readable labeled text. Labels make retrieved snippets clearer for
@@ -669,3 +718,14 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         title="Alarm log",
     ),
 )
+
+
+def source_definition(source_type: str) -> SourceDefinition:
+    for source in SOURCE_DEFINITIONS:
+        if source.source_type == source_type:
+            return source
+    raise OperationalTextExtractorError(f"Unsupported source type: {source_type}")
+
+
+def supported_source_types() -> set[str]:
+    return {source.source_type for source in SOURCE_DEFINITIONS}

@@ -251,6 +251,52 @@ class VectorOperationalContextStore:
                 f"Could not delete operational context: {exc}"
             ) from exc
 
+    def delete_source(
+        self,
+        site_id: int,
+        source_type: str,
+        source_id: str,
+    ) -> int:
+        statement = delete(self.chunks).where(
+            and_(
+                self.chunks.c.site_id == site_id,
+                self.chunks.c.source_type == source_type,
+                self.chunks.c.source_id == str(source_id),
+            )
+        )
+        try:
+            with self.engine.begin() as connection:
+                result = connection.execute(statement)
+                return int(result.rowcount or 0)
+        except SQLAlchemyError as exc:
+            raise OperationalContextStoreError(
+                f"Could not delete operational context source: {exc}"
+            ) from exc
+
+    def delete_date_range(
+        self,
+        site_id: int,
+        start_date: date,
+        end_date: date,
+        source_types: set[str] | None = None,
+    ) -> int:
+        conditions = [
+            self.chunks.c.site_id == site_id,
+            self.chunks.c.event_date >= start_date,
+            self.chunks.c.event_date <= end_date,
+        ]
+        if source_types:
+            conditions.append(self.chunks.c.source_type.in_(source_types))
+        statement = delete(self.chunks).where(and_(*conditions))
+        try:
+            with self.engine.begin() as connection:
+                result = connection.execute(statement)
+                return int(result.rowcount or 0)
+        except SQLAlchemyError as exc:
+            raise OperationalContextStoreError(
+                f"Could not delete operational context date range: {exc}"
+            ) from exc
+
 
 class UnavailableOperationalContextStore:
     """Drop-in store used when vector DB cannot be initialized."""
@@ -265,6 +311,12 @@ class UnavailableOperationalContextStore:
         raise OperationalContextStoreError(self.reason)
 
     def delete_site(self, *args, **kwargs) -> int:
+        raise OperationalContextStoreError(self.reason)
+
+    def delete_source(self, *args, **kwargs) -> int:
+        raise OperationalContextStoreError(self.reason)
+
+    def delete_date_range(self, *args, **kwargs) -> int:
         raise OperationalContextStoreError(self.reason)
 
 

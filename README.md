@@ -160,6 +160,10 @@ The indexer includes general notes, chart notes, work orders and notes,
 shutdown comments, downtime codes, well-test comments, reading comments, alarm
 logs, and well history records.
 
+Ometrics can keep this index current by sending model-change events to Omai's
+local `/rag/index-event` endpoint. A nightly cron job can also call the
+`omai-index-operational-text` command directly for rolling refreshes.
+
 ## Running Services
 
 Start Omreports:

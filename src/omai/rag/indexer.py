@@ -13,6 +13,7 @@ class IndexResult:
 
     documents: int
     chunks: int
+    deleted_chunks: int = 0
 
 
 class OperationalContextIndexer:
@@ -50,3 +51,28 @@ class OperationalContextIndexer:
         # repeated indexing idempotent for the same source rows.
         chunks = self.store.upsert_documents(documents)
         return IndexResult(documents=len(documents), chunks=chunks)
+
+    def index_source(
+        self,
+        site_id: int,
+        source_type: str,
+        source_id: str,
+    ) -> IndexResult:
+        deleted_chunks = self.store.delete_source(site_id, source_type, source_id)
+        document = self.extractor.extract_one(site_id, source_type, source_id)
+        documents = [document] if document is not None else []
+        chunks = self.store.upsert_documents(documents)
+        return IndexResult(
+            documents=len(documents),
+            chunks=chunks,
+            deleted_chunks=deleted_chunks,
+        )
+
+    def delete_source(
+        self,
+        site_id: int,
+        source_type: str,
+        source_id: str,
+    ) -> IndexResult:
+        deleted_chunks = self.store.delete_source(site_id, source_type, source_id)
+        return IndexResult(documents=0, chunks=0, deleted_chunks=deleted_chunks)
