@@ -30,6 +30,9 @@ class Settings:
     omai_slot_timeout: float
     omai_conversation_history_limit: int
     omai_conversation_ttl_hours: int
+    omai_daily_user_limit_enabled: bool
+    omai_daily_user_limit_requests: int
+    timezone: str
     vector_db_host: str
     vector_db_port: int
     vector_db_user: str
@@ -80,6 +83,13 @@ class Settings:
             omai_conversation_ttl_hours=int(
                 os.getenv("OMAI_CONVERSATION_TTL_HOURS", "168")
             ),
+            omai_daily_user_limit_enabled=_env_bool(
+                "OMAI_DAILY_USER_LIMIT_ENABLED", False
+            ),
+            omai_daily_user_limit_requests=int(
+                os.getenv("OMAI_DAILY_USER_LIMIT_REQUESTS", "150")
+            ),
+            timezone=os.getenv("TIMEZONE", "UTC").strip(),
             vector_db_host=os.getenv("VECTOR_DB_HOST", "127.0.0.1").strip(),
             vector_db_port=int(os.getenv("VECTOR_DB_PORT", "5432")),
             vector_db_user=os.getenv("VECTOR_DB_USER", "ometrics").strip(),
@@ -111,6 +121,10 @@ class Settings:
             raise ValueError("OMAI_CONVERSATION_HISTORY_LIMIT must be positive.")
         if self.omai_conversation_ttl_hours <= 0:
             raise ValueError("OMAI_CONVERSATION_TTL_HOURS must be positive.")
+        if self.omai_daily_user_limit_requests <= 0:
+            raise ValueError("OMAI_DAILY_USER_LIMIT_REQUESTS must be positive.")
+        if not self.timezone:
+            raise ValueError("TIMEZONE is not configured.")
         if not self.vector_db_host:
             raise ValueError("VECTOR_DB_HOST is not configured.")
         if self.vector_db_port <= 0:
@@ -146,3 +160,10 @@ class Settings:
             )
         if self.db_port <= 0:
             raise ValueError("DB_PORT must be positive.")
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}

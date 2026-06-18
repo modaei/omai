@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -32,6 +33,9 @@ def make_settings() -> Settings:
         omai_slot_timeout=1,
         omai_conversation_history_limit=20,
         omai_conversation_ttl_hours=168,
+        omai_daily_user_limit_enabled=True,
+        omai_daily_user_limit_requests=100,
+        timezone="UTC",
         vector_db_host="127.0.0.1",
         vector_db_port=5432,
         vector_db_user="ometrics",
@@ -99,7 +103,85 @@ def make_conversation_repository() -> ConversationRepository:
                 """
             )
         )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE ai_daily_usage_limits (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    site_id INTEGER NOT NULL,
+                    usage_date DATE NOT NULL,
+                    request_count INTEGER NOT NULL DEFAULT 0,
+                    created_at DATETIME,
+                    updated_at DATETIME,
+                    UNIQUE(user_id, site_id, usage_date)
+                )
+                """
+            )
+        )
     return ConversationRepository(engine, ttl_hours=168, history_limit=20)
+
+
+def daily_usage_count(
+    repository: ConversationRepository,
+    user_id: int = 9,
+    site_id: int | None = None,
+) -> int:
+    site_filter = "" if site_id is None else " AND site_id = :site_id"
+    params = {"user_id": user_id, "site_id": site_id}
+    with repository.engine.connect() as connection:
+        value = connection.execute(
+            text(
+                f"""
+                SELECT COALESCE(SUM(request_count), 0)
+                FROM ai_daily_usage_limits
+                WHERE user_id = :user_id{site_filter}
+                """
+            ),
+            params,
+        ).scalar_one()
+    return int(value)
+
+
+def seed_daily_usage(
+    repository: ConversationRepository,
+    user_id: int = 9,
+    site_id: int = 4,
+    request_count: int = 1,
+) -> None:
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    with repository.engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO ai_daily_usage_limits
+                    (
+                        user_id,
+                        site_id,
+                        usage_date,
+                        request_count,
+                        created_at,
+                        updated_at
+                    )
+                VALUES
+                    (
+                        :user_id,
+                        :site_id,
+                        :usage_date,
+                        :request_count,
+                        :now,
+                        :now
+                    )
+                """
+            ),
+            {
+                "user_id": user_id,
+                "site_id": site_id,
+                "usage_date": datetime.now(timezone.utc).date(),
+                "request_count": request_count,
+                "now": now,
+            },
+        )
 
 
 def route_endpoint(app, path: str, method: str):
@@ -200,6 +282,7 @@ def test_chat_endpoint_rejects_conversation_for_wrong_site():
         )
 
     assert exc.value.status_code == 404
+    assert daily_usage_count(repository) == 0
 
 
 def test_chat_endpoint_rejects_expired_conversation():
@@ -240,6 +323,7 @@ def test_chat_endpoint_rejects_expired_conversation():
         )
 
     assert exc.value.status_code == 404
+    assert daily_usage_count(repository) == 0
 
 
 def test_chat_endpoint_refuses_out_of_domain_question_without_calling_model():
@@ -271,6 +355,92 @@ def test_chat_endpoint_refuses_out_of_domain_question_without_calling_model():
             "content": OUT_OF_DOMAIN_RESPONSE,
         },
     ]
+
+
+def test_chat_endpoint_rejects_when_daily_user_limit_is_reached():
+    repository = make_conversation_repository()
+    seed_daily_usage(repository, user_id=9, request_count=1)
+    app = create_app(
+        settings=replace(make_settings(), omai_daily_user_limit_requests=1),
+        chat_handler=failing_chat_handler,
+        conversation_repository=repository,
+    )
+    endpoint = route_endpoint(app, "/chat", "POST")
+
+    with pytest.raises(HTTPException) as exc:
+        endpoint(
+            ChatRequest.model_validate(
+                {
+                    "message": "How much gas was flared in May?",
+                    "user_id": 9,
+                    "site_id": 4,
+                }
+            )
+        )
+
+    assert exc.value.status_code == 429
+    assert exc.value.detail["message"] == "Daily AI usage limit reached."
+    assert exc.value.detail["reset_at"]
+    assert int(exc.value.headers["Retry-After"]) > 0
+    assert daily_usage_count(repository, user_id=9) == 1
+    with repository.engine.connect() as connection:
+        conversation_count = connection.execute(
+            text("SELECT COUNT(*) FROM ai_conversations")
+        ).scalar_one()
+    assert conversation_count == 0
+
+
+def test_chat_endpoint_daily_user_limit_can_be_disabled():
+    repository = make_conversation_repository()
+    seed_daily_usage(repository, user_id=9, request_count=1)
+    app = create_app(
+        settings=replace(
+            make_settings(),
+            omai_daily_user_limit_enabled=False,
+            omai_daily_user_limit_requests=1,
+        ),
+        chat_handler=fake_chat_handler,
+        conversation_repository=repository,
+    )
+    endpoint = route_endpoint(app, "/chat", "POST")
+
+    response = endpoint(
+        ChatRequest.model_validate(
+            {
+                "message": "How much gas was flared in May?",
+                "user_id": 9,
+                "site_id": 4,
+            }
+        )
+    )
+
+    assert response.answer == "db lookup: How much gas was flared in May?"
+    assert daily_usage_count(repository, user_id=9) == 1
+
+
+def test_chat_endpoint_daily_user_limit_is_scoped_by_site():
+    repository = make_conversation_repository()
+    seed_daily_usage(repository, user_id=9, site_id=4, request_count=1)
+    app = create_app(
+        settings=replace(make_settings(), omai_daily_user_limit_requests=1),
+        chat_handler=fake_chat_handler,
+        conversation_repository=repository,
+    )
+    endpoint = route_endpoint(app, "/chat", "POST")
+
+    response = endpoint(
+        ChatRequest.model_validate(
+            {
+                "message": "How much gas was flared in May?",
+                "user_id": 9,
+                "site_id": 5,
+            }
+        )
+    )
+
+    assert response.answer == "db lookup: How much gas was flared in May?"
+    assert daily_usage_count(repository, user_id=9, site_id=4) == 1
+    assert daily_usage_count(repository, user_id=9, site_id=5) == 1
 
 
 def test_chat_endpoint_accepts_first_turn_numbered_operational_lookup():
