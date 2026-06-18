@@ -160,9 +160,11 @@ The indexer includes general notes, chart notes, work orders and notes,
 shutdown comments, downtime codes, well-test comments, reading comments, alarm
 logs, and well history records.
 
-Ometrics can keep this index current by sending model-change events to Omai's
-local `/rag/index-event` endpoint. A nightly cron job can also call the
-`omai-index-operational-text` command directly for rolling refreshes.
+Ometrics keeps this index current by writing model-change events into the shared
+`ai_rag_index_events` MySQL outbox table. The separate Omai worker process
+polls that table, vectorizes successful events into Postgres, and deletes each
+outbox row after it succeeds. A nightly cron job can also call the
+`omai-index-operational-text` command directly for rolling repair refreshes.
 
 ## Running Services
 
@@ -180,6 +182,14 @@ Start Omai API for Ometrics:
 cd /home/mo/Projects/omai
 source .venv/bin/activate
 python3 -m uvicorn omai.api.app:app --host 127.0.0.1 --port 50009
+```
+
+Start the Omai RAG index event worker as a separate process:
+
+```bash
+cd /home/mo/Projects/omai
+source .venv/bin/activate
+omai-process-rag-index-events
 ```
 
 Optional local Streamlit UI:

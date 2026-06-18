@@ -29,6 +29,7 @@ dev = [
 
 [project.scripts]
 omai-index-operational-text = "omai.rag.index_operational_text:main"
+omai-process-rag-index-events = "omai.rag.process_index_events:main"
 omai-vector-db-migrate = "omai.rag.migrate_vector_db:main"
 
 [tool.setuptools.packages.find]

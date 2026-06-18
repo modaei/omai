@@ -9,12 +9,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from omai.api.schemas import (
-    ChatRequest,
-    ChatResponse,
-    RagIndexEventRequest,
-    RagIndexResponse,
-)
+from omai.api.schemas import ChatRequest, ChatResponse
 from omai.repositories.conversation_repository import (
     ConversationNotFoundError,
     ConversationRepository,
@@ -24,16 +19,6 @@ from omai.repositories.daily_usage_repository import (
     DailyUsageRepository,
 )
 from omai.config.settings import Settings
-from omai.rag.extractors.operational_text import (
-    OperationalTextExtractor,
-    OperationalTextExtractorError,
-    supported_source_types,
-)
-from omai.rag.indexer import OperationalContextIndexer
-from omai.rag.vector_store import (
-    OperationalContextStoreError,
-    VectorOperationalContextStore,
-)
 from omai.services.chat_service import answer_chat
 from omai.services.domain_guard import OUT_OF_DOMAIN_RESPONSE, is_in_domain
 
@@ -77,36 +62,6 @@ def create_app(
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
-
-    @app.post("/rag/index-event", response_model=RagIndexResponse)
-    def rag_index_event(payload: RagIndexEventRequest) -> RagIndexResponse:
-        try:
-            _validate_source_type(payload.source_type)
-            indexer = _rag_indexer_from_settings(settings)
-            indexer.store.migrate()
-            if payload.operation == "deleted":
-                result = indexer.delete_source(
-                    payload.site_id,
-                    payload.source_type,
-                    payload.source_id,
-                )
-            else:
-                result = indexer.index_source(
-                    payload.site_id,
-                    payload.source_type,
-                    payload.source_id,
-                )
-            return RagIndexResponse(
-                ok=True,
-                documents=result.documents,
-                chunks=result.chunks,
-                deleted_chunks=result.deleted_chunks,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except (OperationalTextExtractorError, OperationalContextStoreError) as exc:
-            logger.exception("RAG index event failed")
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @app.post("/chat", response_model=ChatResponse)
     def chat(payload: ChatRequest) -> ChatResponse:
@@ -196,20 +151,6 @@ def _retry_after_seconds(reset_at: datetime) -> int:
         reset_at_utc = reset_at_utc.replace(tzinfo=timezone.utc)
     seconds = int((reset_at_utc - datetime.now(timezone.utc)).total_seconds())
     return max(1, seconds)
-
-
-def _validate_source_type(source_type: str) -> None:
-    if source_type not in supported_source_types():
-        raise ValueError(f"Unsupported source type: {source_type}")
-
-
-def _rag_indexer_from_settings(settings: Settings) -> OperationalContextIndexer:
-    settings.validate()
-    settings.validate_database()
-    return OperationalContextIndexer(
-        extractor=OperationalTextExtractor.from_settings(settings),
-        store=VectorOperationalContextStore.from_settings(settings),
-    )
 
 
 app = create_app()

@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine, text
 
 from omai.api.app import create_app, is_allowed_client_host
-from omai.api.schemas import ChatRequest, RagIndexEventRequest
+from omai.api.schemas import ChatRequest
 from omai.config.settings import Settings
 from omai.repositories.conversation_repository import ConversationRepository
 from omai.services.domain_guard import OUT_OF_DOMAIN_RESPONSE
@@ -570,79 +570,3 @@ def test_app_registers_chat_and_health_routes():
 
     assert route_endpoint(app, "/chat", "POST")
     assert route_endpoint(app, "/health", "GET")
-    assert route_endpoint(app, "/rag/index-event", "POST")
-
-
-def test_rag_index_event_endpoint_indexes_single_source(monkeypatch):
-    class FakeStore:
-        def __init__(self):
-            self.migrated = False
-
-        def migrate(self):
-            self.migrated = True
-
-    class FakeIndexer:
-        def __init__(self):
-            self.store = FakeStore()
-
-        def index_source(self, site_id, source_type, source_id):
-            assert site_id == 4
-            assert source_type == "general_note"
-            assert source_id == "123"
-            return type(
-                "Result",
-                (),
-                {"documents": 1, "chunks": 1, "deleted_chunks": 1},
-            )()
-
-    fake_indexer = FakeIndexer()
-    monkeypatch.setattr(
-        "omai.api.app._rag_indexer_from_settings",
-        lambda settings: fake_indexer,
-    )
-    app = create_app(
-        settings=make_settings(),
-        chat_handler=fake_chat_handler,
-        conversation_repository=make_conversation_repository(),
-    )
-    endpoint = route_endpoint(app, "/rag/index-event", "POST")
-
-    response = endpoint(
-        RagIndexEventRequest.model_validate(
-            {
-                "site_id": 4,
-                "source_type": "general_note",
-                "source_id": "123",
-                "operation": "updated",
-            }
-        )
-    )
-
-    assert response.ok is True
-    assert response.documents == 1
-    assert response.chunks == 1
-    assert response.deleted_chunks == 1
-    assert fake_indexer.store.migrated is True
-
-
-def test_rag_index_event_endpoint_rejects_unknown_source_type():
-    app = create_app(
-        settings=make_settings(),
-        chat_handler=fake_chat_handler,
-        conversation_repository=make_conversation_repository(),
-    )
-    endpoint = route_endpoint(app, "/rag/index-event", "POST")
-
-    with pytest.raises(HTTPException) as exc:
-        endpoint(
-            RagIndexEventRequest.model_validate(
-                {
-                    "site_id": 4,
-                    "source_type": "not_real",
-                    "source_id": "123",
-                    "operation": "updated",
-                }
-            )
-        )
-
-    assert exc.value.status_code == 400
