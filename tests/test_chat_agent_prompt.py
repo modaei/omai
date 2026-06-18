@@ -1,7 +1,7 @@
 from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 
-from omai.agents.chat_agent import answer_report_question
+from omai.agents.chat_agent import answer_chat_question
 from omai.services.domain_guard import OUT_OF_DOMAIN_RESPONSE
 
 
@@ -63,7 +63,7 @@ def sample_tool(value: str) -> str:
 def test_system_prompt_rejects_unsupported_actions():
     model = FakeModel()
 
-    answer, traces, stats = answer_report_question(
+    answer, traces, stats = answer_chat_question(
         model=model,
         tools=[],
         site_id=1,
@@ -122,7 +122,7 @@ def test_system_prompt_rejects_unsupported_actions():
 
 
 def test_tool_trace_excludes_tool_result():
-    answer, traces, stats = answer_report_question(
+    answer, traces, stats = answer_chat_question(
         model=FakeToolModel(),
         tools=[sample_tool],
         site_id=1,
@@ -141,7 +141,7 @@ def test_tool_trace_excludes_tool_result():
 
 
 def test_units_disclaimer_is_removed_from_final_answer():
-    answer, traces, stats = answer_report_question(
+    answer, traces, stats = answer_chat_question(
         model=FakeUnitsDisclaimerModel(),
         tools=[],
         site_id=1,

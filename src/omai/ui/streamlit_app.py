@@ -4,7 +4,7 @@ import logging
 
 import streamlit as st
 
-from omai.agents.chat_agent import answer_report_question, build_model
+from omai.agents.chat_agent import answer_chat_question, build_model
 from omai.clients.capability_client import CapabilityClient, UnavailableCapabilityClient
 from omai.clients.reading_client import ReadingClient, UnavailableReadingClient
 from omai.clients.report_client import ReportClient
@@ -208,7 +208,7 @@ def main() -> None:
                     model=settings.llm_model,
                     base_url=settings.llm_base_url,
                 )
-                answer, tool_calls, stats = answer_report_question(
+                answer, tool_calls, stats = answer_chat_question(
                     model=model,
                     tools=tools,
                     site_id=int(site_id),

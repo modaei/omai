@@ -5,7 +5,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from omai.agents.chat_agent import answer_report_question, build_model
+from omai.agents.chat_agent import answer_chat_question, build_model
 from omai.clients.capability_client import CapabilityClient, UnavailableCapabilityClient
 from omai.clients.reading_client import ReadingClient, UnavailableReadingClient
 from omai.clients.report_client import ReportClient
@@ -79,7 +79,7 @@ def answer_chat(
         model=settings.llm_model,
         base_url=settings.llm_base_url,
     )
-    return answer_report_question(
+    return answer_chat_question(
         model=model,
         tools=tools,
         site_id=site_id,

@@ -26,7 +26,7 @@ def build_model(api_key: str, model: str, base_url: str) -> ChatOpenAI:
     )
 
 
-def answer_report_question(
+def answer_chat_question(
     model: ChatOpenAI,
     tools: list[BaseTool],
     site_id: int,
