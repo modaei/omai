@@ -27,6 +27,7 @@ from omai.tools.reading_tools import build_reading_tools
 from omai.tools.report_tools import build_report_tools
 from omai.tools.shutdown_tools import build_shutdown_tools
 from omai.tools.well_timeline_tools import build_well_timeline_tools
+from omai.ui.rag_sources import extract_rag_sources, format_rag_source
 
 
 @st.cache_resource
@@ -49,6 +50,25 @@ def format_response_statistics(stats: dict | None) -> str:
         lines.append(f"- Tool `{tool_call['tool']}`: {tool_call['seconds']:.3f}s")
 
     return "\n".join(lines)
+
+
+def render_rag_sources(sources: list[dict]) -> None:
+    if not sources:
+        return
+    with st.expander("RAG Sources"):
+        for index, source in enumerate(sources, start=1):
+            st.markdown(f"{index}. {format_rag_source(source)}")
+
+
+def display_tool_calls(tool_calls: list[dict]) -> list[dict]:
+    return [
+        {
+            key: value
+            for key, value in tool_call.items()
+            if key != "result"
+        }
+        for tool_call in tool_calls
+    ]
 
 
 def main() -> None:
@@ -93,11 +113,12 @@ def main() -> None:
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
+            render_rag_sources(message.get("rag_sources", []))
             if message.get("stats"):
                 st.markdown(format_response_statistics(message["stats"]))
             if message.get("tool_calls"):
                 with st.expander("Tool calls"):
-                    st.json(message["tool_calls"])
+                    st.json(display_tool_calls(message["tool_calls"]))
 
     question = st.chat_input("Ask a question about Ometrics reports")
     if not question:
@@ -128,6 +149,7 @@ def main() -> None:
         if not prior_history and not is_in_domain(question):
             answer = OUT_OF_DOMAIN_RESPONSE
             tool_calls = []
+            rag_sources = []
             stats = {}
             st.markdown(answer)
             st.session_state.messages.append(
@@ -135,6 +157,7 @@ def main() -> None:
                     "role": "assistant",
                     "content": answer,
                     "tool_calls": tool_calls,
+                    "rag_sources": rag_sources,
                     "stats": stats,
                 }
             )
@@ -210,25 +233,29 @@ def main() -> None:
                     history=prior_history,
                     question=question,
                 )
+                rag_sources = extract_rag_sources(tool_calls)
                 status.update(label="Complete", state="complete", expanded=False)
             except Exception as exc:
                 logging.exception("Chat request failed")
                 answer = f"The request failed: {exc}"
                 tool_calls = []
+                rag_sources = []
                 stats = {}
                 status.update(label="Failed", state="error", expanded=True)
 
         st.markdown(answer)
+        render_rag_sources(rag_sources)
         st.markdown(format_response_statistics(stats))
         if tool_calls:
             with st.expander("Tool calls"):
-                st.json(tool_calls)
+                st.json(display_tool_calls(tool_calls))
 
     st.session_state.messages.append(
         {
             "role": "assistant",
             "content": answer,
             "tool_calls": tool_calls,
+            "rag_sources": rag_sources,
             "stats": stats,
         }
     )

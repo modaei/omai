@@ -187,6 +187,7 @@ def answer_chat_question(
                 }
             )
 
+            trace["result"] = str(result)
             traces.append(trace)
             messages.append(
                 ToolMessage(content=str(result), tool_call_id=call["id"])

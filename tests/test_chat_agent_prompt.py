@@ -121,7 +121,7 @@ def test_system_prompt_rejects_unsupported_actions():
     assert "do not call them assets" in system_prompt
 
 
-def test_tool_trace_excludes_tool_result():
+def test_tool_trace_includes_tool_result_for_local_debugging():
     answer, traces, stats = answer_chat_question(
         model=FakeToolModel(),
         tools=[sample_tool],
@@ -131,7 +131,13 @@ def test_tool_trace_excludes_tool_result():
     )
 
     assert answer == "Final answer."
-    assert traces == [{"tool": "sample_tool", "arguments": {"value": "abc"}}]
+    assert traces == [
+        {
+            "tool": "sample_tool",
+            "arguments": {"value": "abc"},
+            "result": "result: abc",
+        }
+    ]
     assert stats["model_calls"] == 2
     assert stats["model_seconds"] >= 0
     assert stats["tool_seconds"] >= 0

@@ -73,6 +73,9 @@ The public `/chat` response contains only:
 ```
 
 Tool calls and timing statistics are internal and are not returned by the API.
+RAG source snippets are also not returned by the API. The local Streamlit UI can
+show retrieved operational-context sources in a `RAG Sources` expander for
+debugging and evaluation.
 
 ## Setup
 
