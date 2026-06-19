@@ -161,10 +161,11 @@ shutdown comments, downtime codes, well-test comments, reading comments, alarm
 logs, and well history records.
 
 Ometrics keeps this index current by writing model-change events into the shared
-`ai_rag_index_events` MySQL outbox table. The separate Omai worker process
-polls that table, vectorizes successful events into Postgres, and deletes each
-outbox row after it succeeds. A nightly cron job can also call the
-`omai-index-operational-text` command directly for rolling repair refreshes.
+`ai_rag_index_events` MySQL outbox table. Run `omai-process-rag-index-events`
+from cron or a systemd timer every few minutes; each run takes a MySQL lock,
+processes currently due events, deletes successful rows, and exits. A nightly
+cron job can also call the `omai-index-operational-text` command directly for
+rolling repair refreshes.
 
 ## Running Services
 
@@ -184,7 +185,7 @@ source .venv/bin/activate
 python3 -m uvicorn omai.api.app:app --host 127.0.0.1 --port 50009
 ```
 
-Start the Omai RAG index event worker as a separate process:
+Process queued Omai RAG index events periodically:
 
 ```bash
 cd /home/mo/Projects/omai

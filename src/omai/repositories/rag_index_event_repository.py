@@ -9,9 +9,11 @@ from sqlalchemy.exc import SQLAlchemyError
 from omai.config.settings import Settings
 
 
-BATCH_SIZE = 25
+BATCH_SIZE = 50
 MAX_ATTEMPTS = 5
 RETRY_BACKOFF_SECONDS = 300
+STALE_PROCESSING_SECONDS = 900
+PROCESSOR_LOCK_NAME = "omai_rag_index_events_processor"
 
 
 class RagIndexEventRepositoryError(RuntimeError):
@@ -34,6 +36,7 @@ class RagIndexEventRepository:
 
     def __init__(self, engine: Engine):
         self.engine = engine
+        self._lock_connection = None
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "RagIndexEventRepository":
@@ -57,9 +60,9 @@ class RagIndexEventRepository:
         return cls(engine)
 
     def claim_batch(self) -> list[RagIndexEvent]:
-        """Claim a small batch of due events for this worker process.
+        """Claim a small batch of due events for this processor run.
 
-        Omai runs one dedicated worker process in the intended deployment, so a
+        Omai runs this command periodically in the intended deployment, so a
         normal SELECT ... FOR UPDATE is enough and stays compatible with common
         MySQL/MariaDB versions. Rows are deleted only after successful indexing.
         """
@@ -135,6 +138,75 @@ class RagIndexEventRepository:
             )
             for row in rows
         ]
+
+    def acquire_processor_lock(self) -> bool:
+        """Acquire the process-wide MySQL lock used by the periodic command."""
+
+        if self._lock_connection is not None:
+            return True
+        try:
+            connection = self.engine.connect()
+            acquired = connection.execute(
+                text("SELECT GET_LOCK(:lock_name, 0)"),
+                {"lock_name": PROCESSOR_LOCK_NAME},
+            ).scalar_one()
+            if int(acquired or 0) != 1:
+                connection.close()
+                return False
+            self._lock_connection = connection
+            return True
+        except SQLAlchemyError as exc:
+            raise RagIndexEventRepositoryError(
+                f"Could not acquire RAG index processor lock: {exc}"
+            ) from exc
+
+    def release_processor_lock(self) -> None:
+        """Release the MySQL named lock if this process owns it."""
+
+        connection = self._lock_connection
+        self._lock_connection = None
+        if connection is None:
+            return
+        try:
+            connection.execute(
+                text("SELECT RELEASE_LOCK(:lock_name)"),
+                {"lock_name": PROCESSOR_LOCK_NAME},
+            )
+        except SQLAlchemyError as exc:
+            raise RagIndexEventRepositoryError(
+                f"Could not release RAG index processor lock: {exc}"
+            ) from exc
+        finally:
+            connection.close()
+
+    def recover_stale_processing_events(self) -> int:
+        """Make old in-flight rows retryable after a crashed processor run."""
+
+        try:
+            with self.engine.begin() as connection:
+                result = connection.execute(
+                    text(
+                        f"""
+                        UPDATE ai_rag_index_events
+                        SET status = 'failed',
+                            attempts = LEAST(attempts + 1, :max_attempts),
+                            available_at = CURRENT_TIMESTAMP,
+                            last_error = 'Recovered stale processing event.',
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE status = 'processing'
+                            AND updated_at < DATE_SUB(
+                                CURRENT_TIMESTAMP,
+                                INTERVAL {STALE_PROCESSING_SECONDS} SECOND
+                            )
+                        """
+                    ),
+                    {"max_attempts": MAX_ATTEMPTS},
+                )
+                return int(result.rowcount or 0)
+        except SQLAlchemyError as exc:
+            raise RagIndexEventRepositoryError(
+                f"Could not recover stale RAG index events: {exc}"
+            ) from exc
 
     def database_name(self) -> str:
         try:

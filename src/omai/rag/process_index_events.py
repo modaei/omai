@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import time
 from typing import Protocol
 
 from omai.config.settings import Settings
@@ -16,8 +15,6 @@ from omai.repositories.rag_index_event_repository import (
     RagIndexEventRepository,
 )
 
-
-POLL_SECONDS = 5
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +37,7 @@ class Indexer(Protocol):
         ...
 
 
-class RagIndexEventWorker:
+class RagIndexEventProcessor:
     def __init__(
         self,
         repository: RagIndexEventRepository,
@@ -51,20 +48,37 @@ class RagIndexEventWorker:
         self.indexer = indexer
         self.logger = worker_logger or logger
 
-    def run_forever(self) -> None:
-        self.logger.info("Starting Omai RAG index event worker.")
+    def run(self) -> int:
+        self.logger.info("Starting Omai RAG index event processor.")
         try:
             self.logger.info(
-                "Omai RAG index event worker connected to MySQL database %s.",
+                "Omai RAG index event processor connected to MySQL database %s.",
                 self.repository.database_name(),
             )
         except Exception:
-            self.logger.exception("Omai RAG index event worker database check failed.")
+            self.logger.exception("Omai RAG index event processor database check failed.")
             raise
-        while True:
-            processed = self.run_once()
-            if processed == 0:
-                time.sleep(POLL_SECONDS)
+
+        if not self.repository.acquire_processor_lock():
+            self.logger.info("Another Omai RAG index event processor is already running.")
+            return 0
+
+        processed = 0
+        try:
+            recovered = self.repository.recover_stale_processing_events()
+            if recovered:
+                self.logger.warning(
+                    "Recovered %s stale RAG index processing event(s).",
+                    recovered,
+                )
+            while True:
+                batch_count = self.run_once()
+                if batch_count == 0:
+                    break
+                processed += batch_count
+            return processed
+        finally:
+            self.repository.release_processor_lock()
 
     def run_once(self) -> int:
         events = self.repository.claim_batch()
@@ -119,11 +133,11 @@ def main() -> None:
     )
     indexer.store.migrate()
 
-    worker = RagIndexEventWorker(
+    processor = RagIndexEventProcessor(
         repository=RagIndexEventRepository.from_settings(settings),
         indexer=indexer,
     )
-    worker.run_forever()
+    processor.run()
 
 
 def _event_log_context(event: RagIndexEvent) -> dict[str, object]:
