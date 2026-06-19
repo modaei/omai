@@ -89,6 +89,18 @@ cp .env.example .env
 
 Set the LLM provider values in `.env`.
 
+Set `LOG_LEVEL` to control Omai logging across the API, CLI commands, RAG event
+processor, and Streamlit UI. Supported values are:
+
+```bash
+LOG_LEVEL=CRITICAL
+LOG_LEVEL=ERROR
+LOG_LEVEL=WARNING
+LOG_LEVEL=INFO
+LOG_LEVEL=DEBUG
+LOG_LEVEL=NOTSET
+```
+
 For OpenAI directly:
 
 ```bash

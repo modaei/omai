@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from datetime import date
 
+from omai.config.logging import configure_logging
 from omai.config.settings import Settings
 from omai.rag.extractors.operational_text import OperationalTextExtractor
 from omai.rag.indexer import OperationalContextIndexer
@@ -32,6 +33,7 @@ def main() -> None:
     args = parser.parse_args()
 
     settings = Settings.from_env()
+    configure_logging(settings.log_level)
     # validate() checks LLM/embedding settings, while validate_database() checks
     # the source MySQL connection used by OperationalTextExtractor.
     settings.validate()

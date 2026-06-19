@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Protocol
 
+from omai.config.logging import configure_logging
 from omai.config.settings import Settings
 from omai.rag.extractors.operational_text import (
     OperationalTextExtractor,
@@ -122,8 +123,8 @@ class RagIndexEventProcessor:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
     settings = Settings.from_env()
+    configure_logging(settings.log_level)
     settings.validate()
     settings.validate_database()
 

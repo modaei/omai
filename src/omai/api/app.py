@@ -18,6 +18,7 @@ from omai.repositories.daily_usage_repository import (
     DailyUsageLimitExceeded,
     DailyUsageRepository,
 )
+from omai.config.logging import configure_logging
 from omai.config.settings import Settings
 from omai.services.chat_service import answer_chat
 from omai.services.domain_guard import OUT_OF_DOMAIN_RESPONSE, is_in_domain
@@ -40,6 +41,7 @@ def create_app(
     daily_usage_repository: DailyUsageRepository | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
+    configure_logging(settings.log_level)
     app = FastAPI(title="ometrics-ai")
     app.state.settings = settings
     app.state.chat_handler = chat_handler

@@ -15,6 +15,7 @@ from omai.clients.well_timeline_client import (
     WellTimelineClient,
 )
 from omai.config.settings import Settings
+from omai.config.logging import configure_logging
 from omai.rag.vector_store import (
     UnavailableOperationalContextStore,
     VectorOperationalContextStore,
@@ -31,13 +32,6 @@ from omai.tools.well_timeline_tools import build_well_timeline_tools
 @st.cache_resource
 def load_settings() -> Settings:
     return Settings.from_env()
-
-
-def configure_logging(level: str) -> None:
-    logging.basicConfig(
-        level=getattr(logging, level, logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
 
 
 def format_response_statistics(stats: dict | None) -> str:

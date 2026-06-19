@@ -5,6 +5,8 @@ from dataclasses import dataclass
 
 from dotenv import load_dotenv
 
+from omai.config.logging import LOG_LEVELS
+
 
 load_dotenv()
 
@@ -145,6 +147,9 @@ class Settings:
             raise ValueError("RAG_EMBEDDING_MODEL is not configured.")
         if self.rag_embedding_dimensions <= 0:
             raise ValueError("RAG_EMBEDDING_DIMENSIONS must be positive.")
+        if self.log_level not in LOG_LEVELS:
+            allowed = ", ".join(LOG_LEVELS)
+            raise ValueError(f"LOG_LEVEL must be one of: {allowed}.")
 
     def validate_database(self) -> None:
         missing = []

@@ -1,3 +1,5 @@
+import pytest
+
 from omai.config.settings import Settings
 
 
@@ -17,3 +19,20 @@ def test_daily_user_limit_can_be_enabled_from_env(monkeypatch):
     settings = Settings.from_env()
 
     assert settings.omai_daily_user_limit_enabled is True
+
+
+def test_log_level_is_normalized_from_env(monkeypatch):
+    monkeypatch.setenv("LOG_LEVEL", "debug")
+
+    settings = Settings.from_env()
+
+    assert settings.log_level == "DEBUG"
+
+
+def test_invalid_log_level_is_rejected(monkeypatch):
+    monkeypatch.setenv("LOG_LEVEL", "verbose")
+
+    settings = Settings.from_env()
+
+    with pytest.raises(ValueError, match="LOG_LEVEL must be one of"):
+        settings.validate()
