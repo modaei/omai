@@ -120,7 +120,7 @@ def main() -> None:
                 with st.expander("Tool calls"):
                     st.json(display_tool_calls(message["tool_calls"]))
 
-    question = st.chat_input("Ask a question about Ometrics reports")
+    question = st.chat_input("Ask a question about Ometrics")
     if not question:
         return
 
