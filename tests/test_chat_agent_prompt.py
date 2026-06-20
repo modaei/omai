@@ -119,6 +119,8 @@ def test_system_prompt_rejects_unsupported_actions():
     assert "which report or feature to use" in system_prompt
     assert "Create a new LACT reading" in system_prompt
     assert "Battery = No Battery" in system_prompt
+    assert "Use ISO YYYY-MM-DD dates only for tool arguments" in system_prompt
+    assert "format dates as MM/DD/YYYY" in system_prompt
     assert "You do not have tools to send emails" in system_prompt
     assert "Do not add generic follow-up offers" in system_prompt
     assert "Do not refer to entities by database ID" in system_prompt

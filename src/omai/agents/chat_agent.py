@@ -130,6 +130,8 @@ def answer_chat_question(
                 "answer with only the matching create action, such as 'Create a new "
                 "LACT reading.', unless the user asks for details. "
                 "Translate relative dates such as 'this month' into exact ISO dates. "
+                "Use ISO YYYY-MM-DD dates only for tool arguments. In final answers "
+                "shown to users, format dates as MM/DD/YYYY. "
                 "Do not invent values or claim a report was run when no tool succeeded. "
                 "Explain results clearly and include the exact date range. Do not mention "
                 "units, missing unit labels, or unspecified units unless the user asks about units. "
