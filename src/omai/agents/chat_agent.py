@@ -15,7 +15,7 @@ from omai.services.domain_guard import OUT_OF_DOMAIN_RESPONSE
 MAX_TOOL_ROUNDS = 6
 REASONING_EFFORT_BY_RESPONSE_MODE = {
     "faster": "medium",
-    "more_accurate": "xhigh",
+    "more_accurate": "high",
 }
 
 
