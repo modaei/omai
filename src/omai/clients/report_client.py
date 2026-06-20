@@ -61,7 +61,8 @@ class ReportClient:
         except httpx.HTTPStatusError as exc:
             detail = self._response_detail(exc.response)
             raise ReportClientError(
-                f"The reporting service returned HTTP {exc.response.status_code}: {detail}"
+                f"The reporting service returned HTTP {exc.response.status_code}: {detail} \n"
+                f"url: {self.api_url}, payload: {payload}"
             ) from exc
         except httpx.HTTPError as exc:
             raise ReportClientError(

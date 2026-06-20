@@ -5,7 +5,11 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from omai.agents.chat_agent import answer_chat_question, build_model
+from omai.agents.chat_agent import (
+    answer_chat_question,
+    build_model,
+    reasoning_effort_for_response_mode,
+)
 from omai.clients.capability_client import CapabilityClient, UnavailableCapabilityClient
 from omai.clients.reading_client import ReadingClient, UnavailableReadingClient
 from omai.clients.report_client import ReportClient
@@ -37,6 +41,7 @@ def answer_chat(
     site_name: str | None,
     history: list[dict[str, str]],
     question: str,
+    response_mode: str = "faster",
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     settings.validate()
     resolved_site_name = site_name or _site_name_from_db(settings, site_id)
@@ -78,6 +83,7 @@ def answer_chat(
         api_key=settings.llm_api_key,
         model=settings.llm_model,
         base_url=settings.llm_base_url,
+        reasoning_effort=reasoning_effort_for_response_mode(response_mode),
     )
     return answer_chat_question(
         model=model,

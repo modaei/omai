@@ -14,6 +14,7 @@ from omai.repositories.conversation_repository import (
     ConversationNotFoundError,
     ConversationRepository,
 )
+from omai.agents.chat_agent import reasoning_effort_for_response_mode
 from omai.repositories.daily_usage_repository import (
     DailyUsageLimitExceeded,
     DailyUsageRepository,
@@ -29,7 +30,7 @@ ALLOWED_HOSTS = {"127.0.0.1", "::1"}
 logger = logging.getLogger(__name__)
 
 ChatHandler = Callable[
-    [Settings, int, str | None, list[dict[str, str]], str],
+    [Settings, int, str | None, list[dict[str, str]], str, str],
     tuple[str, list[dict[str, Any]], dict[str, Any]],
 ]
 
@@ -100,10 +101,14 @@ def create_app(
                 usage_repository.consume(payload.user_id, payload.site_id)
                 conversation = repository.create(payload.user_id, payload.site_id)
             history = repository.load_history(conversation)
+            reasoning_effort = reasoning_effort_for_response_mode(payload.response_mode)
             if not history and not is_in_domain(payload.message):
                 repository.append_message(conversation, "user", payload.message)
                 repository.append_message(
-                    conversation, "assistant", OUT_OF_DOMAIN_RESPONSE
+                    conversation,
+                    "assistant",
+                    OUT_OF_DOMAIN_RESPONSE,
+                    reasoning_effort=reasoning_effort,
                 )
                 return ChatResponse(
                     conversation_id=conversation.uuid,
@@ -115,9 +120,15 @@ def create_app(
                 None,
                 history,
                 payload.message,
+                payload.response_mode,
             )
             repository.append_message(conversation, "user", payload.message)
-            repository.append_message(conversation, "assistant", answer)
+            repository.append_message(
+                conversation,
+                "assistant",
+                answer,
+                reasoning_effort=reasoning_effort,
+            )
             return ChatResponse(conversation_id=conversation.uuid, answer=answer)
         except ConversationNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc

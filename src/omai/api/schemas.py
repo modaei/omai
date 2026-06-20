@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -12,6 +13,7 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=2_000)
     user_id: int = Field(gt=0)
     site_id: int = Field(gt=0)
+    response_mode: Literal["faster", "more_accurate"] = "faster"
 
     @field_validator("message")
     @classmethod

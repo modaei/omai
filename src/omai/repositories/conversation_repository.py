@@ -195,9 +195,12 @@ class ConversationRepository:
         conversation: Conversation,
         role: str,
         content: str,
+        reasoning_effort: str | None = None,
     ) -> None:
         if role not in {"user", "assistant"}:
             raise ConversationRepositoryError(f"Unsupported message role: {role}")
+        if role != "assistant":
+            reasoning_effort = None
 
         now = _utcnow()
         expires_at = now + timedelta(hours=self.ttl_hours)
@@ -207,15 +210,30 @@ class ConversationRepository:
                     text(
                         """
                         INSERT INTO ai_messages
-                            (ai_conversation_id, role, content, created_at, updated_at)
+                            (
+                                ai_conversation_id,
+                                role,
+                                content,
+                                reasoning_effort,
+                                created_at,
+                                updated_at
+                            )
                         VALUES
-                            (:conversation_id, :role, :content, :now, :now)
+                            (
+                                :conversation_id,
+                                :role,
+                                :content,
+                                :reasoning_effort,
+                                :now,
+                                :now
+                            )
                         """
                     ),
                     {
                         "conversation_id": conversation.id,
                         "role": role,
                         "content": content,
+                        "reasoning_effort": reasoning_effort,
                         "now": now,
                     },
                 )
@@ -241,4 +259,3 @@ class ConversationRepository:
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
-

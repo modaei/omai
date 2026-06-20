@@ -13,9 +13,18 @@ from omai.services.domain_guard import OUT_OF_DOMAIN_RESPONSE
 
 
 MAX_TOOL_ROUNDS = 6
+REASONING_EFFORT_BY_RESPONSE_MODE = {
+    "faster": "medium",
+    "more_accurate": "xhigh",
+}
 
 
-def build_model(api_key: str, model: str, base_url: str) -> ChatOpenAI:
+def build_model(
+    api_key: str,
+    model: str,
+    base_url: str,
+    reasoning_effort: str | None = None,
+) -> ChatOpenAI:
     return ChatOpenAI(
         api_key=api_key,
         model=model,
@@ -23,7 +32,12 @@ def build_model(api_key: str, model: str, base_url: str) -> ChatOpenAI:
         temperature=0,
         timeout=60,
         max_retries=2,
+        reasoning_effort=reasoning_effort,
     )
+
+
+def reasoning_effort_for_response_mode(response_mode: str) -> str:
+    return REASONING_EFFORT_BY_RESPONSE_MODE.get(response_mode, "medium")
 
 
 def answer_chat_question(

@@ -51,10 +51,10 @@ def make_settings() -> Settings:
     )
 
 
-def fake_chat_handler(settings, site_id, site_name, history, question):
+def fake_chat_handler(settings, site_id, site_name, history, question, response_mode):
     return (
-        f"{site_name or 'db lookup'}: {question}",
-        [{"tool": "sample", "arguments": {"site_id": site_id}}],
+        f"{site_name or 'db lookup'}: {question} [{response_mode}]",
+        [{"tool": "sample", "arguments": {"site_id": site_id, "response_mode": response_mode}}],
         {
             "total_seconds": 0.1,
             "model_seconds": 0.05,
@@ -66,7 +66,7 @@ def fake_chat_handler(settings, site_id, site_name, history, question):
     )
 
 
-def failing_chat_handler(settings, site_id, site_name, history, question):
+def failing_chat_handler(settings, site_id, site_name, history, question, response_mode):
     raise AssertionError("chat handler should not be called")
 
 
@@ -97,6 +97,7 @@ def make_conversation_repository() -> ConversationRepository:
                     ai_conversation_id INTEGER NOT NULL,
                     role VARCHAR(20) NOT NULL,
                     content TEXT NOT NULL,
+                    reasoning_effort VARCHAR(32),
                     created_at DATETIME,
                     updated_at DATETIME
                 )
@@ -120,6 +121,24 @@ def make_conversation_repository() -> ConversationRepository:
             )
         )
     return ConversationRepository(engine, ttl_hours=168, history_limit=20)
+
+
+def stored_messages(repository: ConversationRepository, conversation_id: int):
+    with repository.engine.connect() as connection:
+        return [
+            dict(row)
+            for row in connection.execute(
+                text(
+                    """
+                    SELECT role, content, reasoning_effort
+                    FROM ai_messages
+                    WHERE ai_conversation_id = :conversation_id
+                    ORDER BY id
+                    """
+                ),
+                {"conversation_id": conversation_id},
+            ).mappings()
+        ]
 
 
 def daily_usage_count(
@@ -217,7 +236,7 @@ def test_chat_endpoint_creates_conversation_and_returns_answer_only():
     )
 
     body = response.model_dump()
-    assert body["answer"] == "db lookup: How much gas was flared in May?"
+    assert body["answer"] == "db lookup: How much gas was flared in May? [faster]"
     assert body["conversation_id"]
     assert "tool_calls" not in body
     assert "stats" not in body
@@ -225,6 +244,18 @@ def test_chat_endpoint_creates_conversation_and_returns_answer_only():
     assert repository.load_history(conversation) == [
         {"role": "user", "content": "How much gas was flared in May?"},
         {"role": "assistant", "content": body["answer"]},
+    ]
+    assert stored_messages(repository, conversation.id) == [
+        {
+            "role": "user",
+            "content": "How much gas was flared in May?",
+            "reasoning_effort": None,
+        },
+        {
+            "role": "assistant",
+            "content": body["answer"],
+            "reasoning_effort": "medium",
+        },
     ]
 
 
@@ -257,6 +288,31 @@ def test_chat_endpoint_continues_existing_conversation():
     assert "What about June?" in second.answer
     conversation = repository.get(second.conversation_id, user_id=9, site_id=4)
     assert len(repository.load_history(conversation)) == 4
+
+
+def test_chat_endpoint_forwards_response_mode_to_handler():
+    repository = make_conversation_repository()
+    app = create_app(
+        settings=make_settings(),
+        chat_handler=fake_chat_handler,
+        conversation_repository=repository,
+    )
+    endpoint = route_endpoint(app, "/chat", "POST")
+
+    response = endpoint(
+        ChatRequest.model_validate(
+            {
+                "message": "Explain this well shutdown carefully.",
+                "user_id": 9,
+                "site_id": 4,
+                "response_mode": "more_accurate",
+            }
+        )
+    )
+
+    assert response.answer == "db lookup: Explain this well shutdown carefully. [more_accurate]"
+    conversation = repository.get(response.conversation_id, user_id=9, site_id=4)
+    assert stored_messages(repository, conversation.id)[1]["reasoning_effort"] == "xhigh"
 
 
 def test_chat_endpoint_rejects_conversation_for_wrong_site():
@@ -355,6 +411,7 @@ def test_chat_endpoint_refuses_out_of_domain_question_without_calling_model():
             "content": OUT_OF_DOMAIN_RESPONSE,
         },
     ]
+    assert stored_messages(repository, conversation.id)[1]["reasoning_effort"] == "medium"
 
 
 def test_chat_endpoint_rejects_when_daily_user_limit_is_reached():
@@ -414,7 +471,7 @@ def test_chat_endpoint_daily_user_limit_can_be_disabled():
         )
     )
 
-    assert response.answer == "db lookup: How much gas was flared in May?"
+    assert response.answer == "db lookup: How much gas was flared in May? [faster]"
     assert daily_usage_count(repository, user_id=9) == 1
 
 
@@ -438,7 +495,7 @@ def test_chat_endpoint_daily_user_limit_is_scoped_by_site():
         )
     )
 
-    assert response.answer == "db lookup: How much gas was flared in May?"
+    assert response.answer == "db lookup: How much gas was flared in May? [faster]"
     assert daily_usage_count(repository, user_id=9, site_id=4) == 1
     assert daily_usage_count(repository, user_id=9, site_id=5) == 1
 
@@ -462,7 +519,7 @@ def test_chat_endpoint_accepts_first_turn_numbered_operational_lookup():
         )
     )
 
-    assert response.answer == "db lookup: What can you tell me about 4293?"
+    assert response.answer == "db lookup: What can you tell me about 4293? [faster]"
 
 
 def test_chat_endpoint_lets_model_handle_follow_up_even_if_short():
@@ -494,11 +551,11 @@ def test_chat_endpoint_lets_model_handle_follow_up_even_if_short():
         )
     )
 
-    assert second.answer == "db lookup: YTD"
+    assert second.answer == "db lookup: YTD [faster]"
     conversation = repository.get(second.conversation_id, user_id=9, site_id=4)
     assert repository.load_history(conversation)[-2:] == [
         {"role": "user", "content": "YTD"},
-        {"role": "assistant", "content": "db lookup: YTD"},
+        {"role": "assistant", "content": "db lookup: YTD [faster]"},
     ]
 
 
@@ -559,6 +616,30 @@ def test_chat_request_rejects_history_field():
         assert "history" in str(exc)
     else:
         raise AssertionError("history was accepted")
+
+
+def test_chat_request_defaults_response_mode_to_faster():
+    payload = ChatRequest.model_validate(
+        {"message": "Hello", "user_id": 9, "site_id": 4}
+    )
+
+    assert payload.response_mode == "faster"
+
+
+def test_chat_request_rejects_invalid_response_mode():
+    try:
+        ChatRequest.model_validate(
+            {
+                "message": "Hello",
+                "user_id": 9,
+                "site_id": 4,
+                "response_mode": "slow",
+            }
+        )
+    except ValueError as exc:
+        assert "response_mode" in str(exc)
+    else:
+        raise AssertionError("invalid response_mode was accepted")
 
 
 def test_app_registers_chat_and_health_routes():

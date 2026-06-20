@@ -1,7 +1,11 @@
 from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 
-from omai.agents.chat_agent import answer_chat_question
+from omai.agents.chat_agent import (
+    answer_chat_question,
+    build_model,
+    reasoning_effort_for_response_mode,
+)
 from omai.services.domain_guard import OUT_OF_DOMAIN_RESPONSE
 
 
@@ -159,3 +163,20 @@ def test_units_disclaimer_is_removed_from_final_answer():
     assert "The report did not specify units" not in answer
     assert traces == []
     assert stats["model_calls"] == 1
+
+
+def test_response_modes_map_to_reasoning_effort():
+    assert reasoning_effort_for_response_mode("faster") == "medium"
+    assert reasoning_effort_for_response_mode("more_accurate") == "xhigh"
+    assert reasoning_effort_for_response_mode("unknown") == "medium"
+
+
+def test_build_model_sets_reasoning_effort():
+    model = build_model(
+        api_key="test-key",
+        model="gpt-5-mini",
+        base_url="https://api.openai.com/v1",
+        reasoning_effort="xhigh",
+    )
+
+    assert model.reasoning_effort == "xhigh"
