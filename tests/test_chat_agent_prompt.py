@@ -169,7 +169,7 @@ def test_units_disclaimer_is_removed_from_final_answer():
 
 def test_response_modes_map_to_reasoning_effort():
     assert reasoning_effort_for_response_mode("faster") == "medium"
-    assert reasoning_effort_for_response_mode("more_accurate") == "xhigh"
+    assert reasoning_effort_for_response_mode("more_accurate") == "high"
     assert reasoning_effort_for_response_mode("unknown") == "medium"
 
 
@@ -178,7 +178,7 @@ def test_build_model_sets_reasoning_effort():
         api_key="test-key",
         model="gpt-5-mini",
         base_url="https://api.openai.com/v1",
-        reasoning_effort="xhigh",
+        reasoning_effort="high",
     )
 
-    assert model.reasoning_effort == "xhigh"
+    assert model.reasoning_effort == "high"

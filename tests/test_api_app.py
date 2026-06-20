@@ -312,7 +312,7 @@ def test_chat_endpoint_forwards_response_mode_to_handler():
 
     assert response.answer == "db lookup: Explain this well shutdown carefully. [more_accurate]"
     conversation = repository.get(response.conversation_id, user_id=9, site_id=4)
-    assert stored_messages(repository, conversation.id)[1]["reasoning_effort"] == "xhigh"
+    assert stored_messages(repository, conversation.id)[1]["reasoning_effort"] == "high"
 
 
 def test_chat_endpoint_rejects_conversation_for_wrong_site():
