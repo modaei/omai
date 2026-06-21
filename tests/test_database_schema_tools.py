@@ -1,6 +1,11 @@
 import json
 
-from omai.clients.database_schema_client import DatabaseSchemaClient
+from sqlalchemy import create_engine, text
+
+from omai.clients.database_schema_client import (
+    DatabaseSchemaClient,
+    OperationalSqlExecutionError,
+)
 from omai.tools.database_schema_tools import build_database_schema_tools
 from omai.tools.operational_sql_validator import (
     OperationalSqlValidationError,
@@ -15,6 +20,14 @@ class FakeSchemaClient(DatabaseSchemaClient):
 
     def load_column_metadata(self):
         return self.column_metadata
+
+    def execute_readonly_sql(self, sql, *, site_id, max_rows):
+        return [{"name": "HDU 4048", "oil": 25}]
+
+
+class FailingExecutionClient(FakeSchemaClient):
+    def execute_readonly_sql(self, sql, *, site_id, max_rows):
+        raise OperationalSqlExecutionError("database host secret should not leak")
 
 
 def tool_by_name(tools, name):
@@ -60,10 +73,106 @@ def test_draft_operational_sql_returns_non_executed_draft(tmp_path):
     assert result["site_id"] == 4
     assert "SELECT wells.name" in result["sql"]
     assert result["validation"]["valid"] is True
+    assert result["validation"]["limit"] == 10
     assert result["validation"]["tables"] == ["well_tests", "wells"]
     assert result["validation"]["referenced_columns"]["wells"] == ["id", "name", "site_id"]
+    assert result["available_columns"]["well_tests"] == ["oil", "well_id"]
+    assert result["available_columns"]["wells"] == ["id", "name", "site_id"]
     assert "Allowed Tables" in result["schema"]
     assert "not executed" in result["warning"].lower()
+
+
+def test_execute_operational_sql_returns_bounded_rows(tmp_path):
+    schema_path = tmp_path / "database_schema.md"
+    schema_path.write_text("Allowed Tables\n- `wells`\n", encoding="utf-8")
+    engine = create_engine("sqlite:///:memory:")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE wells (
+                    id INTEGER PRIMARY KEY,
+                    site_id INTEGER NOT NULL,
+                    name TEXT NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO wells (id, site_id, name)
+                VALUES (1, 4, 'HDU 4048'), (2, 5, 'Other Site')
+                """
+            )
+        )
+    tools = build_database_schema_tools(
+        DatabaseSchemaClient(schema_path, engine),
+        site_id=4,
+        max_rows=10,
+    )
+
+    result = json.loads(
+        tool_by_name(tools, "execute_operational_sql").invoke(
+            {
+                "question": "List wells.",
+                "sql": "SELECT wells.name FROM wells WHERE wells.site_id = :site_id LIMIT 10",
+            }
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["executed"] is True
+    assert result["row_count"] == 1
+    assert result["rows"] == [{"name": "HDU 4048"}]
+    assert result["validation"]["tables"] == ["wells"]
+    assert result["available_columns"]["wells"] == ["id", "name", "site_id"]
+
+
+def test_execute_operational_sql_rejects_limit_above_max_rows(tmp_path):
+    schema_path = tmp_path / "database_schema.md"
+    schema_path.write_text("Allowed Tables\n- `wells`\n", encoding="utf-8")
+    tools = build_database_schema_tools(
+        FakeSchemaClient(schema_path, {"wells": {"id", "site_id", "name"}}),
+        site_id=4,
+        max_rows=5,
+    )
+
+    result = json.loads(
+        tool_by_name(tools, "execute_operational_sql").invoke(
+            {
+                "question": "List wells.",
+                "sql": "SELECT wells.name FROM wells WHERE wells.site_id = :site_id LIMIT 10",
+            }
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["executed"] is False
+    assert "LIMIT cannot be greater than 5" in result["validation"]["error"]
+
+
+def test_execute_operational_sql_sanitizes_execution_errors(tmp_path):
+    schema_path = tmp_path / "database_schema.md"
+    schema_path.write_text("Allowed Tables\n- `wells`\n", encoding="utf-8")
+    tools = build_database_schema_tools(
+        FailingExecutionClient(schema_path, {"wells": {"id", "site_id", "name"}}),
+        site_id=4,
+    )
+
+    result = json.loads(
+        tool_by_name(tools, "execute_operational_sql").invoke(
+            {
+                "question": "List wells.",
+                "sql": "SELECT wells.name FROM wells WHERE wells.site_id = :site_id LIMIT 10",
+            }
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["executed"] is False
+    assert result["error"] == "Operational SQL query failed."
+    assert "secret" not in json.dumps(result)
 
 
 def test_draft_operational_sql_reports_missing_schema(tmp_path):
@@ -104,6 +213,7 @@ def test_draft_operational_sql_returns_validation_error(tmp_path):
     assert result["executed"] is False
     assert result["validation"]["valid"] is False
     assert "Unknown column reference" in result["validation"]["error"]
+    assert result["available_columns"] == {"wells": ["id", "name", "site_id"]}
 
 
 def test_operational_sql_validator_rejects_write_statement():

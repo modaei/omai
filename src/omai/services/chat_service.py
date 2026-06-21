@@ -89,7 +89,11 @@ def answer_chat(
 
     tools = [
         *build_capability_tools(capability_client),
-        *build_database_schema_tools(database_schema_client, site_id),
+        *build_database_schema_tools(
+            database_schema_client,
+            site_id,
+            max_rows=settings.operational_sql_max_rows,
+        ),
         # This tool searches the vector DB derived index for notes/comments,
         # work-order context, shutdown explanations, alarms, and history.
         *build_operational_context_tools(operational_context_store, site_id),

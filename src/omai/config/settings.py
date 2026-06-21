@@ -28,6 +28,10 @@ class Settings:
     db_max_overflow: int
     db_pool_timeout: int
     db_pool_recycle: int
+    operational_sql_db_user: str
+    operational_sql_db_password: str
+    operational_sql_max_rows: int
+    operational_sql_timeout_seconds: int
     omai_max_concurrent: int
     omai_slot_timeout: float
     omai_conversation_history_limit: int
@@ -77,6 +81,18 @@ class Settings:
             db_max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "5")),
             db_pool_timeout=int(os.getenv("DB_POOL_TIMEOUT", "15")),
             db_pool_recycle=int(os.getenv("DB_POOL_RECYCLE", "1800")),
+            operational_sql_db_user=os.getenv(
+                "OPERATIONAL_SQL_DB_USER",
+                os.getenv("DB_USER", ""),
+            ).strip(),
+            operational_sql_db_password=os.getenv(
+                "OPERATIONAL_SQL_DB_PASSWORD",
+                os.getenv("DB_PASSWORD", ""),
+            ),
+            operational_sql_max_rows=int(os.getenv("OPERATIONAL_SQL_MAX_ROWS", "100")),
+            operational_sql_timeout_seconds=int(
+                os.getenv("OPERATIONAL_SQL_TIMEOUT_SECONDS", "10")
+            ),
             omai_max_concurrent=int(os.getenv("OMAI_MAX_CONCURRENT", "10")),
             omai_slot_timeout=float(os.getenv("OMAI_SLOT_TIMEOUT", "15")),
             omai_conversation_history_limit=int(
@@ -117,6 +133,10 @@ class Settings:
             raise ValueError("MAX_REPORT_DAYS must be positive.")
         if self.omai_max_concurrent <= 0:
             raise ValueError("OMAI_MAX_CONCURRENT must be positive.")
+        if self.operational_sql_max_rows <= 0:
+            raise ValueError("OPERATIONAL_SQL_MAX_ROWS must be positive.")
+        if self.operational_sql_timeout_seconds <= 0:
+            raise ValueError("OPERATIONAL_SQL_TIMEOUT_SECONDS must be positive.")
         if self.omai_slot_timeout <= 0:
             raise ValueError("OMAI_SLOT_TIMEOUT must be positive.")
         if self.omai_conversation_history_limit <= 0:
@@ -157,6 +177,8 @@ class Settings:
             missing.append("DB_HOST")
         if not self.db_user:
             missing.append("DB_USER")
+        if not self.operational_sql_db_user:
+            missing.append("OPERATIONAL_SQL_DB_USER")
         if not self.db_name:
             missing.append("DB_NAME")
         if missing:

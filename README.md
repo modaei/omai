@@ -26,6 +26,9 @@ Omai is responsible for:
 - Reading Ometrics MySQL data for raw readings, missing readings, comparisons,
   tank volumes, well shutdowns, shutdown-cause summaries, current long
   shutdowns, well timelines, alarms, notes, and work-history context.
+- Running tightly validated read-only SQL against allowlisted operational
+  tables when the specific report, reading, shutdown, timeline, work-order, or
+  capability tools are not the best fit for the question.
 - Answering questions about Ometrics capabilities using curated capability
   documents in `knowledge/capabilities`.
 - Searching operational text with RAG. Source records are read from MySQL during
@@ -75,7 +78,8 @@ The public `/chat` response contains only:
 Tool calls and timing statistics are internal and are not returned by the API.
 RAG source snippets are also not returned by the API. The local Streamlit UI can
 show retrieved operational-context sources in a `RAG Sources` expander for
-debugging and evaluation.
+debugging and evaluation. Assistant message metadata, including compact tool
+audit records and SQL audit records, is stored in `ai_messages.info`.
 
 ## Setup
 
@@ -129,6 +133,18 @@ DB_PORT=3306
 DB_USER=ometrics_read_user
 DB_PASSWORD=secret
 DB_NAME=ometrics
+```
+
+For direct operational SQL, configure a separate database user that has only
+`SELECT` privileges on the allowlisted operational tables. Omai also validates
+SQL shape, table names, columns, site scoping, and row limits before execution,
+but database permissions are the final safety boundary:
+
+```bash
+OPERATIONAL_SQL_DB_USER=ometrics_ai_readonly
+OPERATIONAL_SQL_DB_PASSWORD=secret
+OPERATIONAL_SQL_MAX_ROWS=100
+OPERATIONAL_SQL_TIMEOUT_SECONDS=10
 ```
 
 Configure Omreports:

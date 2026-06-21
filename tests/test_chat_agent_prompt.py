@@ -92,8 +92,11 @@ def test_system_prompt_rejects_unsupported_actions():
     assert OUT_OF_DOMAIN_RESPONSE in system_prompt
     assert "Use search_operational_context" in system_prompt
     assert "Use summarize_shutdown_causes" in system_prompt
-    assert "Use draft_operational_sql only" in system_prompt
-    assert "validates and drafts SQL but never executes it" in system_prompt
+    assert "first prefer the most specific domain tool" in system_prompt
+    assert "execute_operational_sql as the second priority" in system_prompt
+    assert "Use draft_operational_sql only when you need schema" in system_prompt
+    assert "available_columns" in system_prompt
+    assert "do not run SELECT * only for schema discovery" in system_prompt
     assert "bare numeric well reference" in system_prompt
     assert "well-name suffix" in system_prompt
     assert "Use summarize_work_order_costs" in system_prompt

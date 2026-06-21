@@ -17,6 +17,7 @@ class OperationalSqlValidationResult:
     tables: list[str]
     aliases: dict[str, str]
     referenced_columns: dict[str, list[str]]
+    limit: int
     warnings: list[str] = field(default_factory=list)
 
 
@@ -189,7 +190,7 @@ class OperationalSqlValidator:
     def validate(self, sql: str) -> OperationalSqlValidationResult:
         """Validate a non-executed SQL draft and return parsed metadata."""
         normalized_sql = self._normalize_sql(sql)
-        self._validate_statement_shape(normalized_sql)
+        limit = self._validate_statement_shape(normalized_sql)
         aliases = self._extract_table_aliases(normalized_sql)
         tables = sorted(set(aliases.values()))
 
@@ -203,15 +204,30 @@ class OperationalSqlValidator:
             tables=tables,
             aliases=aliases,
             referenced_columns=referenced_columns,
+            limit=limit,
         )
+
+    def referenced_tables(self, sql: str) -> list[str]:
+        """Return allowlisted table names referenced by a SQL draft.
+
+        Tools use this lighter parser when full validation fails. Returning table
+        names lets the tool show available columns for those tables, which helps
+        the model correct bad column guesses without burning extra tool rounds.
+        """
+        try:
+            normalized_sql = self._normalize_sql(sql)
+            aliases = self._extract_table_aliases(normalized_sql)
+        except OperationalSqlValidationError:
+            return []
+        return sorted(table for table in set(aliases.values()) if table in ALLOWED_TABLES)
 
     @staticmethod
     def _normalize_sql(sql: str) -> str:
         """Collapse whitespace so later regex checks see a stable statement."""
         return " ".join(sql.strip().split())
 
-    def _validate_statement_shape(self, sql: str) -> None:
-        """Reject non-SELECT, multi-statement, commented, or write SQL drafts."""
+    def _validate_statement_shape(self, sql: str) -> int:
+        """Reject unsafe SQL shapes and return the numeric LIMIT value."""
         if not sql:
             raise OperationalSqlValidationError("SQL draft cannot be empty.")
         if COMMENT_PATTERN.search(sql):
@@ -228,8 +244,10 @@ class OperationalSqlValidator:
             raise OperationalSqlValidationError(
                 f"Disallowed SQL keyword found: {', '.join(blocked)}."
             )
-        if not re.search(r"\blimit\s+\d+\b", sql, re.IGNORECASE):
+        limit_match = re.search(r"\blimit\s+(\d+)\b", sql, re.IGNORECASE)
+        if not limit_match:
             raise OperationalSqlValidationError("SQL draft must include a numeric LIMIT.")
+        return int(limit_match.group(1))
 
     @staticmethod
     def _clean_identifier(value: str) -> str:

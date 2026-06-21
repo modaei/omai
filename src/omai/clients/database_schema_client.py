@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine, URL
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -14,12 +15,16 @@ class DatabaseSchemaClientError(RuntimeError):
     """Raised when curated database schema context cannot be loaded."""
 
 
-class DatabaseSchemaClient:
-    """Loads the curated operational database schema document.
+class OperationalSqlExecutionError(RuntimeError):
+    """Raised when a validated read-only SQL query cannot be executed."""
 
-    The client deliberately reads a static markdown file only. It does not
-    inspect the live database, so adding this client cannot expose extra tables
-    beyond the allowlist documented in `knowledge/database_schema.md`.
+
+class DatabaseSchemaClient:
+    """Loads schema context and runs validated read-only operational SQL.
+
+    The markdown schema and live column metadata are used before execution so
+    the LLM cannot freely discover or query tables outside the documented
+    allowlist. SQL execution is reserved for already-validated SELECT queries.
     """
 
     def __init__(self, schema_path: Path | str, engine: Engine | None = None):
@@ -35,18 +40,26 @@ class DatabaseSchemaClient:
     ) -> "DatabaseSchemaClient":
         """Create a schema client backed by the configured Ometrics database.
 
-        The engine is used only for metadata inspection of allowlisted tables.
-        It does not execute LLM-generated SQL.
+        The operational SQL credentials should belong to a read-only database
+        user in production. Code-level validation is useful, but database
+        permissions remain the final safety boundary.
         """
         settings.validate_database()
         url = URL.create(
             drivername="mysql+pymysql",
-            username=settings.db_user,
-            password=settings.db_password,
+            username=settings.operational_sql_db_user,
+            password=settings.operational_sql_db_password,
             host=settings.db_host,
             port=settings.db_port,
             database=settings.db_name,
         )
+        # PyMySQL supports socket read/write timeouts. These are not a complete
+        # query governor, but they prevent the assistant from hanging forever if
+        # the database or network stalls during a read-only query.
+        connect_args = {
+            "read_timeout": settings.operational_sql_timeout_seconds,
+            "write_timeout": settings.operational_sql_timeout_seconds,
+        }
         engine = create_engine(
             url,
             pool_size=settings.db_pool_size,
@@ -54,6 +67,7 @@ class DatabaseSchemaClient:
             pool_timeout=settings.db_pool_timeout,
             pool_recycle=settings.db_pool_recycle,
             pool_pre_ping=True,
+            connect_args=connect_args,
         )
         return cls(schema_path, engine)
 
@@ -90,6 +104,35 @@ class DatabaseSchemaClient:
                 f"Could not load database column metadata: {exc}"
             ) from exc
 
+    def execute_readonly_sql(
+        self,
+        sql: str,
+        *,
+        site_id: int,
+        max_rows: int,
+    ) -> list[dict[str, Any]]:
+        """Execute a pre-validated SELECT query with the selected site bind.
+
+        This method assumes `OperationalSqlValidator` has already accepted the
+        SQL. It still uses a bound `:site_id` parameter so the model never embeds
+        or controls the selected site's numeric value directly.
+        """
+        if self.engine is None:
+            raise OperationalSqlExecutionError("Operational SQL execution is unavailable.")
+
+        try:
+            with self.engine.connect() as connection:
+                result = connection.execute(text(sql), {"site_id": site_id})
+                # Fetch one extra row defensively. The validator enforces LIMIT,
+                # but this keeps returned payloads bounded even if a database
+                # dialect behaves unexpectedly.
+                return [
+                    dict(row)
+                    for row in result.mappings().fetchmany(max_rows + 1)[:max_rows]
+                ]
+        except SQLAlchemyError as exc:
+            raise OperationalSqlExecutionError("Operational SQL execution failed.") from exc
+
 
 class UnavailableDatabaseSchemaClient:
     """Fallback client used when schema setup fails during tool wiring."""
@@ -105,3 +148,13 @@ class UnavailableDatabaseSchemaClient:
     def load_column_metadata(self) -> dict[str, set[str]]:
         """Raise the original setup reason when validation needs metadata."""
         raise DatabaseSchemaClientError(self.reason)
+
+    def execute_readonly_sql(
+        self,
+        sql: str,
+        *,
+        site_id: int,
+        max_rows: int,
+    ) -> list[dict[str, Any]]:
+        """Raise the original setup reason when execution is requested."""
+        raise OperationalSqlExecutionError(self.reason)

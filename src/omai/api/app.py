@@ -183,7 +183,32 @@ def _assistant_info(
         ],
         "time_statistics": stats,
         "rag_documents": extract_rag_sources(tool_calls),
+        "sql_queries": _sql_query_audit(tool_calls),
     }
+
+
+def _sql_query_audit(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Extract compact SQL audit records for `ai_messages.info`.
+
+    SQL tool results can contain returned rows or validation payloads. The audit
+    stores only the query request metadata and deliberately ignores the result.
+    """
+    audit_records: list[dict[str, Any]] = []
+    for tool_call in tool_calls:
+        tool_name = str(tool_call.get("tool", ""))
+        if tool_name not in {"draft_operational_sql", "execute_operational_sql"}:
+            continue
+
+        arguments = tool_call.get("arguments", {})
+        audit_records.append(
+            {
+                "tool": tool_name,
+                "question": arguments.get("question"),
+                "sql": arguments.get("sql"),
+                "notes": arguments.get("notes"),
+            }
+        )
+    return audit_records
 
 
 app = create_app()

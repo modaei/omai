@@ -30,6 +30,10 @@ def make_settings() -> Settings:
         db_max_overflow=5,
         db_pool_timeout=15,
         db_pool_recycle=1800,
+        operational_sql_db_user="readonly",
+        operational_sql_db_password="readonly-pass",
+        operational_sql_max_rows=100,
+        operational_sql_timeout_seconds=10,
         omai_max_concurrent=2,
         omai_slot_timeout=1,
         omai_conversation_history_limit=20,
@@ -76,6 +80,34 @@ def fake_chat_handler(settings, site_id, site_name, history, question, response_
                                 "text": "Pump was checked and returned to service.",
                             }
                         ],
+                    }
+                ),
+            },
+            {
+                "tool": "execute_operational_sql",
+                "arguments": {
+                    "question": question,
+                    "sql": (
+                        "SELECT wells.name FROM wells "
+                        "WHERE wells.site_id = :site_id LIMIT 10"
+                    ),
+                },
+                "result": json.dumps(
+                    {
+                        "ok": True,
+                        "executed": True,
+                        "site_id": site_id,
+                        "row_count": 1,
+                        "max_rows": 100,
+                        "rows": [{"name": "HDU 4048"}],
+                        "validation": {
+                            "valid": True,
+                            "tables": ["wells"],
+                            "aliases": {"wells": "wells"},
+                            "referenced_columns": {"wells": ["name", "site_id"]},
+                            "limit": 10,
+                            "warnings": [],
+                        },
                     }
                 ),
             },
@@ -295,6 +327,13 @@ def test_chat_endpoint_creates_conversation_and_returns_answer_only():
             "tool": "search_operational_context",
             "arguments": {"query": "pump issue", "site_id": 4},
         },
+        {
+            "tool": "execute_operational_sql",
+            "arguments": {
+                "question": "How much gas was flared in May?",
+                "sql": "SELECT wells.name FROM wells WHERE wells.site_id = :site_id LIMIT 10",
+            },
+        },
     ]
     assert info["time_statistics"] == {
         "total_seconds": 0.1,
@@ -313,6 +352,17 @@ def test_chat_endpoint_creates_conversation_and_returns_answer_only():
             "text": "Pump was checked and returned to service.",
         }
     ]
+    assert info["sql_queries"] == [
+        {
+            "tool": "execute_operational_sql",
+            "question": "How much gas was flared in May?",
+            "sql": "SELECT wells.name FROM wells WHERE wells.site_id = :site_id LIMIT 10",
+            "notes": None,
+        }
+    ]
+    assert "rows" not in json.dumps(info["sql_queries"])
+    assert "row_count" not in json.dumps(info["sql_queries"])
+    assert "validation" not in json.dumps(info["sql_queries"])
 
 
 def test_chat_endpoint_continues_existing_conversation():

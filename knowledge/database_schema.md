@@ -110,6 +110,25 @@ WHERE data_points.site_id = :site_id
 Useful display fields are typically on `data_points`, such as facility, device,
 and data point names.
 
+Common alarm columns:
+
+- `alarm_logs.data_point_id`
+- `alarm_logs.event`
+- `alarm_logs.comments`
+- `alarm_logs.unix_timestamp`
+- `alarm_logs.created_at`
+- `data_points.facility_name`
+- `data_points.device_name`
+- `data_points.data_point_name`
+- `data_points.tag_name`
+
+For alarm-log date filtering, prefer `alarm_logs.created_at` unless the user
+specifically needs the event timestamp embedded in comments. For "which data
+points generated the most alarm logs", group by `data_points.data_point_name`
+or by a combined display label using `facility_name`, `device_name`, and
+`data_point_name`. For "which batteries had the most alarm logs", group by
+`data_points.facility_name` when it contains battery names.
+
 ### Flares
 
 - `flare_readings.flare_id -> flares.id`
@@ -245,6 +264,19 @@ WHERE wells.site_id = :site_id
 Use `wells.name` as the display name. For Hartzog numeric references such as
 `4048`, match by suffix or by `HARTZOG DRAW UNIT 4048` where appropriate.
 
+Common shutdown columns:
+
+- `well_shutdowns.date`
+- `well_shutdowns.hours`
+- `well_shutdowns.long_shutdown`
+- `well_shutdowns.long_shutdown_start`
+- `well_shutdowns.long_shutdown_end`
+- `well_shutdowns.downtime_code`
+- `well_shutdowns.comments`
+
+For "total shutdown hours", sum `well_shutdowns.hours` and group by
+`wells.name`.
+
 ### Work Orders
 
 - `work_order_notes.work_order_id -> work_orders.id`
@@ -264,6 +296,8 @@ execution, but the current operational conventions are:
 - Daily notes and shutdowns often use `date`.
 - Reading and work-order records often use `time`.
 - Alarm events often use `happened_on`.
+- Alarm logs commonly use `created_at`; they do not normally have
+  `alarm_date`, `alarm_time`, or `happened_on` columns.
 - Data point time-series rows often use timestamp/time columns on `data_points_data`.
 - Long shutdowns use `long_shutdown_start` and `long_shutdown_end`.
 - Well history uses `changed_at`.
