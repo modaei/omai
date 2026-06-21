@@ -73,7 +73,10 @@ def answer_chat(
     except Exception as exc:
         capability_client = UnavailableCapabilityClient(str(exc))
     try:
-        database_schema_client = DatabaseSchemaClient(_database_schema_path())
+        database_schema_client = DatabaseSchemaClient.from_settings(
+            settings,
+            _database_schema_path(),
+        )
     except Exception as exc:
         database_schema_client = UnavailableDatabaseSchemaClient(str(exc))
     operational_context_store = _operational_context_store_from_settings(settings)

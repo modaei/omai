@@ -93,7 +93,7 @@ def test_system_prompt_rejects_unsupported_actions():
     assert "Use search_operational_context" in system_prompt
     assert "Use summarize_shutdown_causes" in system_prompt
     assert "Use draft_operational_sql only" in system_prompt
-    assert "only drafts SQL and never executes it" in system_prompt
+    assert "validates and drafts SQL but never executes it" in system_prompt
     assert "bare numeric well reference" in system_prompt
     assert "well-name suffix" in system_prompt
     assert "Start directly with a short interpretation" in system_prompt

@@ -11,6 +11,10 @@ from omai.clients.database_schema_client import (
     DatabaseSchemaClient,
     DatabaseSchemaClientError,
 )
+from omai.tools.operational_sql_validator import (
+    OperationalSqlValidationError,
+    OperationalSqlValidator,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -59,12 +63,16 @@ def build_database_schema_tools(
         sql: str,
         notes: str | None = None,
     ) -> str:
-        """Return a non-executed SQL draft using the curated operational schema."""
+        """Return a validated, non-executed SQL draft using the curated schema."""
         logger.info("Drafting non-executed operational SQL site_id=%s", site_id)
         try:
             # Load the allowlisted schema at invocation time so edits to the
             # markdown are picked up without rebuilding the Python package.
             schema = client.load_schema()
+            # Load live column metadata for the allowlisted tables. This validates
+            # columns without running the model-proposed SQL statement.
+            column_metadata = client.load_column_metadata()
+            validation = OperationalSqlValidator(column_metadata).validate(sql)
             # Echo the drafted SQL with explicit executed=false metadata. Later
             # steps can add validation/execution, but this tool must stay inert.
             return _json_result(
@@ -73,13 +81,37 @@ def build_database_schema_tools(
                     "executed": False,
                     "site_id": site_id,
                     "question": question,
-                    "sql": sql,
+                    "sql": validation.sql,
                     "notes": notes,
+                    "validation": {
+                        "valid": True,
+                        "tables": validation.tables,
+                        "aliases": validation.aliases,
+                        "referenced_columns": validation.referenced_columns,
+                        "warnings": validation.warnings,
+                    },
                     "schema": schema,
                     "warning": (
                         "This SQL was not executed. It is only a draft and must be "
                         "validated before any future execution tool can run it."
                     ),
+                }
+            )
+        except OperationalSqlValidationError as exc:
+            # Validation failures are expected while the model learns a schema.
+            # Return them as data so the model can correct the draft.
+            logger.info("Operational SQL draft validation failed: %s", exc)
+            return _json_result(
+                {
+                    "ok": False,
+                    "executed": False,
+                    "site_id": site_id,
+                    "question": question,
+                    "sql": sql,
+                    "validation": {
+                        "valid": False,
+                        "error": str(exc),
+                    },
                 }
             )
         except DatabaseSchemaClientError as exc:
