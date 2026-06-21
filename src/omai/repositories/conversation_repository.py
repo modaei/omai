@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import create_engine, text
@@ -196,17 +198,19 @@ class ConversationRepository:
         role: str,
         content: str,
         reasoning_effort: str | None = None,
-    ) -> None:
+        info: dict[str, Any] | None = None,
+    ) -> int:
         if role not in {"user", "assistant"}:
             raise ConversationRepositoryError(f"Unsupported message role: {role}")
         if role != "assistant":
             reasoning_effort = None
+            info = None
 
         now = _utcnow()
         expires_at = now + timedelta(hours=self.ttl_hours)
         try:
             with self.engine.begin() as connection:
-                connection.execute(
+                result = connection.execute(
                     text(
                         """
                         INSERT INTO ai_messages
@@ -215,6 +219,7 @@ class ConversationRepository:
                                 role,
                                 content,
                                 reasoning_effort,
+                                info,
                                 created_at,
                                 updated_at
                             )
@@ -224,6 +229,7 @@ class ConversationRepository:
                                 :role,
                                 :content,
                                 :reasoning_effort,
+                                :info,
                                 :now,
                                 :now
                             )
@@ -234,9 +240,11 @@ class ConversationRepository:
                         "role": role,
                         "content": content,
                         "reasoning_effort": reasoning_effort,
+                        "info": _json_dumps(info) if info is not None else None,
                         "now": now,
                     },
                 )
+                message_id = int(result.lastrowid)
                 connection.execute(
                     text(
                         """
@@ -256,6 +264,12 @@ class ConversationRepository:
                 f"Could not append message: {exc}"
             ) from exc
 
+        return message_id
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _json_dumps(value: Any) -> str:
+    return json.dumps(value, default=str, ensure_ascii=False, separators=(",", ":"))

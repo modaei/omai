@@ -196,6 +196,52 @@ def test_operational_context_tool_accepts_compact_yyyymmdd_dates():
     assert store.calls[0]["end_date"] == date(2026, 6, 30)
 
 
+def test_operational_context_tool_expands_general_work_order_note_filter():
+    store = FakeOperationalContextStore()
+    tool = build_operational_context_tools(store, site_id=4)[0]
+
+    result = tool.invoke(
+        {
+            "query": "all work orders in May 2026",
+            "start_date": "2026-05-01",
+            "end_date": "2026-05-31",
+            "source_types": ["work_order_note"],
+            "limit": 20,
+        }
+    )
+
+    assert '"ok":true' in result
+    assert store.calls[0]["source_types"] == ["work_order_note", "work_order"]
+
+
+def test_operational_context_tool_keeps_explicit_work_order_note_filter():
+    store = FakeOperationalContextStore()
+    tool = build_operational_context_tools(store, site_id=4)[0]
+
+    result = tool.invoke(
+        {
+            "query": "work order notes in May 2026",
+            "start_date": "2026-05-01",
+            "end_date": "2026-05-31",
+            "source_types": ["work_order_note"],
+        }
+    )
+
+    assert '"ok":true' in result
+    assert store.calls[0]["source_types"] == ["work_order_note"]
+
+
+def test_operational_context_tool_schema_describes_work_order_source_types():
+    field_description = (
+        build_operational_context_tools(FakeOperationalContextStore(), site_id=4)[0]
+        .args_schema.model_fields["source_types"]
+        .description
+    )
+
+    assert "Use work_order for work order records" in field_description
+    assert "Use work_order_note only for follow-up notes" in field_description
+
+
 def test_operational_text_extractor_reads_general_notes_without_mysql_writes():
     engine = create_engine("sqlite:///:memory:")
     with engine.begin() as connection:

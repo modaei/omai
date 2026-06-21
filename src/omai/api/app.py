@@ -23,6 +23,7 @@ from omai.config.logging import configure_logging
 from omai.config.settings import Settings
 from omai.services.chat_service import answer_chat
 from omai.services.domain_guard import OUT_OF_DOMAIN_RESPONSE, is_in_domain
+from omai.ui.rag_sources import extract_rag_sources
 
 
 ALLOWED_HOSTS = {"127.0.0.1", "::1"}
@@ -114,7 +115,7 @@ def create_app(
                     conversation_id=conversation.uuid,
                     answer=OUT_OF_DOMAIN_RESPONSE,
                 )
-            answer, _tool_calls, _stats = app.state.chat_handler(
+            answer, tool_calls, stats = app.state.chat_handler(
                 settings,
                 payload.site_id,
                 None,
@@ -128,6 +129,7 @@ def create_app(
                 "assistant",
                 answer,
                 reasoning_effort=reasoning_effort,
+                info=_assistant_info(tool_calls, stats),
             )
             return ChatResponse(conversation_id=conversation.uuid, answer=answer)
         except ConversationNotFoundError as exc:
@@ -164,6 +166,24 @@ def _retry_after_seconds(reset_at: datetime) -> int:
         reset_at_utc = reset_at_utc.replace(tzinfo=timezone.utc)
     seconds = int((reset_at_utc - datetime.now(timezone.utc)).total_seconds())
     return max(1, seconds)
+
+
+def _assistant_info(
+    tool_calls: list[dict[str, Any]],
+    stats: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "tool_calls": [
+            {
+                "tool": str(tool_call.get("tool")),
+                "arguments": tool_call.get("arguments", {}),
+            }
+            for tool_call in tool_calls
+            if tool_call.get("tool")
+        ],
+        "time_statistics": stats,
+        "rag_documents": extract_rag_sources(tool_calls),
+    }
 
 
 app = create_app()
