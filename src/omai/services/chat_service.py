@@ -11,6 +11,10 @@ from omai.agents.chat_agent import (
     reasoning_effort_for_response_mode,
 )
 from omai.clients.capability_client import CapabilityClient, UnavailableCapabilityClient
+from omai.clients.database_schema_client import (
+    DatabaseSchemaClient,
+    UnavailableDatabaseSchemaClient,
+)
 from omai.clients.reading_client import ReadingClient, UnavailableReadingClient
 from omai.clients.report_client import ReportClient
 from omai.clients.shutdown_client import ShutdownClient, UnavailableShutdownClient
@@ -25,6 +29,7 @@ from omai.rag.vector_store import (
     VectorOperationalContextStore,
 )
 from omai.tools.capability_tools import build_capability_tools
+from omai.tools.database_schema_tools import build_database_schema_tools
 from omai.tools.operational_context_tools import build_operational_context_tools
 from omai.tools.reading_tools import build_reading_tools
 from omai.tools.report_tools import build_report_tools
@@ -67,10 +72,15 @@ def answer_chat(
         capability_client = CapabilityClient(_knowledge_dir())
     except Exception as exc:
         capability_client = UnavailableCapabilityClient(str(exc))
+    try:
+        database_schema_client = DatabaseSchemaClient(_database_schema_path())
+    except Exception as exc:
+        database_schema_client = UnavailableDatabaseSchemaClient(str(exc))
     operational_context_store = _operational_context_store_from_settings(settings)
 
     tools = [
         *build_capability_tools(capability_client),
+        *build_database_schema_tools(database_schema_client, site_id),
         # This tool searches the vector DB derived index for notes/comments,
         # work-order context, shutdown explanations, alarms, and history.
         *build_operational_context_tools(operational_context_store, site_id),
@@ -105,6 +115,10 @@ def _site_name_from_db(settings: Settings, site_id: int) -> str | None:
 
 def _knowledge_dir() -> Path:
     return Path(__file__).resolve().parents[3] / "knowledge" / "capabilities"
+
+
+def _database_schema_path() -> Path:
+    return Path(__file__).resolve().parents[3] / "knowledge" / "database_schema.md"
 
 
 @lru_cache(maxsize=8)
