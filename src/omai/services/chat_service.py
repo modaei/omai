@@ -23,6 +23,7 @@ from omai.clients.well_timeline_client import (
     UnavailableWellTimelineClient,
     WellTimelineClient,
 )
+from omai.clients.work_order_client import UnavailableWorkOrderClient, WorkOrderClient
 from omai.config.settings import Settings
 from omai.rag.vector_store import (
     UnavailableOperationalContextStore,
@@ -35,6 +36,7 @@ from omai.tools.reading_tools import build_reading_tools
 from omai.tools.report_tools import build_report_tools
 from omai.tools.shutdown_tools import build_shutdown_tools
 from omai.tools.well_timeline_tools import build_well_timeline_tools
+from omai.tools.work_order_tools import build_work_order_tools
 
 
 logger = logging.getLogger(__name__)
@@ -69,6 +71,10 @@ def answer_chat(
     except ValueError as exc:
         well_timeline_client = UnavailableWellTimelineClient(str(exc))
     try:
+        work_order_client = WorkOrderClient.from_settings(settings)
+    except ValueError as exc:
+        work_order_client = UnavailableWorkOrderClient(str(exc))
+    try:
         capability_client = CapabilityClient(_knowledge_dir())
     except Exception as exc:
         capability_client = UnavailableCapabilityClient(str(exc))
@@ -91,6 +97,7 @@ def answer_chat(
         *build_reading_tools(reading_client, site_id),
         *build_shutdown_tools(shutdown_client, site_id),
         *build_well_timeline_tools(well_timeline_client, site_id),
+        *build_work_order_tools(work_order_client, site_id),
     ]
     model = build_model(
         api_key=settings.llm_api_key,
