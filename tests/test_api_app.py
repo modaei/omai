@@ -1,3 +1,4 @@
+import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
@@ -54,7 +55,31 @@ def make_settings() -> Settings:
 def fake_chat_handler(settings, site_id, site_name, history, question, response_mode):
     return (
         f"{site_name or 'db lookup'}: {question} [{response_mode}]",
-        [{"tool": "sample", "arguments": {"site_id": site_id, "response_mode": response_mode}}],
+        [
+            {
+                "tool": "sample",
+                "arguments": {"site_id": site_id, "response_mode": response_mode},
+                "result": "sample result",
+            },
+            {
+                "tool": "search_operational_context",
+                "arguments": {"query": "pump issue", "site_id": site_id},
+                "result": json.dumps(
+                    {
+                        "ok": True,
+                        "matches": [
+                            {
+                                "chunk_id": "chunk-1",
+                                "source_type": "general_note",
+                                "event_date": "2026-06-19",
+                                "entity_name": "Well 12",
+                                "text": "Pump was checked and returned to service.",
+                            }
+                        ],
+                    }
+                ),
+            },
+        ],
         {
             "total_seconds": 0.1,
             "model_seconds": 0.05,
@@ -98,6 +123,7 @@ def make_conversation_repository() -> ConversationRepository:
                     role VARCHAR(20) NOT NULL,
                     content TEXT NOT NULL,
                     reasoning_effort VARCHAR(32),
+                    info TEXT,
                     created_at DATETIME,
                     updated_at DATETIME
                 )
@@ -130,7 +156,7 @@ def stored_messages(repository: ConversationRepository, conversation_id: int):
             for row in connection.execute(
                 text(
                     """
-                    SELECT role, content, reasoning_effort
+                    SELECT role, content, reasoning_effort, info
                     FROM ai_messages
                     WHERE ai_conversation_id = :conversation_id
                     ORDER BY id
@@ -250,12 +276,42 @@ def test_chat_endpoint_creates_conversation_and_returns_answer_only():
             "role": "user",
             "content": "How much gas was flared in May?",
             "reasoning_effort": None,
+            "info": None,
         },
         {
             "role": "assistant",
             "content": body["answer"],
             "reasoning_effort": "medium",
+            "info": stored_messages(repository, conversation.id)[1]["info"],
         },
+    ]
+    info = json.loads(stored_messages(repository, conversation.id)[1]["info"])
+    assert info["tool_calls"] == [
+        {
+            "tool": "sample",
+            "arguments": {"site_id": 4, "response_mode": "faster"},
+        },
+        {
+            "tool": "search_operational_context",
+            "arguments": {"query": "pump issue", "site_id": 4},
+        },
+    ]
+    assert info["time_statistics"] == {
+        "total_seconds": 0.1,
+        "model_seconds": 0.05,
+        "tool_seconds": 0.02,
+        "model_calls": 1,
+        "tool_calls": [{"tool": "sample", "seconds": 0.02}],
+        "history_count": 0,
+    }
+    assert info["rag_documents"] == [
+        {
+            "chunk_id": "chunk-1",
+            "source_type": "general_note",
+            "event_date": "2026-06-19",
+            "entity_name": "Well 12",
+            "text": "Pump was checked and returned to service.",
+        }
     ]
 
 
