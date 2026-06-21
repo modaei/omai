@@ -40,7 +40,12 @@ class SearchOperationalContextInput(BaseModel):
     )
     source_types: list[str] | None = Field(
         default=None,
-        description="Optional source types such as general_note, work_order_note, well_shutdown, alarm_log.",
+        description=(
+            "Optional source types. Use work_order for work order records "
+            "(subject, status, vendor, comments). Use work_order_note only for "
+            "follow-up notes attached to work orders. Other examples: "
+            "general_note, well_shutdown, alarm_log."
+        ),
     )
     limit: int = Field(default=8, ge=1, le=20)
 
@@ -61,6 +66,44 @@ def _parse_tool_date(value: str | None) -> date | None:
             int(stripped[6:8]),
         )
     return date.fromisoformat(stripped)
+
+
+def _normalize_source_types(
+    query: str,
+    source_types: list[str] | None,
+) -> list[str] | None:
+    """Broaden risky model-selected source filters without changing explicit note searches."""
+    if not source_types:
+        return source_types
+
+    # Keep the model's order, but remove duplicates before applying safeguards.
+    normalized = list(dict.fromkeys(source_types))
+    if "work_order_note" not in normalized or "work_order" in normalized:
+        return normalized
+    if not _is_general_work_order_query(query):
+        return normalized
+
+    # General work-order requests need work_order records. work_order_note only
+    # covers follow-up notes and can produce false "nothing found" answers.
+    return [*normalized, "work_order"]
+
+
+def _is_general_work_order_query(query: str) -> bool:
+    normalized = " ".join(query.lower().replace("-", " ").split())
+    if not ("work order" in normalized or "work orders" in normalized):
+        return False
+
+    note_phrases = {
+        "work order note",
+        "work order notes",
+        "notes on work order",
+        "notes on work orders",
+        "follow up note",
+        "follow up notes",
+        "work order update",
+        "work order updates",
+    }
+    return not any(phrase in normalized for phrase in note_phrases)
 
 
 def build_operational_context_tools(
@@ -98,7 +141,7 @@ def build_operational_context_tools(
                         start_date=_parse_tool_date(start_date),
                         end_date=_parse_tool_date(end_date),
                         entity_name=entity_name,
-                        source_types=source_types,
+                        source_types=_normalize_source_types(query, source_types),
                         limit=limit,
                     ),
                 }
