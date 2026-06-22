@@ -150,7 +150,9 @@ def build_database_schema_tools(
                     "schema": schema,
                     "warning": (
                         "This SQL was not executed. Use execute_operational_sql "
-                        "only if the validated query is needed to answer the user."
+                        "next with this validated SQL if it is needed to answer "
+                        "the user. Do not draft another SQL variant unless this "
+                        "validation result shows a specific schema problem."
                     ),
                 }
             )
@@ -279,7 +281,9 @@ def build_database_schema_tools(
             description=(
                 "Validate a read-only SQL query and return curated Ometrics schema "
                 "context without executing it. Use this when you need schema feedback "
-                "before running execute_operational_sql."
+                "before running execute_operational_sql. If the draft result is valid "
+                "and the query answers the user, run execute_operational_sql next with "
+                "the same SQL instead of drafting alternate valid queries."
             ),
             args_schema=OperationalSqlInput,
         ),

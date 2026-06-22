@@ -318,6 +318,7 @@ def test_chat_endpoint_creates_conversation_and_returns_answer_only():
             },
     ]
     info = json.loads(stored_messages(repository, conversation.id)[1]["info"])
+    assert info["response_mode"] == "fast"
     assert info["tool_calls"] == [
         {
             "tool": "sample",

@@ -114,6 +114,11 @@ def answer_chat_question(
                 "If an operational SQL tool returns available_columns after a "
                 "validation error, use those columns to repair the query directly; "
                 "do not run SELECT * only for schema discovery. "
+                "After draft_operational_sql returns ok=true and executed=false, "
+                "call execute_operational_sql next with the validated SQL if that "
+                "query can answer the user. Do not draft alternate versions of an "
+                "already valid SQL query unless the previous validation feedback "
+                "shows a specific schema problem. "
                 "After execute_operational_sql returns ok=true and executed=true, "
                 "answer from those rows immediately. If row_count is 0, say no "
                 "matching records were found instead of calling more tools. "
@@ -248,6 +253,17 @@ def answer_chat_question(
             messages.append(
                 ToolMessage(content=str(result), tool_call_id=call["id"])
             )
+            if _is_valid_operational_sql_draft(tool_name, result):
+                messages.append(
+                    SystemMessage(
+                        content=(
+                            "The operational SQL draft is valid. If this SQL answers "
+                            "the user's question, call execute_operational_sql next "
+                            "with the same SQL. Do not draft another SQL variant "
+                            "unless there is a specific validation error to repair."
+                        )
+                    )
+                )
             if _is_successful_operational_sql_result(tool_name, result):
                 messages.append(
                     SystemMessage(
@@ -260,6 +276,14 @@ def answer_chat_question(
                     )
                 )
                 force_final_response = True
+
+    if force_final_response:
+        model_started_at = perf_counter()
+        response = model.invoke(messages)
+        stats["model_seconds"] += perf_counter() - model_started_at
+        stats["model_calls"] += 1
+        stats["total_seconds"] = perf_counter() - started_at
+        return _clean_answer(_message_text(response.content)), traces, _rounded_stats(stats)
 
     stats["total_seconds"] = perf_counter() - started_at
     return (
@@ -291,6 +315,16 @@ def _is_successful_operational_sql_result(tool_name: str, result: Any) -> bool:
     except (TypeError, ValueError):
         return False
     return payload.get("ok") is True and payload.get("executed") is True
+
+
+def _is_valid_operational_sql_draft(tool_name: str, result: Any) -> bool:
+    if tool_name != "draft_operational_sql" or not isinstance(result, str):
+        return False
+    try:
+        payload = json.loads(result)
+    except (TypeError, ValueError):
+        return False
+    return payload.get("ok") is True and payload.get("executed") is False
 
 
 def _clean_answer(answer: str) -> str:

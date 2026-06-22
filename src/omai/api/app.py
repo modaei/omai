@@ -129,7 +129,7 @@ def create_app(
                 "assistant",
                 answer,
                 reasoning_effort=reasoning_effort,
-                info=_assistant_info(tool_calls, stats),
+                info=_assistant_info(tool_calls, stats, payload.response_mode),
             )
             return ChatResponse(conversation_id=conversation.uuid, answer=answer)
         except ConversationNotFoundError as exc:
@@ -171,8 +171,10 @@ def _retry_after_seconds(reset_at: datetime) -> int:
 def _assistant_info(
     tool_calls: list[dict[str, Any]],
     stats: dict[str, Any],
+    response_mode: str,
 ) -> dict[str, Any]:
     return {
+        "response_mode": response_mode,
         "tool_calls": [
             {
                 "tool": str(tool_call.get("tool")),

@@ -80,6 +80,51 @@ class FakeSqlStopModel:
         return AIMessage(content="Final answer from SQL rows.")
 
 
+class FakeLastRoundSqlBoundModel:
+    def __init__(self):
+        self.calls = 0
+
+    def invoke(self, messages):
+        self.calls += 1
+        if self.calls < 6:
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": f"call_sample_{self.calls}",
+                        "name": "sample_tool",
+                        "args": {"value": str(self.calls)},
+                    }
+                ],
+            )
+        if self.calls == 6:
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_sql",
+                        "name": "execute_operational_sql",
+                        "args": {
+                            "question": "Average downtime by code",
+                            "sql": "SELECT 1 LIMIT 1",
+                        },
+                    }
+                ],
+            )
+        raise AssertionError("tool-bound model should not be used after SQL success")
+
+
+class FakeLastRoundSqlModel:
+    def __init__(self):
+        self.bound_model = FakeLastRoundSqlBoundModel()
+
+    def bind_tools(self, tools, parallel_tool_calls=False):
+        return self.bound_model
+
+    def invoke(self, messages):
+        return AIMessage(content="Final answer after last-round SQL.")
+
+
 class FakeUnitsDisclaimerModel:
     def bind_tools(self, tools, parallel_tool_calls=False):
         return self
@@ -141,6 +186,8 @@ def test_system_prompt_rejects_unsupported_actions():
     assert "LOWER(column) LIKE" in system_prompt
     assert "DATE_FORMAT" in system_prompt
     assert "After execute_operational_sql returns ok=true" in system_prompt
+    assert "After draft_operational_sql returns ok=true" in system_prompt
+    assert "Do not draft alternate versions" in system_prompt
     assert "row_count is 0" in system_prompt
     assert "short follow-up commands" in system_prompt
     assert "use the prior conversation context" in system_prompt
@@ -204,6 +251,25 @@ def test_successful_sql_execution_forces_final_answer_without_more_tools():
     assert stats["model_calls"] == 2
     assert model.bound_model.calls == 1
     assert model.final_messages is not None
+
+
+def test_last_round_successful_sql_still_gets_final_answer():
+    model = FakeLastRoundSqlModel()
+
+    answer, traces, stats = answer_chat_question(
+        model=model,
+        tools=[sample_tool, execute_operational_sql],
+        site_id=1,
+        site_name="HARTZOG DRAW",
+        history=[],
+        question="Average downtime by code",
+    )
+
+    assert answer == "Final answer after last-round SQL."
+    assert len(traces) == 6
+    assert traces[-1]["tool"] == "execute_operational_sql"
+    assert stats["model_calls"] == 7
+    assert model.bound_model.calls == 6
 
 
 def test_tool_trace_includes_tool_result_for_local_debugging():
