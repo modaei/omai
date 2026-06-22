@@ -21,6 +21,27 @@ from omai.tools.operational_sql_validator import (
 logger = logging.getLogger(__name__)
 
 
+MYSQL_SQL_DIALECT_GUIDANCE = {
+    "dialect": "mysql_mariadb",
+    "rules": [
+        "Use LOWER(column) LIKE '%text%' for case-insensitive matching; do not use ILIKE.",
+        "Use DATE_FORMAT(column, '%Y-%m') for monthly grouping; do not use DATE_TRUNC.",
+        "Use plain string date literals like '2026-05-01'; do not use DATE '2026-05-01'.",
+        "Do not use PostgreSQL casts such as ::date.",
+        "Use DATE(datetime_column) only when matching a datetime to a date column.",
+    ],
+}
+
+
+COMMON_AGGREGATE_HINTS = [
+    "Shutdown totals/reasons: join well_shutdowns ws to wells w, filter w.site_id = :site_id, use ws.date, SUM(ws.hours), and group by ws.downtime_code or w.name.",
+    "Well-test aggregates: join well_tests wt to wells w, filter w.site_id = :site_id, use wt.time and aggregate wt.oil, wt.water, wt.gas, or wt.runtime.",
+    "Well-test battery aggregates: left join batteries b on b.id = w.battery_id and group by COALESCE(b.name, 'No Battery').",
+    "Mixed-tank oil volume: join mixed_tank_readings m to tanks t, filter t.site_id = :site_id, compute oil height from top level minus water level, multiply by t.bbl_foot.",
+    "Flow meter aggregates: join flow_meter_readings r to flow_meters fm, filter fm.site_id = :site_id, use r.time, r.total, r.flow, r.odometer, and fm.type.",
+]
+
+
 class OperationalSqlInput(BaseModel):
     """Arguments shared by the operational SQL draft and execution tools.
 
@@ -124,6 +145,8 @@ def build_database_schema_tools(
                         validation.tables,
                         column_metadata,
                     ),
+                    "sql_dialect": MYSQL_SQL_DIALECT_GUIDANCE,
+                    "aggregate_hints": COMMON_AGGREGATE_HINTS,
                     "schema": schema,
                     "warning": (
                         "This SQL was not executed. Use execute_operational_sql "
@@ -154,6 +177,8 @@ def build_database_schema_tools(
                         "error": str(exc),
                     },
                     "available_columns": available_columns,
+                    "sql_dialect": MYSQL_SQL_DIALECT_GUIDANCE,
+                    "aggregate_hints": COMMON_AGGREGATE_HINTS,
                 }
             )
         except DatabaseSchemaClientError as exc:
@@ -195,6 +220,8 @@ def build_database_schema_tools(
                         validation.tables,
                         column_metadata,
                     ),
+                    "sql_dialect": MYSQL_SQL_DIALECT_GUIDANCE,
+                    "aggregate_hints": COMMON_AGGREGATE_HINTS,
                     "validation": {
                         "valid": True,
                         "tables": validation.tables,
@@ -226,6 +253,8 @@ def build_database_schema_tools(
                         "error": str(exc),
                     },
                     "available_columns": available_columns,
+                    "sql_dialect": MYSQL_SQL_DIALECT_GUIDANCE,
+                    "aggregate_hints": COMMON_AGGREGATE_HINTS,
                 }
             )
         except (DatabaseSchemaClientError, OperationalSqlExecutionError):

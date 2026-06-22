@@ -294,7 +294,7 @@ def test_chat_endpoint_creates_conversation_and_returns_answer_only():
     )
 
     body = response.model_dump()
-    assert body["answer"] == "db lookup: How much gas was flared in May? [faster]"
+    assert body["answer"] == "db lookup: How much gas was flared in May? [fast]"
     assert body["conversation_id"]
     assert "tool_calls" not in body
     assert "stats" not in body
@@ -310,18 +310,18 @@ def test_chat_endpoint_creates_conversation_and_returns_answer_only():
             "reasoning_effort": None,
             "info": None,
         },
-        {
-            "role": "assistant",
-            "content": body["answer"],
-            "reasoning_effort": "medium",
-            "info": stored_messages(repository, conversation.id)[1]["info"],
-        },
+            {
+                "role": "assistant",
+                "content": body["answer"],
+                "reasoning_effort": "medium",
+                "info": stored_messages(repository, conversation.id)[1]["info"],
+            },
     ]
     info = json.loads(stored_messages(repository, conversation.id)[1]["info"])
     assert info["tool_calls"] == [
         {
             "tool": "sample",
-            "arguments": {"site_id": 4, "response_mode": "faster"},
+            "arguments": {"site_id": 4, "response_mode": "fast"},
         },
         {
             "tool": "search_operational_context",
@@ -411,12 +411,12 @@ def test_chat_endpoint_forwards_response_mode_to_handler():
                 "message": "Explain this well shutdown carefully.",
                 "user_id": 9,
                 "site_id": 4,
-                "response_mode": "more_accurate",
+                "response_mode": "intelligent",
             }
         )
     )
 
-    assert response.answer == "db lookup: Explain this well shutdown carefully. [more_accurate]"
+    assert response.answer == "db lookup: Explain this well shutdown carefully. [intelligent]"
     conversation = repository.get(response.conversation_id, user_id=9, site_id=4)
     assert stored_messages(repository, conversation.id)[1]["reasoning_effort"] == "high"
 
@@ -577,7 +577,7 @@ def test_chat_endpoint_daily_user_limit_can_be_disabled():
         )
     )
 
-    assert response.answer == "db lookup: How much gas was flared in May? [faster]"
+    assert response.answer == "db lookup: How much gas was flared in May? [fast]"
     assert daily_usage_count(repository, user_id=9) == 1
 
 
@@ -601,7 +601,7 @@ def test_chat_endpoint_daily_user_limit_is_scoped_by_site():
         )
     )
 
-    assert response.answer == "db lookup: How much gas was flared in May? [faster]"
+    assert response.answer == "db lookup: How much gas was flared in May? [fast]"
     assert daily_usage_count(repository, user_id=9, site_id=4) == 1
     assert daily_usage_count(repository, user_id=9, site_id=5) == 1
 
@@ -625,7 +625,7 @@ def test_chat_endpoint_accepts_first_turn_numbered_operational_lookup():
         )
     )
 
-    assert response.answer == "db lookup: What can you tell me about 4293? [faster]"
+    assert response.answer == "db lookup: What can you tell me about 4293? [fast]"
 
 
 def test_chat_endpoint_lets_model_handle_follow_up_even_if_short():
@@ -657,11 +657,11 @@ def test_chat_endpoint_lets_model_handle_follow_up_even_if_short():
         )
     )
 
-    assert second.answer == "db lookup: YTD [faster]"
+    assert second.answer == "db lookup: YTD [fast]"
     conversation = repository.get(second.conversation_id, user_id=9, site_id=4)
     assert repository.load_history(conversation)[-2:] == [
         {"role": "user", "content": "YTD"},
-        {"role": "assistant", "content": "db lookup: YTD [faster]"},
+        {"role": "assistant", "content": "db lookup: YTD [fast]"},
     ]
 
 
@@ -724,12 +724,12 @@ def test_chat_request_rejects_history_field():
         raise AssertionError("history was accepted")
 
 
-def test_chat_request_defaults_response_mode_to_faster():
+def test_chat_request_defaults_response_mode_to_fast():
     payload = ChatRequest.model_validate(
         {"message": "Hello", "user_id": 9, "site_id": 4}
     )
 
-    assert payload.response_mode == "faster"
+    assert payload.response_mode == "fast"
 
 
 def test_chat_request_rejects_invalid_response_mode():

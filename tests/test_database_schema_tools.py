@@ -78,6 +78,9 @@ def test_draft_operational_sql_returns_non_executed_draft(tmp_path):
     assert result["validation"]["referenced_columns"]["wells"] == ["id", "name", "site_id"]
     assert result["available_columns"]["well_tests"] == ["oil", "well_id"]
     assert result["available_columns"]["wells"] == ["id", "name", "site_id"]
+    assert result["sql_dialect"]["dialect"] == "mysql_mariadb"
+    assert any("DATE_FORMAT" in rule for rule in result["sql_dialect"]["rules"])
+    assert any("Shutdown totals" in hint for hint in result["aggregate_hints"])
     assert "Allowed Tables" in result["schema"]
     assert "not executed" in result["warning"].lower()
 
@@ -127,6 +130,7 @@ def test_execute_operational_sql_returns_bounded_rows(tmp_path):
     assert result["rows"] == [{"name": "HDU 4048"}]
     assert result["validation"]["tables"] == ["wells"]
     assert result["available_columns"]["wells"] == ["id", "name", "site_id"]
+    assert result["sql_dialect"]["dialect"] == "mysql_mariadb"
 
 
 def test_execute_operational_sql_rejects_limit_above_max_rows(tmp_path):
@@ -214,6 +218,7 @@ def test_draft_operational_sql_returns_validation_error(tmp_path):
     assert result["validation"]["valid"] is False
     assert "Unknown column reference" in result["validation"]["error"]
     assert result["available_columns"] == {"wells": ["id", "name", "site_id"]}
+    assert result["sql_dialect"]["dialect"] == "mysql_mariadb"
 
 
 def test_operational_sql_validator_rejects_write_statement():

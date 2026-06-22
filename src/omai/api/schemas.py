@@ -13,7 +13,7 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=2_000)
     user_id: int = Field(gt=0)
     site_id: int = Field(gt=0)
-    response_mode: Literal["faster", "more_accurate"] = "faster"
+    response_mode: Literal["fast", "intelligent"] = "fast"
 
     @field_validator("message")
     @classmethod

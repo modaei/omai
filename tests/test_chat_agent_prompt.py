@@ -44,6 +44,42 @@ class FakeToolModel:
         return AIMessage(content="Final answer.")
 
 
+class FakeToolBoundSqlModel:
+    def __init__(self):
+        self.calls = 0
+
+    def invoke(self, messages):
+        self.calls += 1
+        if self.calls > 1:
+            raise AssertionError("tool-bound model should not be used after SQL success")
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_sql",
+                    "name": "execute_operational_sql",
+                    "args": {
+                        "question": "Average downtime by code",
+                        "sql": "SELECT 1 LIMIT 1",
+                    },
+                }
+            ],
+        )
+
+
+class FakeSqlStopModel:
+    def __init__(self):
+        self.bound_model = FakeToolBoundSqlModel()
+        self.final_messages = None
+
+    def bind_tools(self, tools, parallel_tool_calls=False):
+        return self.bound_model
+
+    def invoke(self, messages):
+        self.final_messages = messages
+        return AIMessage(content="Final answer from SQL rows.")
+
+
 class FakeUnitsDisclaimerModel:
     def bind_tools(self, tools, parallel_tool_calls=False):
         return self
@@ -62,6 +98,12 @@ class FakeUnitsDisclaimerModel:
 def sample_tool(value: str) -> str:
     """Return a sample value."""
     return f"result: {value}"
+
+
+@tool
+def execute_operational_sql(question: str, sql: str) -> str:
+    """Return a successful SQL execution payload."""
+    return '{"ok":true,"executed":true,"row_count":0,"rows":[]}'
 
 
 def test_system_prompt_rejects_unsupported_actions():
@@ -95,12 +137,22 @@ def test_system_prompt_rejects_unsupported_actions():
     assert "first prefer the most specific domain tool" in system_prompt
     assert "execute_operational_sql as the second priority" in system_prompt
     assert "Use draft_operational_sql only when you need schema" in system_prompt
+    assert "Operational SQL runs on MySQL/MariaDB" in system_prompt
+    assert "LOWER(column) LIKE" in system_prompt
+    assert "DATE_FORMAT" in system_prompt
+    assert "After execute_operational_sql returns ok=true" in system_prompt
+    assert "row_count is 0" in system_prompt
+    assert "short follow-up commands" in system_prompt
+    assert "use the prior conversation context" in system_prompt
     assert "available_columns" in system_prompt
     assert "do not run SELECT * only for schema discovery" in system_prompt
     assert "bare numeric well reference" in system_prompt
     assert "well-name suffix" in system_prompt
     assert "Use summarize_work_order_costs" in system_prompt
     assert "Do not use search_operational_context to calculate work order totals" in system_prompt
+    assert "format them as US dollars" in system_prompt
+    assert "`$` prefix" in system_prompt
+    assert "use barrels" in system_prompt
     assert "Start directly with a short interpretation" in system_prompt
     assert "Do not include a 'Sources' section" in system_prompt
     assert "unless the user explicitly asks for sources" in system_prompt
@@ -117,8 +169,8 @@ def test_system_prompt_rejects_unsupported_actions():
     assert "do not say tank charts or" in system_prompt
     assert "The selected site is HARTZOG DRAW" in system_prompt
     assert "never mention it in answers" in system_prompt
-    assert "Do not mention units" in system_prompt
-    assert "unless the user asks about units" in system_prompt
+    assert "Do not mention missing unit labels" in system_prompt
+    assert "unspecified unit disclaimers" in system_prompt
     assert "accepts a previous offer" in system_prompt
     assert "ask whether the user wants you to run that report" in system_prompt
     assert "For workflow guidance" in system_prompt
@@ -132,6 +184,26 @@ def test_system_prompt_rejects_unsupported_actions():
     assert "Do not add generic follow-up offers" in system_prompt
     assert "Do not refer to entities by database ID" in system_prompt
     assert "do not call them assets" in system_prompt
+
+
+def test_successful_sql_execution_forces_final_answer_without_more_tools():
+    model = FakeSqlStopModel()
+
+    answer, traces, stats = answer_chat_question(
+        model=model,
+        tools=[execute_operational_sql],
+        site_id=1,
+        site_name="HARTZOG DRAW",
+        history=[],
+        question="Average downtime by code",
+    )
+
+    assert answer == "Final answer from SQL rows."
+    assert len(traces) == 1
+    assert traces[0]["tool"] == "execute_operational_sql"
+    assert stats["model_calls"] == 2
+    assert model.bound_model.calls == 1
+    assert model.final_messages is not None
 
 
 def test_tool_trace_includes_tool_result_for_local_debugging():
@@ -175,8 +247,8 @@ def test_units_disclaimer_is_removed_from_final_answer():
 
 
 def test_response_modes_map_to_reasoning_effort():
-    assert reasoning_effort_for_response_mode("faster") == "medium"
-    assert reasoning_effort_for_response_mode("more_accurate") == "high"
+    assert reasoning_effort_for_response_mode("fast") == "medium"
+    assert reasoning_effort_for_response_mode("intelligent") == "high"
     assert reasoning_effort_for_response_mode("unknown") == "medium"
 
 

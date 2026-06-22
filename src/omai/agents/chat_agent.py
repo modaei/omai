@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from datetime import date
 from time import perf_counter
@@ -14,8 +15,8 @@ from omai.services.domain_guard import OUT_OF_DOMAIN_RESPONSE
 
 MAX_TOOL_ROUNDS = 6
 REASONING_EFFORT_BY_RESPONSE_MODE = {
-    "faster": "medium",
-    "more_accurate": "high",
+    "fast": "medium",
+    "intelligent": "high",
 }
 
 
@@ -105,9 +106,22 @@ def answer_chat_question(
                 "draft_operational_sql only when you need schema or validation "
                 "feedback before execution. SQL queries must be SELECT-only, scoped "
                 "with the `:site_id` bind parameter, and limited with a numeric LIMIT. "
+                "Operational SQL runs on MySQL/MariaDB, not PostgreSQL: use "
+                "LOWER(column) LIKE '%text%' instead of ILIKE, use DATE_FORMAT "
+                "or YEAR/MONTH for monthly grouping instead of DATE_TRUNC, do not "
+                "use PostgreSQL casts like ::date, and do not use DATE 'YYYY-MM-DD' "
+                "literals. "
                 "If an operational SQL tool returns available_columns after a "
                 "validation error, use those columns to repair the query directly; "
                 "do not run SELECT * only for schema discovery. "
+                "After execute_operational_sql returns ok=true and executed=true, "
+                "answer from those rows immediately. If row_count is 0, say no "
+                "matching records were found instead of calling more tools. "
+                "For short follow-up commands such as 'show them', 'break it down', "
+                "or 'focus only on alarms', use the prior conversation context to "
+                "resolve what 'them' or 'it' means and continue the same task. Do not "
+                "restart schema discovery for follow-ups unless the previous context "
+                "is insufficient. "
                 "If the user gives a bare numeric well reference such as '5248' "
                 "with shutdown/status language, treat it as a possible well name "
                 "or well-name suffix for the selected site. "
@@ -119,6 +133,12 @@ def answer_chat_question(
                 "the final cost is not recorded and give the cost-estimate total. Do not "
                 "use search_operational_context to calculate work order totals "
                 "when the structured work order cost tool can answer the question. "
+                "When talking about costs, final_cost, cost_estimate, estimates, "
+                "amounts, totals, or other money values, format them as US dollars "
+                "with a `$` prefix unless the user explicitly asks for another "
+                "currency. When talking about oil, water, tank, production, sales, "
+                "or injected volumes, use barrels unless the user explicitly asks "
+                "for another volume unit. "
                 "Use search_operational_context for questions asking what happened, "
                 "why something happened, summaries of operational notes/comments, "
                 "work history, alarm context, shutdown explanations, or records "
@@ -153,7 +173,7 @@ def answer_chat_question(
                 "shown to users, format dates as MM/DD/YYYY. "
                 "Do not invent values or claim a report was run when no tool succeeded. "
                 "Explain results clearly and include the exact date range. Do not mention "
-                "units, missing unit labels, or unspecified units unless the user asks about units. "
+                "missing unit labels or unspecified unit disclaimers unless the user asks about units. "
                 "Mention missing data when it affects the result. "
                 "Do not mention report dimensions, breakdowns, filters, or labels such as "
                 "'Battery = No Battery' unless they are explicitly present in the successful "
@@ -187,10 +207,11 @@ def answer_chat_question(
         "model_calls": 0,
         "tool_calls": [],
     }
+    force_final_response = False
 
     for _ in range(MAX_TOOL_ROUNDS):
         model_started_at = perf_counter()
-        response = model_with_tools.invoke(messages)
+        response = model.invoke(messages) if force_final_response else model_with_tools.invoke(messages)
         stats["model_seconds"] += perf_counter() - model_started_at
         stats["model_calls"] += 1
         messages.append(response)
@@ -227,6 +248,18 @@ def answer_chat_question(
             messages.append(
                 ToolMessage(content=str(result), tool_call_id=call["id"])
             )
+            if _is_successful_operational_sql_result(tool_name, result):
+                messages.append(
+                    SystemMessage(
+                        content=(
+                            "The operational SQL execution succeeded. Produce the "
+                            "final answer now using the returned rows. Do not call "
+                            "additional tools. If row_count is 0, say that no "
+                            "matching records were found."
+                        )
+                    )
+                )
+                force_final_response = True
 
     stats["total_seconds"] = perf_counter() - started_at
     return (
@@ -248,6 +281,16 @@ def _message_text(content: Any) -> str:
                 parts.append(block)
         return "\n".join(part for part in parts if part)
     return str(content)
+
+
+def _is_successful_operational_sql_result(tool_name: str, result: Any) -> bool:
+    if tool_name != "execute_operational_sql" or not isinstance(result, str):
+        return False
+    try:
+        payload = json.loads(result)
+    except (TypeError, ValueError):
+        return False
+    return payload.get("ok") is True and payload.get("executed") is True
 
 
 def _clean_answer(answer: str) -> str:

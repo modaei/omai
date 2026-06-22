@@ -48,7 +48,7 @@ def answer_chat(
     site_name: str | None,
     history: list[dict[str, str]],
     question: str,
-    response_mode: str = "faster",
+    response_mode: str = "fast",
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     settings.validate()
     resolved_site_name = site_name or _site_name_from_db(settings, site_id)

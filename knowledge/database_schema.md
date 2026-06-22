@@ -16,6 +16,19 @@ query tables outside the allowlist below.
 - Do not query authentication, user, session, token, password, API key, or billing tables.
 - Do not expose raw internal IDs unless they are required to explain a join or debug a data issue.
 
+## SQL Dialect
+
+Ometrics uses MySQL/MariaDB syntax for operational SQL. Do not use PostgreSQL
+syntax.
+
+- Use `LOWER(column) LIKE '%text%'` for case-insensitive matching.
+- Do not use `ILIKE`.
+- Use `DATE_FORMAT(time_column, '%Y-%m')` for monthly grouping.
+- Do not use `DATE_TRUNC`.
+- Use normal string date literals such as `'2026-05-01'`.
+- Do not use `DATE '2026-05-01'` or casts such as `::date`.
+- Use `DATE(timestamp_column)` only when matching a datetime to a date.
+
 ## Allowed Tables
 
 The future SQL tool may only use these tables:
@@ -151,6 +164,21 @@ JOIN flow_meters ON flow_meter_readings.flow_meter_id = flow_meters.id
 WHERE flow_meters.site_id = :site_id
 ```
 
+Common flow meter columns:
+
+- `flow_meters.name`
+- `flow_meters.type`
+- `flow_meters.battery_id`
+- `flow_meter_readings.time`
+- `flow_meter_readings.total`
+- `flow_meter_readings.flow`
+- `flow_meter_readings.odometer`
+
+Current flow meter types commonly include `gas` and `water`. Do not assume an
+`oil` flow meter type exists. If the user asks for oil flow meters, query
+`flow_meters.type` and `flow_meters.name` first or explain that no oil type is
+configured when none match.
+
 ### Knock Outs
 
 - `knock_out_readings.knock_out_id -> knock_outs.id`
@@ -276,6 +304,86 @@ Common shutdown columns:
 
 For "total shutdown hours", sum `well_shutdowns.hours` and group by
 `wells.name`.
+
+For shutdown reason aggregations, group by `well_shutdowns.downtime_code`.
+There is no `shutdown_codes` table in the curated SQL allowlist.
+
+Example:
+
+```sql
+SELECT ws.downtime_code, SUM(ws.hours) AS total_hours
+FROM well_shutdowns ws
+JOIN wells w ON w.id = ws.well_id
+WHERE w.site_id = :site_id
+  AND ws.date >= '2026-05-01'
+  AND ws.date < '2026-06-01'
+GROUP BY ws.downtime_code
+ORDER BY total_hours DESC
+LIMIT 10
+```
+
+### Well Tests
+
+Use `well_tests.time` for date filtering and `well_tests.oil`, `water`, `gas`,
+and `runtime` for numeric aggregates. Use `wells.name` as the well display
+name. Join through `wells` for site scoping, then optionally left join
+`batteries` through `wells.battery_id`.
+
+Average oil from well tests by battery:
+
+```sql
+SELECT COALESCE(b.name, 'No Battery') AS battery,
+       AVG(wt.oil) AS avg_oil,
+       COUNT(*) AS test_count
+FROM well_tests wt
+JOIN wells w ON w.id = wt.well_id
+LEFT JOIN batteries b ON b.id = w.battery_id
+WHERE w.site_id = :site_id
+  AND wt.time >= '2026-01-01'
+  AND wt.time < '2027-01-01'
+GROUP BY COALESCE(b.name, 'No Battery')
+ORDER BY avg_oil DESC
+LIMIT 100
+```
+
+Same-day well tests and shutdowns:
+
+```sql
+SELECT DISTINCT w.name AS well_name, ws.date AS event_date
+FROM wells w
+JOIN well_shutdowns ws ON ws.well_id = w.id
+JOIN well_tests wt ON wt.well_id = w.id AND DATE(wt.time) = ws.date
+WHERE w.site_id = :site_id
+  AND ws.date >= '2026-06-01'
+  AND ws.date < '2026-07-01'
+ORDER BY w.name, ws.date
+LIMIT 100
+```
+
+### Tank Volume Aggregates
+
+For mixed tank oil volume, calculate oil height as top level minus water level
+and multiply by `tanks.bbl_foot`. Use `mixed_tank_readings.time` for dates.
+
+Monthly average mixed-tank oil volume:
+
+```sql
+SELECT DATE_FORMAT(m.time, '%Y-%m') AS month,
+       AVG(
+         (
+           (COALESCE(m.top_level_feet, 0) + COALESCE(m.top_level_inches, 0) / 12.0)
+           - (COALESCE(m.water_level_feet, 0) + COALESCE(m.water_level_inches, 0) / 12.0)
+         ) * t.bbl_foot
+       ) AS avg_oil_volume
+FROM mixed_tank_readings m
+JOIN tanks t ON t.id = m.tank_id
+WHERE t.site_id = :site_id
+  AND m.time >= '2026-01-01'
+  AND m.time < '2027-01-01'
+GROUP BY DATE_FORMAT(m.time, '%Y-%m')
+ORDER BY month
+LIMIT 12
+```
 
 ### Work Orders
 
