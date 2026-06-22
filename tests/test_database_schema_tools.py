@@ -262,6 +262,58 @@ def test_operational_sql_validator_rejects_missing_site_scope():
         raise AssertionError("query without site scope was accepted")
 
 
+def test_operational_sql_validator_allows_qualified_aggregate_functions():
+    validator = OperationalSqlValidator(
+        {
+            "wells": {"id", "site_id", "name"},
+            "well_shutdowns": {"well_id", "date", "hours"},
+        }
+    )
+
+    result = validator.validate(
+        "SELECT w.name AS well_name, ROUND(SUM(ws.hours), 2) AS total_shutdown_hours "
+        "FROM well_shutdowns ws "
+        "JOIN wells w ON w.id = ws.well_id "
+        "WHERE w.site_id = :site_id "
+        "AND ws.date >= '2026-05-01' "
+        "AND ws.date <= '2026-05-31' "
+        "GROUP BY ws.well_id, w.name "
+        "HAVING SUM(ws.hours) > 20 "
+        "ORDER BY SUM(ws.hours) DESC "
+        "LIMIT 100"
+    )
+
+    assert result.referenced_columns["wells"] == ["id", "name", "site_id"]
+    assert result.referenced_columns["well_shutdowns"] == [
+        "date",
+        "hours",
+        "well_id",
+    ]
+
+
+def test_operational_sql_validator_rejects_unqualified_joined_columns():
+    validator = OperationalSqlValidator(
+        {
+            "wells": {"id", "site_id", "name"},
+            "well_shutdowns": {"well_id", "date", "hours"},
+        }
+    )
+
+    try:
+        validator.validate(
+            "SELECT name, SUM(ws.hours) AS total_shutdown_hours "
+            "FROM well_shutdowns ws "
+            "JOIN wells w ON w.id = ws.well_id "
+            "WHERE w.site_id = :site_id "
+            "GROUP BY w.name "
+            "LIMIT 100"
+        )
+    except OperationalSqlValidationError as exc:
+        assert "qualified with table aliases" in str(exc)
+    else:
+        raise AssertionError("unqualified joined column was accepted")
+
+
 def test_operational_sql_validator_rejects_child_without_parent_join():
     validator = OperationalSqlValidator({"well_tests": {"well_id", "oil"}})
 

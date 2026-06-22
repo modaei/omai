@@ -170,6 +170,31 @@ COLUMN_PATTERN = re.compile(
     r"(?<![\w`])`?([a-zA-Z_][\w]*)`?\.`?([a-zA-Z_][\w]*)`?"
 )
 COMMENT_PATTERN = re.compile(r"(--|#|/\*)")
+SELECT_NON_COLUMN_IDENTIFIERS = {
+    "as",
+    "case",
+    "cast",
+    "coalesce",
+    "concat",
+    "count",
+    "date",
+    "date_format",
+    "distinct",
+    "else",
+    "end",
+    "false",
+    "from",
+    "ifnull",
+    "max",
+    "min",
+    "null",
+    "round",
+    "select",
+    "sum",
+    "then",
+    "true",
+    "when",
+}
 
 
 class OperationalSqlValidator:
@@ -311,18 +336,66 @@ class OperationalSqlValidator:
         # Unqualified columns cannot be proven safe when joins are present. Require
         # alias-qualified columns for multi-table drafts so validation is reliable.
         if len(set(aliases.values())) > 1:
-            select_part = re.split(r"\bfrom\b", sql, maxsplit=1, flags=re.IGNORECASE)[0]
-            unqualified = [
-                part
-                for part in select_part.split(",")
-                if "." not in part and "*" not in part
-            ]
-            if unqualified:
-                raise OperationalSqlValidationError(
-                    "Columns in multi-table SQL drafts must be qualified with table aliases."
-                )
+            self._validate_multitable_select_columns_are_qualified(sql, aliases)
 
         return {table: sorted(columns) for table, columns in referenced.items()}
+
+    def _validate_multitable_select_columns_are_qualified(
+        self,
+        sql: str,
+        aliases: dict[str, str],
+    ) -> None:
+        """Reject bare column names in the SELECT list of joined queries.
+
+        This check intentionally looks for unqualified *known column names* rather
+        than splitting expressions on commas. Aggregate calls such as
+        `ROUND(SUM(ws.hours), 2)` contain commas inside function arguments and are
+        valid as long as the real column reference is alias-qualified.
+        """
+        select_part = re.split(r"\bfrom\b", sql, maxsplit=1, flags=re.IGNORECASE)[0]
+        # Remove quoted string literals and already validated qualified column
+        # references so their column tokens are not mistaken for bare columns.
+        candidate_text = re.sub(r"'(?:''|[^'])*'", " ", select_part)
+        candidate_text = COLUMN_PATTERN.sub(" ", candidate_text)
+
+        output_aliases = {
+            alias.lower()
+            for alias in re.findall(
+                r"\bas\s+`?([a-zA-Z_][\w]*)`?",
+                candidate_text,
+                flags=re.IGNORECASE,
+            )
+        }
+        function_names = {
+            function.lower()
+            for function in re.findall(
+                r"\b([a-zA-Z_][\w]*)\s*\(",
+                candidate_text,
+            )
+        }
+        available_columns = {
+            column
+            for table in set(aliases.values())
+            for column in self.table_columns.get(table, set())
+        }
+
+        unqualified_columns = []
+        for identifier in re.findall(r"`?([a-zA-Z_][\w]*)`?", candidate_text):
+            token = identifier.lower()
+            if (
+                token in SELECT_NON_COLUMN_IDENTIFIERS
+                or token in aliases
+                or token in output_aliases
+                or token in function_names
+            ):
+                continue
+            if token in available_columns:
+                unqualified_columns.append(identifier)
+
+        if unqualified_columns:
+            raise OperationalSqlValidationError(
+                "Columns in multi-table SQL drafts must be qualified with table aliases."
+            )
 
     def _validate_site_scope(self, sql: str, aliases: dict[str, str]) -> None:
         """Ensure every operational table can be traced to a selected-site filter."""
