@@ -56,6 +56,11 @@ class AllMissingReadingsInput(BaseModel):
     reading_date: str = Field(description="Date in YYYY-MM-DD format.")
 
 
+class AllMissingReadingsRangeInput(BaseModel):
+    start_date: str = Field(description="Start date in YYYY-MM-DD format.")
+    end_date: str = Field(description="End date in YYYY-MM-DD format.")
+
+
 class SearchWellTestsInput(BaseModel):
     start_date: str = Field(description="Start date in YYYY-MM-DD format.")
     end_date: str = Field(description="End date in YYYY-MM-DD format.")
@@ -220,6 +225,27 @@ def build_reading_tools(client: ReadingClient, site_id: int) -> list[StructuredT
             logger.warning("All missing readings lookup failed: %s", exc)
             return _json_result({"ok": False, "error": str(exc)})
 
+    def find_all_missing_readings_for_range(start_date: str, end_date: str) -> str:
+        """Find all supported missing readings for every date in a bounded range."""
+        logger.info(
+            "Finding all missing readings site_id=%s start=%s end=%s",
+            site_id,
+            start_date,
+            end_date,
+        )
+        try:
+            return _json_result(
+                {
+                    "ok": True,
+                    **client.all_missing_readings_for_range(
+                        site_id, start_date, end_date
+                    ),
+                }
+            )
+        except ReadingClientError as exc:
+            logger.warning("All missing readings range lookup failed: %s", exc)
+            return _json_result({"ok": False, "error": str(exc)})
+
     def search_well_tests(
         start_date: str,
         end_date: str,
@@ -349,6 +375,18 @@ def build_reading_tools(client: ReadingClient, site_id: int) -> list[StructuredT
                 "without naming a specific reading type."
             ),
             args_schema=AllMissingReadingsInput,
+        ),
+        StructuredTool.from_function(
+            func=find_all_missing_readings_for_range,
+            name="find_all_missing_readings_for_range",
+            description=(
+                "Find all configured entities missing any supported daily reading "
+                "for each date in a date range. Use this instead of repeated "
+                "find_all_missing_readings calls when the user asks about missing "
+                "readings or missing data entries for a week, month, last calendar "
+                "week, or any multi-day range."
+            ),
+            args_schema=AllMissingReadingsRangeInput,
         ),
         StructuredTool.from_function(
             func=search_readings,

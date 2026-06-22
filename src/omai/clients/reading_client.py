@@ -409,6 +409,47 @@ class ReadingClient:
             "skipped": skipped,
         }
 
+    def all_missing_readings_for_range(
+        self, site_id: int, start_date: str, end_date: str
+    ) -> dict[str, Any]:
+        start_day = self._parse_date(start_date)
+        end_day = self._parse_date(end_date)
+        if end_day < start_day:
+            raise ReadingClientError("end_date must be on or after start_date.")
+        if (end_day - start_day).days > 31:
+            raise ReadingClientError(
+                "Missing-reading range checks are limited to 32 days."
+            )
+
+        dates = []
+        total_missing_count = 0
+        current_day = start_day
+        while current_day <= end_day:
+            day_result = self.all_missing_readings_for_date(
+                site_id, current_day.isoformat()
+            )
+            total_missing_count += int(day_result["missing_count"])
+            dates.append(
+                {
+                    "date": current_day.isoformat(),
+                    "missing_count": day_result["missing_count"],
+                    "groups": day_result["groups"],
+                    "skipped": day_result["skipped"],
+                }
+            )
+            current_day += timedelta(days=1)
+
+        return {
+            "reading_type": "all_supported_missing_readings",
+            "label": "All supported missing readings",
+            "site_id": site_id,
+            "start_date": start_day.isoformat(),
+            "end_date": end_day.isoformat(),
+            "day_count": len(dates),
+            "missing_count": total_missing_count,
+            "dates": dates,
+        }
+
     def search_well_tests(
         self,
         site_id: int,
@@ -1084,6 +1125,11 @@ class UnavailableReadingClient:
 
     def all_missing_readings_for_date(
         self, site_id: int, reading_date: str
+    ) -> dict[str, Any]:
+        raise ReadingClientError(self.reason)
+
+    def all_missing_readings_for_range(
+        self, site_id: int, start_date: str, end_date: str
     ) -> dict[str, Any]:
         raise ReadingClientError(self.reason)
 

@@ -211,6 +211,8 @@ def test_system_prompt_rejects_unsupported_actions():
     assert "dates with entries" in system_prompt
     assert "named 'Interpretation', 'Facts', or 'Inference'" in system_prompt
     assert "find_all_missing_readings" in system_prompt
+    assert "find_all_missing_readings_for_range" in system_prompt
+    assert "do not call find_all_missing_readings separately for each date" in system_prompt
     assert "Use reading tools for tank volume questions" in system_prompt
     assert "oil_volume" in system_prompt
     assert "do not say tank charts or" in system_prompt
