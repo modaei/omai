@@ -170,8 +170,9 @@ def test_system_prompt_rejects_unsupported_actions():
     assert stats["model_seconds"] >= 0
     assert stats["tool_seconds"] == 0
     assert "Only say you can perform actions that are backed by the available tools" in system_prompt
-    assert "Use search_ometrics_capabilities" in system_prompt
-    assert "how to know" in system_prompt
+    assert "Use search_ometrics_capabilities only for explicit Ometrics software-help questions" in system_prompt
+    assert "Do not use capability guidance for factual data requests" in system_prompt
+    assert "top/bottom results" in system_prompt
     assert "Only run report tools" in system_prompt
     assert "Use summarize_report_by_month" in system_prompt
     assert "do not call run_report separately for each" in system_prompt
@@ -180,6 +181,8 @@ def test_system_prompt_rejects_unsupported_actions():
     assert "Use search_operational_context" in system_prompt
     assert "Use summarize_shutdown_causes" in system_prompt
     assert "first prefer the most specific domain tool" in system_prompt
+    assert "capability tools only as the lowest-priority path" in system_prompt
+    assert "not for data retrieval" in system_prompt
     assert "execute_operational_sql as the second priority" in system_prompt
     assert "Use draft_operational_sql only when you need schema" in system_prompt
     assert "Operational SQL runs on MySQL/MariaDB" in system_prompt
@@ -224,7 +227,7 @@ def test_system_prompt_rejects_unsupported_actions():
     assert "ask whether the user wants you to run that report" in system_prompt
     assert "For workflow guidance" in system_prompt
     assert "Do not invent UI steps" in system_prompt
-    assert "which report or feature to use" in system_prompt
+    assert "which report should I use for allocation" in system_prompt
     assert "Create a new LACT reading" in system_prompt
     assert "Battery = No Battery" in system_prompt
     assert "Use ISO YYYY-MM-DD dates only for tool arguments" in system_prompt

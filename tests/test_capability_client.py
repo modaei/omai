@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from omai.clients.capability_client import CapabilityClient
+from omai.tools.capability_tools import build_capability_tools
 
 
 def make_client() -> CapabilityClient:
@@ -60,3 +61,11 @@ def test_search_finds_water_injection_report_guidance():
     assert "water injection report" in summary
     assert "do not run the report" in summary
     assert "ask whether the user wants the assistant to run" in summary
+
+
+def test_capability_tool_description_excludes_data_retrieval():
+    tool = build_capability_tools(make_client())[0]
+
+    assert "explicitly asks for software help" in tool.description
+    assert "Do not use this tool to retrieve, compare, calculate, rank, or summarize" in tool.description
+    assert "actual operational values or date-range data" in tool.description

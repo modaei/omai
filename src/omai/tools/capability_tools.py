@@ -15,7 +15,10 @@ logger = logging.getLogger(__name__)
 
 class SearchCapabilitiesInput(BaseModel):
     query: str = Field(
-        description="User question about Ometrics capabilities, workflows, or which feature/report to use."
+        description=(
+            "Explicit user question about Ometrics product help, workflows, or "
+            "which feature/report to use."
+        )
     )
     limit: int = Field(
         default=3,
@@ -44,11 +47,13 @@ def build_capability_tools(client: CapabilityClient) -> list[StructuredTool]:
             func=search_ometrics_capabilities,
             name="search_ometrics_capabilities",
             description=(
-                "Search Ometrics capability and workflow guidance. Use this for "
-                "questions like how to register a down well, which report to use, "
-                "where to enter readings, how to find missing readings, or what "
-                "Ometrics feature supports a business workflow. Answer only from "
-                "the returned capability guidance; do not invent UI steps or options."
+                "Search Ometrics product capability and workflow guidance. Use this "
+                "only when the user explicitly asks for software help, such as how "
+                "to register a down well, where to enter readings, which report to "
+                "use, or what Ometrics feature supports a business workflow. Do not "
+                "use this tool to retrieve, compare, calculate, rank, or summarize "
+                "actual operational values or date-range data. Answer only from the "
+                "returned capability guidance; do not invent UI steps or options."
             ),
             args_schema=SearchCapabilitiesInput,
         )
