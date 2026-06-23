@@ -717,6 +717,24 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         entity_name_field="entity_name",
         title="Alarm log",
     ),
+    SourceDefinition(
+        source_type="rod_pump_note",
+        required_tables={"rod_pump_notes", "wells"},
+        query=f"""
+                SELECT rpn.id, w.site_id, rpn.well_id, w.name AS well_name,
+                    rpn.note, DATE(rpn.created_at) AS event_date, rpn.updated_at
+                FROM rod_pump_notes rpn
+                JOIN wells w ON w.id = rpn.well_id
+                WHERE w.site_id = :site_id
+                {DATE_FILTER.format(field="DATE(rpn.created_at)")}
+            """,
+        text_fields=("well_name", "note"),
+        event_date_field="event_date",
+        entity_type="well",
+        entity_id_field="well_id",
+        entity_name_field="well_name",
+        title="Rod pump note",
+    ),
 )
 
 
