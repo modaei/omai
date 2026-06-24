@@ -9,6 +9,7 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     Column,
+    Computed,
     Date,
     DateTime,
     Index,
@@ -21,10 +22,11 @@ from sqlalchemy import (
     create_engine,
     delete,
     func,
+    literal,
     select,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB, insert
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, insert
 from sqlalchemy.engine import Engine, URL
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -33,6 +35,9 @@ from omai.rag.document_models import RagDocument, chunk_document
 
 
 DEFAULT_UPSERT_BATCH_SIZE = 200
+HYBRID_CANDIDATE_MINIMUM = 50
+HYBRID_CANDIDATE_MULTIPLIER = 5
+RRF_K = 60
 
 
 class OperationalContextStoreError(RuntimeError):
@@ -112,8 +117,27 @@ class VectorOperationalContextStore:
                 connection.execute(
                     text(
                         """
+                        ALTER TABLE rag_chunks
+                        ADD COLUMN IF NOT EXISTS text_search_vector tsvector
+                        GENERATED ALWAYS AS (
+                            to_tsvector('english'::regconfig, COALESCE(text, ''))
+                        ) STORED
+                        """
+                    )
+                )
+                connection.execute(
+                    text(
+                        """
                         CREATE INDEX IF NOT EXISTS idx_rag_chunks_embedding_hnsw
                         ON rag_chunks USING hnsw (embedding vector_cosine_ops)
+                        """
+                    )
+                )
+                connection.execute(
+                    text(
+                        """
+                        CREATE INDEX IF NOT EXISTS idx_rag_chunks_text_search
+                        ON rag_chunks USING gin (text_search_vector)
                         """
                     )
                 )
@@ -161,7 +185,7 @@ class VectorOperationalContextStore:
         update_columns = {
             column.name: getattr(statement.excluded, column.name)
             for column in self.chunks.columns
-            if column.name not in {"id", "created_at", "updated_at"}
+            if column.name not in {"id", "text_search_vector", "created_at", "updated_at"}
         }
         return statement.on_conflict_do_update(
             index_elements=[self.chunks.c.chunk_id],
@@ -178,7 +202,7 @@ class VectorOperationalContextStore:
         source_types: list[str] | None = None,
         limit: int = 8,
     ) -> dict[str, Any]:
-        """Run metadata-filtered semantic search using pgvector cosine distance."""
+        """Run metadata-filtered hybrid search using vector and keyword ranking."""
 
         if not query.strip():
             raise OperationalContextStoreError("Query cannot be empty.")
@@ -197,9 +221,11 @@ class VectorOperationalContextStore:
         if source_types:
             conditions.append(self.chunks.c.source_type.in_(source_types))
         if entity_name:
-            conditions.append(self.chunks.c.entity_name.ilike(f"%{entity_name}%"))
+            conditions.append(_entity_name_condition(self.chunks, entity_name))
 
-        statement = (
+        candidate_limit = max(limit * HYBRID_CANDIDATE_MULTIPLIER, HYBRID_CANDIDATE_MINIMUM)
+
+        semantic_statement = (
             select(
                 self.chunks.c.chunk_id,
                 self.chunks.c.source_type,
@@ -211,19 +237,49 @@ class VectorOperationalContextStore:
                 self.chunks.c.entity_name,
                 self.chunks.c.text,
                 distance.label("distance"),
+                literal(None).label("keyword_score"),
             )
             .where(and_(*conditions))
             .order_by(distance)
-            .limit(limit)
+            .limit(candidate_limit)
+        )
+
+        keyword_query = func.websearch_to_tsquery(
+            text("'english'"),
+            bindparam("keyword_query", value=query),
+        )
+        keyword_score = func.ts_rank_cd(
+            self.chunks.c.text_search_vector,
+            keyword_query,
+        )
+        keyword_statement = (
+            select(
+                self.chunks.c.chunk_id,
+                self.chunks.c.source_type,
+                self.chunks.c.source_id,
+                self.chunks.c.site_id,
+                self.chunks.c.event_date,
+                self.chunks.c.entity_type,
+                self.chunks.c.entity_id,
+                self.chunks.c.entity_name,
+                self.chunks.c.text,
+                literal(None).label("distance"),
+                keyword_score.label("keyword_score"),
+            )
+            .where(and_(*conditions, self.chunks.c.text_search_vector.op("@@")(keyword_query)))
+            .order_by(keyword_score.desc())
+            .limit(candidate_limit)
         )
         try:
             with self.engine.connect() as connection:
-                rows = connection.execute(statement).mappings().all()
+                semantic_rows = connection.execute(semantic_statement).mappings().all()
+                keyword_rows = connection.execute(keyword_statement).mappings().all()
         except SQLAlchemyError as exc:
             raise OperationalContextStoreError(
                 f"Could not search operational context: {exc}"
             ) from exc
 
+        rows = _merge_hybrid_rows(semantic_rows, keyword_rows, limit)
         matches = [_search_row_to_match(row) for row in rows]
         return {
             "query": query,
@@ -395,6 +451,14 @@ def _rag_chunks_table(metadata: MetaData, embedding_dimensions: int) -> Table:
         Column("source_updated_at", DateTime),
         Column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
         Column("embedding", Vector(embedding_dimensions), nullable=False),
+        Column(
+            "text_search_vector",
+            TSVECTOR,
+            Computed(
+                "to_tsvector('english'::regconfig, COALESCE(text, ''))",
+                persisted=True,
+            ),
+        ),
         Column("created_at", DateTime, nullable=False, server_default=func.now()),
         Column("updated_at", DateTime, nullable=False, server_default=func.now()),
     )
@@ -402,6 +466,11 @@ def _rag_chunks_table(metadata: MetaData, embedding_dimensions: int) -> Table:
     Index("idx_rag_chunks_source", table.c.site_id, table.c.source_type)
     Index("idx_rag_chunks_entity", table.c.site_id, table.c.entity_name)
     Index("idx_rag_chunks_metadata", table.c.metadata, postgresql_using="gin")
+    Index(
+        "idx_rag_chunks_text_search",
+        table.c.text_search_vector,
+        postgresql_using="gin",
+    )
     return table
 
 
@@ -453,9 +522,62 @@ def _parse_datetime(value: Any):
     return datetime.fromisoformat(str(value))
 
 
+def _entity_name_condition(chunks: Table, entity_name: str):
+    entity_pattern = f"%{entity_name}%"
+    return chunks.c.entity_name.ilike(entity_pattern) | chunks.c.text.ilike(
+        entity_pattern
+    )
+
+
+def _merge_hybrid_rows(
+    semantic_rows: list[Any],
+    keyword_rows: list[Any],
+    limit: int,
+) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+
+    for rank, row in enumerate(semantic_rows, start=1):
+        row_data = dict(row)
+        chunk_id = str(row_data["chunk_id"])
+        merged[chunk_id] = row_data | {
+            "semantic_rank": rank,
+            "keyword_rank": None,
+            "keyword_score": row_data.get("keyword_score"),
+        }
+
+    for rank, row in enumerate(keyword_rows, start=1):
+        row_data = dict(row)
+        chunk_id = str(row_data["chunk_id"])
+        if chunk_id not in merged:
+            merged[chunk_id] = row_data | {
+                "semantic_rank": None,
+                "keyword_rank": rank,
+            }
+        else:
+            merged[chunk_id]["keyword_rank"] = rank
+            merged[chunk_id]["keyword_score"] = row_data.get("keyword_score")
+
+    for row in merged.values():
+        semantic_rank = row.get("semantic_rank")
+        keyword_rank = row.get("keyword_rank")
+        row["hybrid_score"] = (
+            (1 / (RRF_K + semantic_rank) if semantic_rank is not None else 0)
+            + (1 / (RRF_K + keyword_rank) if keyword_rank is not None else 0)
+        )
+
+    return sorted(
+        merged.values(),
+        key=lambda row: (
+            -row["hybrid_score"],
+            row.get("distance") is None,
+            row.get("distance") if row.get("distance") is not None else float("inf"),
+        ),
+    )[:limit]
+
+
 def _search_row_to_match(row: Any) -> dict[str, Any]:
     event_date = row["event_date"]
-    return {
+    match = {
         "chunk_id": row["chunk_id"],
         "source_type": row["source_type"],
         "source_id": row["source_id"],
@@ -467,3 +589,7 @@ def _search_row_to_match(row: Any) -> dict[str, Any]:
         "distance": row["distance"],
         "text": row["text"],
     }
+    for key in ("hybrid_score", "semantic_rank", "keyword_rank", "keyword_score"):
+        if key in row and row[key] is not None:
+            match[key] = row[key]
+    return match

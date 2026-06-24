@@ -41,10 +41,11 @@ class SearchOperationalContextInput(BaseModel):
     source_types: list[str] | None = Field(
         default=None,
         description=(
-            "Optional source types. Use work_order for work order records "
+            "Optional source types. Only set this when the user explicitly asks "
+            "for a specific record type. Use work_order for work order records "
             "(subject, status, vendor, comments). Use work_order_note only for "
             "follow-up notes attached to work orders. Other examples: "
-            "general_note, well_shutdown, alarm_log."
+            "general_note, chart_note, well_shutdown, alarm_log."
         ),
     )
     limit: int = Field(default=8, ge=1, le=20)
@@ -72,12 +73,22 @@ def _normalize_source_types(
     query: str,
     source_types: list[str] | None,
 ) -> list[str] | None:
-    """Broaden risky model-selected source filters without changing explicit note searches."""
+    """Keep source filters only for explicit record-type requests.
+
+    The LLM sometimes picks a narrow source list even when the user asked a
+    broad operational-context question. That can hide valid records, such as
+    chart notes for paraffin/hot-water questions. Source filtering is therefore
+    treated as an optimization only when the query text explicitly names a
+    record type.
+    """
     if not source_types:
         return source_types
 
     # Keep the model's order, but remove duplicates before applying safeguards.
     normalized = list(dict.fromkeys(source_types))
+    if not _is_explicit_source_type_query(query):
+        return None
+
     if "work_order_note" not in normalized or "work_order" in normalized:
         return normalized
     if not _is_general_work_order_query(query):
@@ -86,6 +97,38 @@ def _normalize_source_types(
     # General work-order requests need work_order records. work_order_note only
     # covers follow-up notes and can produce false "nothing found" answers.
     return [*normalized, "work_order"]
+
+
+def _is_explicit_source_type_query(query: str) -> bool:
+    """Return True when the query names the kind of operational record to search."""
+    normalized = " ".join(query.lower().replace("-", " ").replace("_", " ").split())
+    source_type_phrases = {
+        "general note",
+        "general notes",
+        "chart note",
+        "chart notes",
+        "work order",
+        "work orders",
+        "work order note",
+        "work order notes",
+        "shutdown",
+        "shutdowns",
+        "well shutdown",
+        "well shutdowns",
+        "long shutdown",
+        "long shutdowns",
+        "alarm log",
+        "alarm logs",
+        "alarm event",
+        "alarm events",
+        "well history",
+        "history records",
+        "well test comment",
+        "well test comments",
+        "reading comment",
+        "reading comments",
+    }
+    return any(phrase in normalized for phrase in source_type_phrases)
 
 
 def _is_general_work_order_query(query: str) -> bool:

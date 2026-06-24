@@ -103,6 +103,7 @@ class SourceDefinition:
         text_fields: tuple[str, ...],
         event_date_field: str | None = None,
         entity_type: str | None = None,
+        entity_type_field: str | None = None,
         entity_id_field: str | None = None,
         entity_name_field: str | None = None,
         title: str | None = None,
@@ -113,6 +114,7 @@ class SourceDefinition:
         self.text_fields = text_fields
         self.event_date_field = event_date_field
         self.entity_type = entity_type
+        self.entity_type_field = entity_type_field
         self.entity_id_field = entity_id_field
         self.entity_name_field = entity_name_field
         self.title = title or source_type.replace("_", " ").title()
@@ -205,6 +207,11 @@ class SourceDefinition:
             if self.event_date_field
             else None
         )
+        entity_type = (
+            row.get(self.entity_type_field)
+            if self.entity_type_field
+            else self.entity_type
+        )
         entity_id = row.get(self.entity_id_field) if self.entity_id_field else None
         entity_name = row.get(self.entity_name_field) if self.entity_name_field else None
         text_value = f"{self.title}. " + " ".join(parts)
@@ -215,7 +222,7 @@ class SourceDefinition:
             site_id=site_id,
             text=text_value,
             event_date=event_date,
-            entity_type=self.entity_type,
+            entity_type=str(entity_type).strip() if entity_type is not None else None,
             entity_id=str(entity_id) if entity_id is not None else None,
             entity_name=str(entity_name).strip() if entity_name is not None else None,
             source_updated_at=_coerce_datetime(row.get("updated_at")),
@@ -250,6 +257,180 @@ AND (:end_date IS NULL OR {field} <= :end_date)
 """
 
 
+CHART_NOTE_REQUIRED_TABLES = {
+    "chart_notes",
+    "wells",
+    "lacts",
+    "flares",
+    "knock_outs",
+    "tanks",
+    "treaters",
+    "water_plants",
+    "pumps",
+    "flow_meters",
+    "monitored_objects",
+}
+
+
+CHART_NOTE_KNOWN_OBJECT_TYPES = (
+    "'RodPumpOilWell'",
+    "'OilWell'",
+    "'WaterWell'",
+    "'Lact'",
+    "'Flare'",
+    "'KnockOut'",
+    "'Tank'",
+    "'Treater'",
+    "'WaterPlant'",
+    "'Pump'",
+    "'FlowMeter'",
+    "'Flow_Meter'",
+)
+
+
+CHART_NOTE_KNOWN_OBJECT_TYPES_SQL = ", ".join(CHART_NOTE_KNOWN_OBJECT_TYPES)
+
+
+CHART_NOTE_QUERY = f"""
+    SELECT id, site_id, object_type, entity_type, entity_id, entity_name, chart_name,
+        event_date, note, updated_at
+    FROM (
+        SELECT cn.id, cn.site_id, cn.object_type, 'well' AS entity_type, w.id AS entity_id,
+            w.name AS entity_name, cn.chart_name,
+            cn.x_axis_value AS event_date, cn.note, cn.updated_at
+        FROM chart_notes cn
+        JOIN wells w
+            ON w.id = cn.object_id
+            AND w.site_id = cn.site_id
+        WHERE cn.site_id = :site_id
+            AND cn.object_type = 'RodPumpOilWell'
+
+        UNION ALL
+
+        SELECT cn.id, cn.site_id, cn.object_type, 'well' AS entity_type, w.id AS entity_id,
+            w.name AS entity_name, cn.chart_name,
+            cn.x_axis_value AS event_date, cn.note, cn.updated_at
+        FROM chart_notes cn
+        JOIN wells w
+            ON w.id = cn.object_id
+            AND w.site_id = cn.site_id
+        WHERE cn.site_id = :site_id
+            AND cn.object_type IN ('OilWell', 'WaterWell')
+
+        UNION ALL
+
+        SELECT cn.id, cn.site_id, cn.object_type, 'lact' AS entity_type, l.id AS entity_id,
+            l.name AS entity_name, cn.chart_name,
+            cn.x_axis_value AS event_date, cn.note, cn.updated_at
+        FROM chart_notes cn
+        JOIN lacts l
+            ON l.id = cn.object_id
+            AND l.site_id = cn.site_id
+        WHERE cn.site_id = :site_id
+            AND cn.object_type = 'Lact'
+
+        UNION ALL
+
+        SELECT cn.id, cn.site_id, cn.object_type, 'flare' AS entity_type, f.id AS entity_id,
+            f.name AS entity_name, cn.chart_name,
+            cn.x_axis_value AS event_date, cn.note, cn.updated_at
+        FROM chart_notes cn
+        JOIN flares f
+            ON f.id = cn.object_id
+            AND f.site_id = cn.site_id
+        WHERE cn.site_id = :site_id
+            AND cn.object_type = 'Flare'
+
+        UNION ALL
+
+        SELECT cn.id, cn.site_id, cn.object_type, 'knock_out' AS entity_type, ko.id AS entity_id,
+            ko.name AS entity_name, cn.chart_name,
+            cn.x_axis_value AS event_date, cn.note, cn.updated_at
+        FROM chart_notes cn
+        JOIN knock_outs ko
+            ON ko.id = cn.object_id
+            AND ko.site_id = cn.site_id
+        WHERE cn.site_id = :site_id
+            AND cn.object_type = 'KnockOut'
+
+        UNION ALL
+
+        SELECT cn.id, cn.site_id, cn.object_type, 'tank' AS entity_type, t.id AS entity_id,
+            t.name AS entity_name, cn.chart_name,
+            cn.x_axis_value AS event_date, cn.note, cn.updated_at
+        FROM chart_notes cn
+        JOIN tanks t
+            ON t.id = cn.object_id
+            AND t.site_id = cn.site_id
+        WHERE cn.site_id = :site_id
+            AND cn.object_type = 'Tank'
+
+        UNION ALL
+
+        SELECT cn.id, cn.site_id, cn.object_type, 'treater' AS entity_type, tr.id AS entity_id,
+            tr.name AS entity_name, cn.chart_name,
+            cn.x_axis_value AS event_date, cn.note, cn.updated_at
+        FROM chart_notes cn
+        JOIN treaters tr
+            ON tr.id = cn.object_id
+            AND tr.site_id = cn.site_id
+        WHERE cn.site_id = :site_id
+            AND cn.object_type = 'Treater'
+
+        UNION ALL
+
+        SELECT cn.id, cn.site_id, cn.object_type, 'water_plant' AS entity_type, wp.id AS entity_id,
+            wp.name AS entity_name, cn.chart_name,
+            cn.x_axis_value AS event_date, cn.note, cn.updated_at
+        FROM chart_notes cn
+        JOIN water_plants wp
+            ON wp.id = cn.object_id
+            AND wp.site_id = cn.site_id
+        WHERE cn.site_id = :site_id
+            AND cn.object_type = 'WaterPlant'
+
+        UNION ALL
+
+        SELECT cn.id, cn.site_id, cn.object_type, 'pump' AS entity_type, p.id AS entity_id,
+            p.name AS entity_name, cn.chart_name,
+            cn.x_axis_value AS event_date, cn.note, cn.updated_at
+        FROM chart_notes cn
+        JOIN pumps p
+            ON p.id = cn.object_id
+            AND p.site_id = cn.site_id
+        WHERE cn.site_id = :site_id
+            AND cn.object_type = 'Pump'
+
+        UNION ALL
+
+        SELECT cn.id, cn.site_id, cn.object_type, 'flow_meter' AS entity_type, fm.id AS entity_id,
+            fm.name AS entity_name, cn.chart_name,
+            cn.x_axis_value AS event_date, cn.note, cn.updated_at
+        FROM chart_notes cn
+        JOIN flow_meters fm
+            ON fm.id = cn.object_id
+            AND fm.site_id = cn.site_id
+        WHERE cn.site_id = :site_id
+            AND cn.object_type IN ('FlowMeter', 'Flow_Meter')
+
+        UNION ALL
+
+        SELECT cn.id, cn.site_id, cn.object_type, 'monitored_object' AS entity_type, mo.id AS entity_id,
+            mo.name AS entity_name, cn.chart_name,
+            cn.x_axis_value AS event_date, cn.note, cn.updated_at
+        FROM chart_notes cn
+        JOIN monitored_objects mo
+            ON mo.id = cn.object_id
+            AND mo.site_id = cn.site_id
+            AND mo.type = cn.object_type
+        WHERE cn.site_id = :site_id
+            AND cn.object_type NOT IN ({CHART_NOTE_KNOWN_OBJECT_TYPES_SQL})
+    ) chart_note_rows
+    WHERE site_id = :site_id
+    {DATE_FILTER.format(field="DATE(event_date)")}
+"""
+
+
 # Each source definition below is independent. If a required table is absent,
 # OperationalTextExtractor skips the source. If a row has no useful text, it is
 # ignored. The resulting RagDocument objects are the only data sent to the vector DB.
@@ -269,18 +450,13 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
     ),
     SourceDefinition(
         source_type="chart_note",
-        required_tables={"chart_notes"},
-        query=f"""
-            SELECT id, site_id, object_type, object_name, chart_name,
-                x_axis_value AS event_date, note, updated_at
-            FROM chart_notes
-            WHERE site_id = :site_id
-            {DATE_FILTER.format(field="DATE(x_axis_value)")}
-        """,
-        text_fields=("object_name", "chart_name", "note"),
+        required_tables=CHART_NOTE_REQUIRED_TABLES,
+        query=CHART_NOTE_QUERY,
+        text_fields=("entity_name", "chart_name", "note"),
         event_date_field="event_date",
-        entity_type="chart_object",
-        entity_name_field="object_name",
+        entity_type_field="entity_type",
+        entity_id_field="entity_id",
+        entity_name_field="entity_name",
         title="Chart note",
     ),
     SourceDefinition(
@@ -288,13 +464,16 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         required_tables={"work_orders"},
         query=f"""
             SELECT id, site_id, subject, status, vendor, comments,
-                DATE(created_at) AS event_date, updated_at
+                time AS event_date, updated_at
             FROM work_orders
             WHERE site_id = :site_id
-            {DATE_FILTER.format(field="DATE(created_at)")}
+            {DATE_FILTER.format(field="DATE(time)")}
         """,
         text_fields=("subject", "status", "vendor", "comments"),
         event_date_field="event_date",
+        entity_type="work_order",
+        entity_id_field="id",
+        entity_name_field="subject",
         title="Work order",
     ),
     SourceDefinition(
@@ -722,11 +901,11 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         required_tables={"rod_pump_notes", "wells"},
         query=f"""
                 SELECT rpn.id, w.site_id, rpn.well_id, w.name AS well_name,
-                    rpn.note, DATE(rpn.created_at) AS event_date, rpn.updated_at
+                    rpn.note, DATE(rpn.updated_at) AS event_date, rpn.updated_at
                 FROM rod_pump_notes rpn
                 JOIN wells w ON w.id = rpn.well_id
                 WHERE w.site_id = :site_id
-                {DATE_FILTER.format(field="DATE(rpn.created_at)")}
+                {DATE_FILTER.format(field="DATE(rpn.updated_at)")}
             """,
         text_fields=("well_name", "note"),
         event_date_field="event_date",
