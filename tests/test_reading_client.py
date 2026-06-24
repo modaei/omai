@@ -112,6 +112,258 @@ def make_sqlite_client() -> ReadingClient:
     return ReadingClient(engine)
 
 
+def make_sqlite_client_with_missing_exclusions() -> ReadingClient:
+    engine = create_engine("sqlite:///:memory:")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE report_configurations (
+                    id INTEGER PRIMARY KEY,
+                    site_id INTEGER NOT NULL,
+                    function_name TEXT NOT NULL,
+                    related_entities TEXT NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE lacts (
+                    id INTEGER PRIMARY KEY,
+                    site_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    disable_reading INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE lact_readings (
+                    id INTEGER PRIMARY KEY,
+                    lact_id INTEGER NOT NULL,
+                    reading REAL,
+                    temperature REAL,
+                    bs_w REAL,
+                    comments TEXT,
+                    time TEXT NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE flares (
+                    id INTEGER PRIMARY KEY,
+                    site_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    disable_reading INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE flare_readings (
+                    id INTEGER PRIMARY KEY,
+                    flare_id INTEGER NOT NULL,
+                    pressure REAL,
+                    volume REAL,
+                    comments TEXT,
+                    time TEXT NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE tanks (
+                    id INTEGER PRIMARY KEY,
+                    site_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    type TEXT NOT NULL,
+                    bbl_foot REAL,
+                    disable_reading INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE linear_tank_readings (
+                    id INTEGER PRIMARY KEY,
+                    tank_id INTEGER NOT NULL,
+                    level REAL,
+                    feet INTEGER,
+                    inches REAL,
+                    percentage REAL,
+                    pressure REAL,
+                    temperature REAL,
+                    comments TEXT,
+                    time TEXT NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE mixed_tank_readings (
+                    id INTEGER PRIMARY KEY,
+                    tank_id INTEGER NOT NULL,
+                    top_level_feet INTEGER,
+                    top_level_inches REAL,
+                    water_level_feet INTEGER,
+                    water_level_inches REAL,
+                    comments TEXT,
+                    time TEXT NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE non_linear_tank_readings (
+                    id INTEGER PRIMARY KEY,
+                    tank_id INTEGER NOT NULL,
+                    initial_feet INTEGER,
+                    initial_inches REAL,
+                    final_feet INTEGER,
+                    final_inches REAL,
+                    comments TEXT,
+                    time TEXT NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE water_plants (
+                    id INTEGER PRIMARY KEY,
+                    site_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    disable_reading INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE water_plant_readings (
+                    id INTEGER PRIMARY KEY,
+                    water_plant_id INTEGER NOT NULL,
+                    meter_reading REAL,
+                    flow_rate REAL,
+                    suction_pressure REAL,
+                    discharge_pressure REAL,
+                    comments TEXT,
+                    time TEXT NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE flow_meters (
+                    id INTEGER PRIMARY KEY,
+                    site_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    type TEXT,
+                    disable_reading INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE flow_meter_readings (
+                    id INTEGER PRIMARY KEY,
+                    flow_meter_id INTEGER NOT NULL,
+                    total REAL,
+                    flow REAL,
+                    odometer REAL,
+                    comments TEXT,
+                    time TEXT NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO report_configurations
+                    (id, site_id, function_name, related_entities)
+                VALUES
+                    (
+                        1,
+                        1,
+                        'hartzog_daily_missing',
+                        '{"flare_ids":[1],"lact_ids":[1],"tank_ids":{"linear":[1],"mixed":[2],"nonLinear":[3]},"water_plant_ids":[1],"flow_meter_ids":{"water":[1],"gas":[2],"oil":[3]}}'
+                    )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO lacts (id, site_id, name, disable_reading)
+                VALUES (1, 1, 'LACT A', 0)
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO flares (id, site_id, name, disable_reading)
+                VALUES (1, 1, 'Flare A', 0)
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO tanks (id, site_id, name, type, bbl_foot, disable_reading)
+                VALUES
+                    (1, 1, 'Linear A', 'linear-volume', 50.0, 0),
+                    (2, 1, 'Mixed A', 'mixed-water-oil', 100.0, 0),
+                    (3, 1, 'Non Linear A', 'non-linear-volume', NULL, 0)
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO water_plants (id, site_id, name, disable_reading)
+                VALUES (1, 1, 'Water Plant A', 0)
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO flow_meters (id, site_id, name, type, disable_reading)
+                VALUES
+                    (1, 1, 'Water Meter A', 'water', 0),
+                    (2, 1, 'Gas Meter A', 'gas', 0),
+                    (3, 1, 'Oil Meter A', 'oil', 0)
+                """
+            )
+        )
+    return ReadingClient(engine)
+
+
 def make_mixed_tank_client() -> ReadingClient:
     engine = create_engine("sqlite:///:memory:")
     with engine.begin() as connection:
@@ -534,6 +786,50 @@ def test_all_missing_readings_checks_all_supported_types_with_tables():
             "entity_display_name": "Flare - Flare A",
         }
     ]
+
+
+def test_missing_readings_respect_report_config_exclusions():
+    client = make_sqlite_client_with_missing_exclusions()
+
+    assert (
+        client.missing_readings_for_date(1, "lact", "2026-06-10")["missing_count"]
+        == 0
+    )
+    assert (
+        client.missing_readings_for_date(1, "flare", "2026-06-10")["missing_count"]
+        == 0
+    )
+    assert (
+        client.missing_readings_for_date(1, "linear_tank", "2026-06-10")[
+            "missing_count"
+        ]
+        == 0
+    )
+    assert (
+        client.missing_readings_for_date(1, "mixed_tank", "2026-06-10")[
+            "missing_count"
+        ]
+        == 0
+    )
+    assert (
+        client.missing_readings_for_date(1, "non_linear_tank", "2026-06-10")[
+            "missing_count"
+        ]
+        == 0
+    )
+    assert (
+        client.missing_readings_for_date(1, "water_plant", "2026-06-10")[
+            "missing_count"
+        ]
+        == 0
+    )
+    assert (
+        client.missing_readings_for_date(1, "flow_meter", "2026-06-10")[
+            "missing_count"
+        ]
+        == 0
+    )
+    assert client.all_missing_readings_for_date(1, "2026-06-10")["missing_count"] == 0
 
 
 def test_search_well_tests_filters_date_range_site_and_oil_threshold():

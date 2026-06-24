@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.engine import Engine, URL
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -202,6 +203,8 @@ READING_DEFINITIONS: dict[str, ReadingDefinition] = {
     ),
 }
 
+MISSING_READINGS_REPORT_FUNCTION_NAME = "hartzog_daily_missing"
+
 
 BASE_ENTITY_LABELS = {
     "flares": "Flare",
@@ -247,6 +250,7 @@ class ReadingClient:
     def __init__(self, engine: Engine, max_rows: int = 500):
         self.engine = engine
         self.max_rows = max_rows
+        self._missing_reading_exclusion_cache: dict[int, dict[str, tuple[int, ...]]] = {}
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "ReadingClient":
@@ -357,6 +361,7 @@ class ReadingClient:
             )
 
         start, end = self._day_bounds(day)
+        ignored_ids = self._missing_reading_ignored_ids(site_id, reading_type)
         query = text(
             f"""
             SELECT b.name AS entity_name
@@ -368,12 +373,21 @@ class ReadingClient:
             WHERE r.{definition.foreign_key} IS NULL
                 AND b.site_id = :site_id
                 AND COALESCE(b.disable_reading, 0) = 0
+                {("AND b.id NOT IN :ignored_ids" if ignored_ids else "")}
                 {definition.base_filter}
             ORDER BY b.name
             LIMIT :limit
             """
         )
-        rows = self._execute(query, site_id=site_id, start_time=start, end_time=end)
+        params: dict[str, Any] = {
+            "site_id": site_id,
+            "start_time": start,
+            "end_time": end,
+        }
+        if ignored_ids:
+            params["ignored_ids"] = list(ignored_ids)
+            query = query.bindparams(bindparam("ignored_ids", expanding=True))
+        rows = self._execute(query, **params)
         return {
             "reading_type": reading_type,
             "label": definition.label,
@@ -991,6 +1005,85 @@ class ReadingClient:
         except KeyError as exc:
             raise ReadingClientError(f"Unsupported reading type: {reading_type}") from exc
 
+    def _missing_reading_ignored_ids(
+        self, site_id: int, reading_type: str
+    ) -> tuple[int, ...]:
+        site_cache = self._missing_reading_exclusion_cache.get(site_id)
+        if site_cache is None:
+            site_cache = self._load_missing_reading_exclusions(site_id)
+            self._missing_reading_exclusion_cache[site_id] = site_cache
+        return site_cache.get(reading_type, ())
+
+    def _load_missing_reading_exclusions(
+        self, site_id: int
+    ) -> dict[str, tuple[int, ...]]:
+        query = text(
+            """
+            SELECT related_entities
+            FROM report_configurations
+            WHERE site_id = :site_id
+                AND function_name = :function_name
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        )
+        try:
+            with self.engine.connect() as connection:
+                row = (
+                    connection.execute(
+                        query,
+                        {
+                            "site_id": site_id,
+                            "function_name": MISSING_READINGS_REPORT_FUNCTION_NAME,
+                        },
+                    )
+                    .mappings()
+                    .first()
+                )
+        except SQLAlchemyError:
+            return {}
+
+        if row is None:
+            return {}
+
+        related_entities = row.get("related_entities")
+        if isinstance(related_entities, str):
+            try:
+                related_entities = json.loads(related_entities)
+            except json.JSONDecodeError:
+                return {}
+        if not isinstance(related_entities, dict):
+            return {}
+
+        exclusions: dict[str, tuple[int, ...]] = {}
+        if lact_ids := _coerce_id_list(related_entities.get("lact_ids")):
+            exclusions["lact"] = lact_ids
+        if flare_ids := _coerce_id_list(related_entities.get("flare_ids")):
+            exclusions["flare"] = flare_ids
+        if tank_ids := related_entities.get("tank_ids"):
+            if isinstance(tank_ids, dict):
+                linear_ids = _coerce_id_list(tank_ids.get("linear"))
+                mixed_ids = _coerce_id_list(tank_ids.get("mixed"))
+                non_linear_ids = _coerce_id_list(tank_ids.get("nonLinear"))
+                if linear_ids:
+                    exclusions["linear_tank"] = linear_ids
+                if mixed_ids:
+                    exclusions["mixed_tank"] = mixed_ids
+                if non_linear_ids:
+                    exclusions["non_linear_tank"] = non_linear_ids
+        if water_plant_ids := _coerce_id_list(related_entities.get("water_plant_ids")):
+            exclusions["water_plant"] = water_plant_ids
+        if flow_meter_ids := related_entities.get("flow_meter_ids"):
+            if isinstance(flow_meter_ids, dict):
+                combined = (
+                    _coerce_id_list(flow_meter_ids.get("water"))
+                    + _coerce_id_list(flow_meter_ids.get("gas"))
+                    + _coerce_id_list(flow_meter_ids.get("oil"))
+                )
+                if combined:
+                    exclusions["flow_meter"] = tuple(dict.fromkeys(combined))
+        return exclusions
+
 
 def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float, Decimal)) and not isinstance(value, bool)
@@ -1095,6 +1188,23 @@ def _format_inches_delta(delta_inches: float) -> str:
     if feet:
         return f"{feet}'{inches_text}\""
     return f"{inches_text}\""
+
+
+def _coerce_id_list(value: Any) -> tuple[int, ...]:
+    if not value:
+        return ()
+    if isinstance(value, (str, bytes)):
+        value = [value]
+    if not isinstance(value, (list, tuple, set)):
+        value = [value]
+
+    ids = []
+    for item in value:
+        try:
+            ids.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return tuple(dict.fromkeys(ids))
 
 
 class UnavailableReadingClient:
