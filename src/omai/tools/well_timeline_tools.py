@@ -20,6 +20,14 @@ class WellTimelineInput(BaseModel):
     well_name: str = Field(description="Well name or distinctive part of the well name.")
     start_date: str = Field(description="Start date in YYYY-MM-DD format.")
     end_date: str = Field(description="End date in YYYY-MM-DD format.")
+    context_query: str | None = Field(
+        default=None,
+        description=(
+            "Optional keywords from the user's question for RAG enrichment, such "
+            "as chemical treatment, hot water, paraffin, failures, alarms, or "
+            "other conditions to include in the timeline context."
+        ),
+    )
 
 
 def _json_result(value: Any) -> str:
@@ -29,7 +37,12 @@ def _json_result(value: Any) -> str:
 def build_well_timeline_tools(
     client: WellTimelineClient, site_id: int
 ) -> list[StructuredTool]:
-    def get_well_timeline(well_name: str, start_date: str, end_date: str) -> str:
+    def get_well_timeline(
+        well_name: str,
+        start_date: str,
+        end_date: str,
+        context_query: str | None = None,
+    ) -> str:
         """Get a chronological well timeline from readings, shutdowns, notes, work, alarms, and history."""
         logger.info(
             "Getting well timeline site_id=%s well=%s start=%s end=%s",
@@ -43,7 +56,11 @@ def build_well_timeline_tools(
                 {
                     "ok": True,
                     **client.get_well_timeline(
-                        site_id, well_name, start_date, end_date
+                        site_id,
+                        well_name,
+                        start_date,
+                        end_date,
+                        context_query=context_query,
                     ),
                 }
             )
@@ -59,7 +76,9 @@ def build_well_timeline_tools(
                 "Return a chronological timeline for one well and date range. "
                 "Includes well tests, fluid levels, shutdowns, work orders matched "
                 "by well name, alarm events matched by data point names, notes "
-                "matched by well name, chart notes, and well history where available."
+                "matched by well name, chart notes, well history, and RAG "
+                "operational context where available. If the user asks about "
+                "specific conditions or topics, pass those words in context_query."
             ),
             args_schema=WellTimelineInput,
         )

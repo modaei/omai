@@ -31,6 +31,35 @@ class FakeReadingClient:
             "dates": [],
         }
 
+    def search_readings(
+        self,
+        site_id,
+        reading_type,
+        start_date,
+        end_date,
+        entity_name=None,
+        filters=None,
+    ):
+        return {
+            "reading_type": reading_type,
+            "start_date": start_date,
+            "end_date": end_date,
+            "rows": [{"entity_name": entity_name, "reading": 42}],
+        }
+
+
+class FakeOperationalContextStore:
+    def __init__(self):
+        self.calls = []
+
+    def search(self, **kwargs):
+        self.calls.append(kwargs)
+        return {
+            "query": kwargs["query"],
+            "count": 1,
+            "matches": [{"source_type": "general_note", "text": "Reading context"}],
+        }
+
 
 def tool_by_name(tools, name):
     return next(tool for tool in tools if tool.name == name)
@@ -69,3 +98,26 @@ def test_find_all_missing_readings_for_range_tool_uses_single_client_call():
             "end_date": "2026-06-21",
         }
     ]
+
+
+def test_search_readings_tool_does_not_add_operational_context():
+    store = FakeOperationalContextStore()
+    tools = build_reading_tools(
+        FakeReadingClient(),
+        4,
+        operational_context_store=store,
+    )
+    result = json.loads(
+        tool_by_name(tools, "search_readings").invoke(
+            {
+                "reading_type": "lact",
+                "start_date": "2026-05-01",
+                "end_date": "2026-05-31",
+                "entity_name": "LACT 1",
+            }
+        )
+    )
+
+    assert result["ok"] is True
+    assert "operational_context" not in result
+    assert store.calls == []

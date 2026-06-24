@@ -8,6 +8,10 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from omai.clients.shutdown_client import ShutdownClient, ShutdownClientError
+from omai.tools.rag_enrichment import (
+    OperationalContextSearchStore,
+    add_operational_context,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -44,7 +48,11 @@ def _json_result(value: Any) -> str:
     return json.dumps(value, default=str, separators=(",", ":"))
 
 
-def build_shutdown_tools(client: ShutdownClient, site_id: int) -> list[StructuredTool]:
+def build_shutdown_tools(
+    client: ShutdownClient,
+    site_id: int,
+    operational_context_store: OperationalContextSearchStore | None = None,
+) -> list[StructuredTool]:
     def list_downtime_codes() -> str:
         """List downtime code descriptions for well shutdowns."""
         return _json_result(client.list_downtime_codes())
@@ -63,14 +71,20 @@ def build_shutdown_tools(client: ShutdownClient, site_id: int) -> list[Structure
             shutdown_type,
         )
         try:
-            return _json_result(
-                {
-                    "ok": True,
-                    **client.get_shutdowns(
-                        site_id, start_date, end_date, shutdown_type
-                    ),
-                }
+            result = {
+                "ok": True,
+                **client.get_shutdowns(site_id, start_date, end_date, shutdown_type),
+            }
+            enriched = add_operational_context(
+                result,
+                operational_context_store,
+                site_id=site_id,
+                query=f"shutdown downtime context {shutdown_type}",
+                start_date=start_date,
+                end_date=end_date,
+                limit=8,
             )
+            return _json_result(enriched)
         except ShutdownClientError as exc:
             logger.warning("Well shutdown lookup failed: %s", exc)
             return _json_result({"ok": False, "error": str(exc)})
@@ -83,12 +97,21 @@ def build_shutdown_tools(client: ShutdownClient, site_id: int) -> list[Structure
             as_of_date,
         )
         try:
-            return _json_result(
-                {
-                    "ok": True,
-                    **client.get_current_long_shutdowns(site_id, as_of_date),
-                }
+            result = {
+                "ok": True,
+                **client.get_current_long_shutdowns(site_id, as_of_date),
+            }
+            as_of = result.get("as_of_date")
+            enriched = add_operational_context(
+                result,
+                operational_context_store,
+                site_id=site_id,
+                query="current ongoing long shutdown context",
+                start_date=as_of,
+                end_date=as_of,
+                limit=8,
             )
+            return _json_result(enriched)
         except ShutdownClientError as exc:
             logger.warning("Current long shutdown lookup failed: %s", exc)
             return _json_result({"ok": False, "error": str(exc)})
@@ -107,14 +130,26 @@ def build_shutdown_tools(client: ShutdownClient, site_id: int) -> list[Structure
             shutdown_type,
         )
         try:
-            return _json_result(
-                {
-                    "ok": True,
-                    **client.summarize_shutdown_causes(
-                        site_id, start_date, end_date, shutdown_type
-                    ),
-                }
+            result = {
+                "ok": True,
+                **client.summarize_shutdown_causes(
+                    site_id, start_date, end_date, shutdown_type
+                ),
+            }
+            main_cause = result.get("main_cause") or {}
+            query = "shutdown downtime causes context"
+            if main_cause.get("downtime_reason"):
+                query = f"{query} {main_cause['downtime_reason']}"
+            enriched = add_operational_context(
+                result,
+                operational_context_store,
+                site_id=site_id,
+                query=query,
+                start_date=start_date,
+                end_date=end_date,
+                limit=10,
             )
+            return _json_result(enriched)
         except ShutdownClientError as exc:
             logger.warning("Shutdown cause summary failed: %s", exc)
             return _json_result({"ok": False, "error": str(exc)})

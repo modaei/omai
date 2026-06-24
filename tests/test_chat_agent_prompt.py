@@ -199,6 +199,7 @@ def test_system_prompt_rejects_unsupported_actions():
     assert "bare numeric well reference" in system_prompt
     assert "well-name suffix" in system_prompt
     assert "Use summarize_work_order_costs" in system_prompt
+    assert "Use search_operational_context for general work-order questions" in system_prompt
     assert "Do not use search_operational_context to calculate work order totals" in system_prompt
     assert "format them as US dollars" in system_prompt
     assert "`$` prefix" in system_prompt

@@ -16,10 +16,25 @@ def make_work_order_client() -> WorkOrderClient:
                     time TEXT NOT NULL,
                     subject TEXT,
                     status TEXT,
+                    priority INTEGER,
                     vendor TEXT,
                     comments TEXT,
                     final_cost REAL,
                     cost_estimate REAL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE work_order_notes (
+                    id INTEGER PRIMARY KEY,
+                    work_order_id INTEGER NOT NULL,
+                    notes TEXT,
+                    time TEXT,
+                    created_at TEXT,
+                    updated_at TEXT
                 )
                 """
             )
@@ -40,6 +55,21 @@ def make_work_order_client() -> WorkOrderClient:
                      'Vendor C', 'planned work', NULL, 75),
                     (5, '2026-05-01 08:00:00', 'Other site repair', 'complete',
                      'Vendor A', 'other site', 400, 450)
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO work_order_notes
+                    (id, work_order_id, notes, time, created_at, updated_at)
+                VALUES
+                    (100, 1, 'Pump was inspected before repair.', '2026-05-01 09:00:00',
+                     '2026-05-01 09:00:00', '2026-05-01 09:00:00'),
+                    (101, 1, 'Replacement completed.', '2026-05-01 12:00:00',
+                     '2026-05-01 12:00:00', '2026-05-01 12:00:00'),
+                    (102, 2, 'Motor repair note.', '2026-05-02 10:00:00',
+                     '2026-05-02 10:00:00', '2026-05-02 10:00:00')
                 """
             )
         )

@@ -7,7 +7,37 @@ from omai.clients.well_timeline_client import (
 )
 
 
-def make_timeline_client() -> WellTimelineClient:
+class FakeOperationalContextStore:
+    def __init__(self):
+        self.calls = []
+
+    def search(self, **kwargs):
+        self.calls.append(kwargs)
+        return {
+            "query": kwargs["query"],
+            "count": 2,
+            "matches": [
+                {
+                    "source_type": "chart_note",
+                    "source_id": "1",
+                    "event_date": "2026-05-09",
+                    "entity_name": "11-1-1 Oil",
+                    "text": "Chart note duplicate.",
+                },
+                {
+                    "source_type": "mixed_tank_reading_comment",
+                    "source_id": "6690",
+                    "event_date": "2026-05-10",
+                    "entity_name": "10-1 Oil",
+                    "text": "Mixed tank reading comment. Comments: Hot oil 11-1-1 Oil FL",
+                },
+            ],
+        }
+
+
+def make_timeline_client(
+    operational_context_store=None,
+) -> WellTimelineClient:
     engine = create_engine("sqlite:///:memory:")
     with engine.begin() as connection:
         connection.execute(
@@ -75,6 +105,21 @@ def make_timeline_client() -> WellTimelineClient:
         connection.execute(
             text(
                 """
+                CREATE TABLE chart_notes (
+                    id INTEGER PRIMARY KEY,
+                    site_id INTEGER NOT NULL,
+                    object_type TEXT NOT NULL,
+                    object_id INTEGER NOT NULL,
+                    chart_name TEXT NOT NULL,
+                    x_axis_value TEXT NOT NULL,
+                    note TEXT NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
                 CREATE TABLE general_notes (
                     id INTEGER PRIMARY KEY,
                     site_id INTEGER NOT NULL,
@@ -127,6 +172,17 @@ def make_timeline_client() -> WellTimelineClient:
         connection.execute(
             text(
                 """
+                INSERT INTO chart_notes
+                    (id, site_id, object_type, object_id, chart_name, x_axis_value, note)
+                VALUES
+                    (1, 1, 'RodPumpOilWell', 1, 'Load', '2026-05-09 10:00:00', 'Hot watering 1 load'),
+                    (2, 1, 'Tank', 1, 'Level', '2026-05-09 11:00:00', 'Should not appear on well timeline')
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
                 INSERT INTO well_shutdowns
                     (well_id, date, hours, long_shutdown, downtime_code, comments)
                 VALUES (1, '2026-05-10', 4.5, 0, 'PRF', 'paraffin')
@@ -160,7 +216,7 @@ def make_timeline_client() -> WellTimelineClient:
                 """
             )
         )
-    return WellTimelineClient(engine)
+    return WellTimelineClient(engine, operational_context_store=operational_context_store)
 
 
 def test_get_well_timeline_returns_chronological_events():
@@ -172,14 +228,41 @@ def test_get_well_timeline_returns_chronological_events():
     assert [event["source"] for event in result["events"]] == [
         "well_test",
         "well_fluid",
+        "chart_note",
         "shutdown",
         "general_note",
         "work_order",
     ]
     assert result["events"][0]["details"]["oil"] == 10
-    assert result["events"][2]["details"]["downtime_reason"] == "Paraffin"
-    assert result["events"][2]["time"] == "2026-05-10"
-    assert result["events"][4]["details"]["subject"] == "Repair 11-1-1 Oil"
+    assert result["events"][2]["details"]["note"] == "Hot watering 1 load"
+    assert result["events"][3]["details"]["downtime_reason"] == "Paraffin"
+    assert result["events"][3]["time"] == "2026-05-10"
+    assert result["events"][5]["details"]["subject"] == "Repair 11-1-1 Oil"
+
+
+def test_get_well_timeline_enriches_with_rag_context_and_skips_duplicate_sources():
+    store = FakeOperationalContextStore()
+    result = make_timeline_client(store).get_well_timeline(
+        1,
+        "11-1-1",
+        "2026-05-09",
+        "2026-05-10",
+        context_query="chemical treatment hot water paraffin",
+    )
+
+    operational_context_events = [
+        event for event in result["events"] if event["source"] == "operational_context"
+    ]
+
+    assert len(operational_context_events) == 1
+    assert operational_context_events[0]["details"] == {
+        "source_type": "mixed_tank_reading_comment",
+        "source_id": "6690",
+        "entity_name": "10-1 Oil",
+        "text": "Mixed tank reading comment. Comments: Hot oil 11-1-1 Oil FL",
+    }
+    assert store.calls[0]["query"] == "chemical treatment hot water paraffin"
+    assert store.calls[0]["entity_name"] == "11-1-1 Oil"
 
 
 def test_numeric_well_name_resolves_hartzog_draw_unit_prefix():

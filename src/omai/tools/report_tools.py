@@ -11,6 +11,10 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from omai.clients.report_client import AVAILABLE_REPORTS, ReportClient, ReportClientError
+from omai.tools.rag_enrichment import (
+    OperationalContextSearchStore,
+    add_operational_context,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -202,7 +206,10 @@ def _monthly_summary(
 
 
 def build_report_tools(
-    client: ReportClient, site_id: int, site_name: str | None = None
+    client: ReportClient,
+    site_id: int,
+    site_name: str | None = None,
+    operational_context_store: OperationalContextSearchStore | None = None,
 ) -> list[StructuredTool]:
     site_display_name = site_name or "selected site"
 
@@ -255,23 +262,31 @@ def build_report_tools(
             second = client.run_report(
                 site_id, report_name, second_start_date, second_end_date
             )
-            return _json_result(
-                {
-                    "ok": True,
-                    "site_name": site_display_name,
-                    "report_name": report_name,
-                    "first_period": {
-                        "start_date": first_start_date,
-                        "end_date": first_end_date,
-                        "data": first,
-                    },
-                    "second_period": {
-                        "start_date": second_start_date,
-                        "end_date": second_end_date,
-                        "data": second,
-                    },
-                }
+            result = {
+                "ok": True,
+                "site_name": site_display_name,
+                "report_name": report_name,
+                "first_period": {
+                    "start_date": first_start_date,
+                    "end_date": first_end_date,
+                    "data": first,
+                },
+                "second_period": {
+                    "start_date": second_start_date,
+                    "end_date": second_end_date,
+                    "data": second,
+                },
+            }
+            enriched = add_operational_context(
+                result,
+                operational_context_store,
+                site_id=site_id,
+                query=f"{report_name} report comparison operations context",
+                start_date=min(first_start_date, second_start_date),
+                end_date=max(first_end_date, second_end_date),
+                limit=10,
             )
+            return _json_result(enriched)
         except ReportClientError as exc:
             logger.warning("Report comparison failed: %s", exc)
             return _json_result({"ok": False, "error": str(exc)})
@@ -308,7 +323,16 @@ def build_report_tools(
                     "end_date": end_date,
                 }
             )
-            return _json_result(summary)
+            enriched = add_operational_context(
+                summary,
+                operational_context_store,
+                site_id=site_id,
+                query=f"{report_name} monthly report operations context",
+                start_date=start_date,
+                end_date=end_date,
+                limit=12,
+            )
+            return _json_result(enriched)
         except ReportClientError as exc:
             logger.warning("Monthly report summary failed: %s", exc)
             return _json_result({"ok": False, "error": str(exc)})

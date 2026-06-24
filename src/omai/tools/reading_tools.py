@@ -12,6 +12,10 @@ from omai.clients.reading_client import (
     ReadingClient,
     ReadingClientError,
 )
+from omai.tools.rag_enrichment import (
+    OperationalContextSearchStore,
+    add_operational_context,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -133,7 +137,11 @@ def _json_result(value: Any) -> str:
     return json.dumps(value, default=str, separators=(",", ":"))
 
 
-def build_reading_tools(client: ReadingClient, site_id: int) -> list[StructuredTool]:
+def build_reading_tools(
+    client: ReadingClient,
+    site_id: int,
+    operational_context_store: OperationalContextSearchStore | None = None,
+) -> list[StructuredTool]:
     def list_reading_types() -> str:
         """List reading types that can be queried by the assistant."""
         return _json_result(
@@ -152,12 +160,20 @@ def build_reading_tools(client: ReadingClient, site_id: int) -> list[StructuredT
             reading_date,
         )
         try:
-            return _json_result(
-                {
-                    "ok": True,
-                    **client.get_readings_for_date(site_id, reading_type, reading_date),
-                }
+            result = {
+                "ok": True,
+                **client.get_readings_for_date(site_id, reading_type, reading_date),
+            }
+            enriched = add_operational_context(
+                result,
+                operational_context_store,
+                site_id=site_id,
+                query=f"{reading_type} reading context",
+                start_date=reading_date,
+                end_date=reading_date,
+                limit=8,
             )
+            return _json_result(enriched)
         except ReadingClientError as exc:
             logger.warning("Reading lookup failed: %s", exc)
             return _json_result({"ok": False, "error": str(exc)})
@@ -174,14 +190,23 @@ def build_reading_tools(client: ReadingClient, site_id: int) -> list[StructuredT
             second_date,
         )
         try:
-            return _json_result(
-                {
-                    "ok": True,
-                    **client.compare_readings_between_dates(
-                        site_id, reading_type, first_date, second_date
-                    ),
-                }
+            result = {
+                "ok": True,
+                **client.compare_readings_between_dates(
+                    site_id, reading_type, first_date, second_date
+                ),
+            }
+            start_date, end_date = sorted((first_date, second_date))
+            enriched = add_operational_context(
+                result,
+                operational_context_store,
+                site_id=site_id,
+                query=f"{reading_type} reading comparison context",
+                start_date=start_date,
+                end_date=end_date,
+                limit=8,
             )
+            return _json_result(enriched)
         except ReadingClientError as exc:
             logger.warning("Reading comparison failed: %s", exc)
             return _json_result({"ok": False, "error": str(exc)})

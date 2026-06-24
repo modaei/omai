@@ -66,8 +66,10 @@ def answer_chat(
         shutdown_client = ShutdownClient.from_settings(settings)
     except ValueError as exc:
         shutdown_client = UnavailableShutdownClient(str(exc))
+    operational_context_store = _operational_context_store_from_settings(settings)
     try:
         well_timeline_client = WellTimelineClient.from_settings(settings)
+        well_timeline_client.operational_context_store = operational_context_store
     except ValueError as exc:
         well_timeline_client = UnavailableWellTimelineClient(str(exc))
     try:
@@ -85,8 +87,6 @@ def answer_chat(
         )
     except Exception as exc:
         database_schema_client = UnavailableDatabaseSchemaClient(str(exc))
-    operational_context_store = _operational_context_store_from_settings(settings)
-
     tools = [
         *build_capability_tools(capability_client),
         *build_database_schema_tools(
@@ -97,11 +97,27 @@ def answer_chat(
         # This tool searches the vector DB derived index for notes/comments,
         # work-order context, shutdown explanations, alarms, and history.
         *build_operational_context_tools(operational_context_store, site_id),
-        *build_report_tools(report_client, site_id, resolved_site_name),
-        *build_reading_tools(reading_client, site_id),
-        *build_shutdown_tools(shutdown_client, site_id),
+        *build_report_tools(
+            report_client,
+            site_id,
+            resolved_site_name,
+            operational_context_store=operational_context_store,
+        ),
+        *build_reading_tools(
+            reading_client,
+            site_id,
+            operational_context_store=operational_context_store,
+        ),
+        *build_shutdown_tools(
+            shutdown_client,
+            site_id,
+            operational_context_store=operational_context_store,
+        ),
         *build_well_timeline_tools(well_timeline_client, site_id),
-        *build_work_order_tools(work_order_client, site_id),
+        *build_work_order_tools(
+            work_order_client,
+            site_id,
+        ),
     ]
     model = build_model(
         api_key=settings.llm_api_key,

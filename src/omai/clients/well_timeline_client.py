@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime, time, timedelta
-from typing import Any
+from typing import Any, Protocol
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine, URL
@@ -9,16 +10,42 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from omai.clients.shutdown_client import DOWNTIME_CODES
 from omai.config.settings import Settings
+from omai.rag.vector_store import OperationalContextStoreError
+
+
+logger = logging.getLogger(__name__)
 
 
 class WellTimelineClientError(RuntimeError):
     """Raised when a well timeline query is invalid or cannot be completed."""
 
 
+class OperationalContextSearchStore(Protocol):
+    """Minimal RAG-store interface needed to enrich well timelines."""
+
+    def search(
+        self,
+        query: str,
+        site_id: int,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        entity_name: str | None = None,
+        source_types: list[str] | None = None,
+        limit: int = 8,
+    ) -> dict[str, Any]:
+        ...
+
+
 class WellTimelineClient:
-    def __init__(self, engine: Engine, max_rows_per_source: int = 100):
+    def __init__(
+        self,
+        engine: Engine,
+        max_rows_per_source: int = 100,
+        operational_context_store: OperationalContextSearchStore | None = None,
+    ):
         self.engine = engine
         self.max_rows_per_source = max_rows_per_source
+        self.operational_context_store = operational_context_store
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "WellTimelineClient":
@@ -47,6 +74,7 @@ class WellTimelineClient:
         well_name: str,
         start_date: str,
         end_date: str,
+        context_query: str | None = None,
     ) -> dict[str, Any]:
         start_day = self._parse_date(start_date)
         end_day = self._parse_date(end_date)
@@ -62,9 +90,7 @@ class WellTimelineClient:
         events.extend(self._well_fluids(well["well_id"], start_time, end_time))
         events.extend(self._shutdowns(well["well_id"], start_day, end_day))
         events.extend(self._well_history(well["well_id"], start_time, end_time))
-        events.extend(
-            self._chart_notes(site_id, well["well_name"], start_time, end_time)
-        )
+        events.extend(self._chart_notes(well["well_id"], start_time, end_time))
         events.extend(
             self._general_notes(site_id, well["well_name"], start_day, end_day)
         )
@@ -72,6 +98,16 @@ class WellTimelineClient:
             self._work_orders(site_id, well["well_name"], start_time, end_time)
         )
         events.extend(self._alarms(site_id, well["well_name"], start_time, end_time))
+        events.extend(
+            self._operational_context_events(
+                site_id=site_id,
+                well_name=well["well_name"],
+                context_query=context_query,
+                start_day=start_day,
+                end_day=end_day,
+                existing_events=events,
+            )
+        )
 
         events.sort(key=lambda item: item["time"])
         return {
@@ -291,14 +327,14 @@ class WellTimelineClient:
         ]
 
     def _chart_notes(
-        self, site_id: int, well_name: str, start_time: datetime, end_time: datetime
+        self, well_id: int, start_time: datetime, end_time: datetime
     ) -> list[dict[str, Any]]:
         query = text(
             """
-            SELECT x_axis_value, chart_name, note
+            SELECT id AS source_id, x_axis_value, chart_name, note
             FROM chart_notes
-            WHERE site_id = :site_id
-                AND object_name LIKE :well_name
+            WHERE object_id = :well_id
+                AND object_type IN ('RodPumpOilWell', 'OilWell', 'WaterWell')
                 AND x_axis_value >= :start_value
                 AND x_axis_value < :end_value
             ORDER BY x_axis_value
@@ -310,17 +346,78 @@ class WellTimelineClient:
                 row["x_axis_value"],
                 "chart_note",
                 "Chart note",
-                self._non_empty_fields(row, ("chart_name", "note")),
+                self._non_empty_fields(row, ("source_id", "chart_name", "note")),
             )
             for row in self._execute(
                 query,
-                site_id=site_id,
-                well_name=f"%{well_name}%",
+                well_id=well_id,
                 start_value=start_time.strftime("%Y-%m-%d %H:%M"),
                 end_value=end_time.strftime("%Y-%m-%d %H:%M"),
                 optional=True,
             )
         ]
+
+    def _operational_context_events(
+        self,
+        site_id: int,
+        well_name: str,
+        context_query: str | None,
+        start_day: date,
+        end_day: date,
+        existing_events: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Add RAG matches to the timeline without failing the structured timeline.
+
+        The structured timeline queries a fixed set of MySQL tables. The RAG
+        index can contain additional operational text sources, so it is used as
+        an enrichment layer. Duplicate records are skipped when a structured
+        event already has the same source type and source id.
+        """
+        if self.operational_context_store is None:
+            return []
+
+        existing_source_keys = _event_source_keys(existing_events)
+        search_query = context_query or f"operational history context for {well_name}"
+        try:
+            result = self.operational_context_store.search(
+                query=search_query,
+                site_id=site_id,
+                start_date=start_day,
+                end_date=end_day,
+                entity_name=well_name,
+                source_types=None,
+                limit=self.max_rows_per_source,
+            )
+        except OperationalContextStoreError as exc:
+            logger.warning("Well timeline RAG enrichment failed: %s", exc)
+            return []
+
+        events = []
+        for match in result.get("matches", []):
+            source_type = match.get("source_type")
+            source_id = match.get("source_id")
+            if (source_type, str(source_id)) in existing_source_keys:
+                continue
+            event_date = match.get("event_date")
+            if not event_date:
+                continue
+            events.append(
+                self._event(
+                    event_date,
+                    "operational_context",
+                    "Operational context",
+                    self._non_empty_fields(
+                        {
+                            "source_type": source_type,
+                            "source_id": source_id,
+                            "entity_name": match.get("entity_name"),
+                            "text": match.get("text"),
+                        },
+                        ("source_type", "source_id", "entity_name", "text"),
+                    ),
+                )
+            )
+        return events
 
     def _general_notes(
         self, site_id: int, well_name: str, start_day: date, end_day: date
@@ -516,6 +613,15 @@ def _normalize_well_name(value: str) -> str:
     return value
 
 
+def _event_source_keys(events: list[dict[str, Any]]) -> set[tuple[Any, str]]:
+    keys = set()
+    for event in events:
+        source_id = event.get("details", {}).get("source_id")
+        if source_id is not None:
+            keys.add((event.get("source"), str(source_id)))
+    return keys
+
+
 def _looks_like_missing_table_or_column(exc: SQLAlchemyError) -> bool:
     message = str(exc).lower()
     return any(
@@ -539,5 +645,6 @@ class UnavailableWellTimelineClient:
         well_name: str,
         start_date: str,
         end_date: str,
+        context_query: str | None = None,
     ) -> dict[str, Any]:
         raise WellTimelineClientError(self.reason)

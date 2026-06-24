@@ -28,6 +28,19 @@ class FakeMonthlyReportClient:
         }
 
 
+class FakeOperationalContextStore:
+    def __init__(self):
+        self.calls = []
+
+    def search(self, **kwargs):
+        self.calls.append(kwargs)
+        return {
+            "query": kwargs["query"],
+            "count": 1,
+            "matches": [{"source_type": "general_note", "text": "Report context"}],
+        }
+
+
 def tool_by_name(tools, name):
     return next(tool for tool in tools if tool.name == name)
 
@@ -48,6 +61,29 @@ def test_run_report_result_exposes_site_name_not_site_id():
     assert result["site_name"] == "HARTZOG DRAW"
     assert "site_id" not in result
     assert result["report_name"] == "water_injection"
+
+
+def test_run_report_does_not_add_operational_context():
+    store = FakeOperationalContextStore()
+    tools = build_report_tools(
+        FakeReportClient(),
+        4,
+        "HARTZOG DRAW",
+        operational_context_store=store,
+    )
+    result = json.loads(
+        tool_by_name(tools, "run_report").invoke(
+            {
+                "report_name": "oil_production",
+                "start_date": "2026-05-01",
+                "end_date": "2026-05-31",
+            }
+        )
+    )
+
+    assert result["ok"] is True
+    assert "operational_context" not in result
+    assert store.calls == []
 
 
 def test_list_available_reports_result_exposes_site_name_not_site_id():

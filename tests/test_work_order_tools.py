@@ -25,9 +25,13 @@ class FailingWorkOrderClient:
         raise WorkOrderClientError("database unavailable")
 
 
+def tool_by_name(tools, name):
+    return next(tool for tool in tools if tool.name == name)
+
+
 def test_summarize_work_order_costs_tool_calls_client_with_site_scope():
     client = FakeWorkOrderClient()
-    tool = build_work_order_tools(client, site_id=4)[0]
+    tool = tool_by_name(build_work_order_tools(client, site_id=4), "summarize_work_order_costs")
 
     result = tool.invoke(
         {
@@ -50,7 +54,10 @@ def test_summarize_work_order_costs_tool_calls_client_with_site_scope():
 
 
 def test_summarize_work_order_costs_tool_returns_json_errors():
-    tool = build_work_order_tools(FailingWorkOrderClient(), site_id=4)[0]
+    tool = tool_by_name(
+        build_work_order_tools(FailingWorkOrderClient(), site_id=4),
+        "summarize_work_order_costs",
+    )
 
     result = tool.invoke(
         {
