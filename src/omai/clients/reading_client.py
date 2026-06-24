@@ -1060,6 +1060,8 @@ class ReadingClient:
             exclusions["lact"] = lact_ids
         if flare_ids := _coerce_id_list(related_entities.get("flare_ids")):
             exclusions["flare"] = flare_ids
+        if knock_out_ids := _coerce_id_list(related_entities.get("knock_out_ids")):
+            exclusions["knock_out"] = knock_out_ids
         if tank_ids := related_entities.get("tank_ids"):
             if isinstance(tank_ids, dict):
                 linear_ids = _coerce_id_list(tank_ids.get("linear"))
@@ -1071,8 +1073,12 @@ class ReadingClient:
                     exclusions["mixed_tank"] = mixed_ids
                 if non_linear_ids:
                     exclusions["non_linear_tank"] = non_linear_ids
+        if treater_ids := _coerce_id_list(related_entities.get("treater_ids")):
+            exclusions["treater"] = treater_ids
         if water_plant_ids := _coerce_id_list(related_entities.get("water_plant_ids")):
             exclusions["water_plant"] = water_plant_ids
+        if pump_ids := _coerce_id_list(related_entities.get("pump_ids")):
+            exclusions["pump"] = pump_ids
         if flow_meter_ids := related_entities.get("flow_meter_ids"):
             if isinstance(flow_meter_ids, dict):
                 combined = (

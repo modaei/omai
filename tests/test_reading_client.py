@@ -303,6 +303,85 @@ def make_sqlite_client_with_missing_exclusions() -> ReadingClient:
         connection.execute(
             text(
                 """
+                CREATE TABLE knock_outs (
+                    id INTEGER PRIMARY KEY,
+                    site_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    disable_reading INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE knock_out_readings (
+                    id INTEGER PRIMARY KEY,
+                    knock_out_id INTEGER NOT NULL,
+                    inlet REAL,
+                    oil_off REAL,
+                    comments TEXT,
+                    time TEXT NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE treaters (
+                    id INTEGER PRIMARY KEY,
+                    site_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    disable_reading INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE treater_readings (
+                    id INTEGER PRIMARY KEY,
+                    treater_id INTEGER NOT NULL,
+                    oil_intake REAL,
+                    pressure REAL,
+                    temperature REAL,
+                    comments TEXT,
+                    time TEXT NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE pumps (
+                    id INTEGER PRIMARY KEY,
+                    site_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    disable_reading INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE pump_readings (
+                    id INTEGER PRIMARY KEY,
+                    pump_id INTEGER NOT NULL,
+                    suction_pressure REAL,
+                    discharge_pressure REAL,
+                    comments TEXT,
+                    time TEXT NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
                 INSERT INTO report_configurations
                     (id, site_id, function_name, related_entities)
                 VALUES
@@ -310,7 +389,7 @@ def make_sqlite_client_with_missing_exclusions() -> ReadingClient:
                         1,
                         1,
                         'hartzog_daily_missing',
-                        '{"flare_ids":[1],"lact_ids":[1],"tank_ids":{"linear":[1],"mixed":[2],"nonLinear":[3]},"water_plant_ids":[1],"flow_meter_ids":{"water":[1],"gas":[2],"oil":[3]}}'
+                        '{"flare_ids":[1],"lact_ids":[1],"knock_out_ids":[1],"tank_ids":{"linear":[1],"mixed":[2],"nonLinear":[3]},"treater_ids":[1],"water_plant_ids":[1],"flow_meter_ids":{"water":[1],"gas":[2],"oil":[3]},"pump_ids":[1]}'
                     )
                 """
             )
@@ -358,6 +437,30 @@ def make_sqlite_client_with_missing_exclusions() -> ReadingClient:
                     (1, 1, 'Water Meter A', 'water', 0),
                     (2, 1, 'Gas Meter A', 'gas', 0),
                     (3, 1, 'Oil Meter A', 'oil', 0)
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO knock_outs (id, site_id, name, disable_reading)
+                VALUES (1, 1, 'Knock Out A', 0)
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO treaters (id, site_id, name, disable_reading)
+                VALUES (1, 1, 'Treater A', 0)
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO pumps (id, site_id, name, disable_reading)
+                VALUES (1, 1, 'Pump A', 0)
                 """
             )
         )
@@ -800,6 +903,12 @@ def test_missing_readings_respect_report_config_exclusions():
         == 0
     )
     assert (
+        client.missing_readings_for_date(1, "knock_out", "2026-06-10")[
+            "missing_count"
+        ]
+        == 0
+    )
+    assert (
         client.missing_readings_for_date(1, "linear_tank", "2026-06-10")[
             "missing_count"
         ]
@@ -818,6 +927,12 @@ def test_missing_readings_respect_report_config_exclusions():
         == 0
     )
     assert (
+        client.missing_readings_for_date(1, "treater", "2026-06-10")[
+            "missing_count"
+        ]
+        == 0
+    )
+    assert (
         client.missing_readings_for_date(1, "water_plant", "2026-06-10")[
             "missing_count"
         ]
@@ -827,6 +942,10 @@ def test_missing_readings_respect_report_config_exclusions():
         client.missing_readings_for_date(1, "flow_meter", "2026-06-10")[
             "missing_count"
         ]
+        == 0
+    )
+    assert (
+        client.missing_readings_for_date(1, "pump", "2026-06-10")["missing_count"]
         == 0
     )
     assert client.all_missing_readings_for_date(1, "2026-06-10")["missing_count"] == 0
