@@ -17,7 +17,33 @@ def make_shutdown_client() -> ShutdownClient:
                 CREATE TABLE wells (
                     id INTEGER PRIMARY KEY,
                     site_id INTEGER NOT NULL,
-                    name TEXT NOT NULL
+                    name TEXT NOT NULL,
+                    onrr_code_id INTEGER NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE onrr_codes (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    active_well INTEGER NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE well_histories (
+                    id INTEGER PRIMARY KEY,
+                    well_id INTEGER NOT NULL,
+                    property TEXT NOT NULL,
+                    old_value TEXT,
+                    new_value TEXT,
+                    changed_at TEXT NOT NULL
                 )
                 """
             )
@@ -42,11 +68,25 @@ def make_shutdown_client() -> ShutdownClient:
         connection.execute(
             text(
                 """
-                INSERT INTO wells (id, site_id, name)
+                INSERT INTO onrr_codes (id, name, active_well)
                 VALUES
-                    (1, 1, '11-1-1 Oil'),
-                    (2, 1, '12-2-1 Oil'),
-                    (3, 2, 'Other Site Well')
+                    (1, 'POW', 1),
+                    (2, 'SIW', 0)
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO wells (id, site_id, name, onrr_code_id)
+                VALUES
+                    (1, 1, '11-1-1 Oil', 1),
+                    (2, 1, '12-2-1 Oil', 1),
+                    (3, 2, 'Other Site Well', 1),
+                    (4, 1, '13-3-1 Oil', 2),
+                    (5, 1, '14-4-1 Oil', 1),
+                    (6, 1, '15-5-1 Oil', 2),
+                    (7, 1, '16-6-1 Oil', 1)
                 """
             )
         )
@@ -68,7 +108,19 @@ def make_shutdown_client() -> ShutdownClient:
                 VALUES
                     (10, 1, '2026-05-09', 4.5, 0, NULL, NULL, 'PRF', 'paraffin cleanout'),
                     (11, 2, NULL, NULL, 1, '2026-05-01 08:00:00', NULL, 'DH', 'downhole issue'),
-                    (12, 3, '2026-05-09', 24, 0, NULL, NULL, 'PRF', 'other site')
+                    (12, 3, '2026-05-09', 24, 0, NULL, NULL, 'PRF', 'other site'),
+                    (13, 5, '2026-06-21', 24, 0, NULL, NULL, 'SIB', 'full day short shutdown'),
+                    (14, 7, NULL, NULL, 1, '2026-06-21 12:00:00', '2026-06-21 18:00:00', 'DH', 'partial long shutdown')
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO well_histories
+                    (id, well_id, property, old_value, new_value, changed_at)
+                VALUES
+                    (100, 6, 'onrr_code_id', '1', '2', '2026-06-22 00:00:00')
                 """
             )
         )
@@ -132,6 +184,33 @@ def test_list_downtime_codes():
     result = make_shutdown_client().list_downtime_codes()
 
     assert result["downtime_codes"]["PRF"] == DOWNTIME_CODES["PRF"]
+
+
+def test_get_active_wells_uses_onrr_state_and_shutdown_rules():
+    result = make_shutdown_client().get_active_wells(1, "2026-06-21")
+
+    assert result["active_count"] == 2
+    assert [row["well"] for row in result["active_wells"]] == [
+        "Well - 11-1-1 Oil",
+        "Well - 15-5-1 Oil",
+    ]
+    assert result["inactive_count"] == 3
+    assert [row["well"] for row in result["inactive_wells"]] == [
+        "Well - 12-2-1 Oil",
+        "Well - 13-3-1 Oil",
+        "Well - 14-4-1 Oil",
+    ]
+    assert result["partial_shutdown_count"] == 1
+    assert result["partial_shutdown_wells"][0]["well"] == "Well - 16-6-1 Oil"
+    assert result["partial_shutdown_wells"][0]["long_shutdown_hours"] == 6.0
+    assert result["partial_shutdown_well_names"] == ["Well - 16-6-1 Oil"]
+    assert result["partial_shutdown_summary"] == "Partial shutdown wells: Well - 16-6-1 Oil"
+
+
+def test_get_active_wells_uses_current_onrr_when_no_history_exists():
+    result = make_shutdown_client().get_active_wells(1, "2026-06-23")
+
+    assert "Well - 15-5-1 Oil" in [row["well"] for row in result["inactive_wells"]]
 
 
 def test_shutdown_date_order_is_validated():

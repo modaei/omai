@@ -105,8 +105,8 @@ class ShutdownClient:
             "short_count": len(short_shutdowns),
             "long_count": len(long_shutdowns),
             "short_total_hours": total_hours,
-            "short_shutdowns": short_shutdowns,
-            "long_shutdowns": long_shutdowns,
+            "short_shutdowns": [_without_internal_ids(row) for row in short_shutdowns],
+            "long_shutdowns": [_without_internal_ids(row) for row in long_shutdowns],
         }
 
     def get_current_long_shutdowns(
@@ -145,7 +145,7 @@ class ShutdownClient:
             "site_id": site_id,
             "as_of_date": as_of.isoformat(),
             "count": len(shutdowns),
-            "long_shutdowns": shutdowns,
+            "long_shutdowns": [_without_internal_ids(row) for row in shutdowns],
         }
 
     def summarize_shutdown_causes(
@@ -220,12 +220,75 @@ class ShutdownClient:
             "causes": causes,
         }
 
+    def get_active_wells(self, site_id: int, active_date: str) -> dict[str, Any]:
+        """Classify wells as active, inactive, or partial-shutdown for one day."""
+        day = self._parse_date(active_date)
+        day_start, day_end = self._day_bounds(day)
+        wells = self._wells_with_onrr_state(site_id, day_end)
+        shutdowns_by_well = self._day_shutdown_state_by_well(site_id, day)
+
+        active_wells = []
+        inactive_wells = []
+        partial_shutdown_wells = []
+        for well in wells:
+            shutdown_state = shutdowns_by_well.get(well["well_id"])
+            well_result = {
+                "well": f"Well - {well['well_name']}",
+                "onrr_code": well.get("onrr_code_name"),
+                "onrr_active_well": bool(well.get("active_well")),
+            }
+            if shutdown_state and shutdown_state["status"] == "partial_shutdown":
+                partial_shutdown_wells.append({**well_result, **shutdown_state})
+            elif shutdown_state and shutdown_state["status"] == "full_day_shutdown":
+                inactive_wells.append({**well_result, **shutdown_state})
+            elif well.get("active_well"):
+                active_wells.append(well_result)
+            else:
+                inactive_wells.append(
+                    {
+                        **well_result,
+                        "status": "onrr_inactive",
+                        "reason": "ONRR code is not marked active for this date.",
+                    }
+                )
+
+        return {
+            "site_id": site_id,
+            "date": day.isoformat(),
+            "active_count": len(active_wells),
+            "inactive_count": len(inactive_wells),
+            "partial_shutdown_count": len(partial_shutdown_wells),
+            "active_wells": active_wells,
+            "inactive_wells": [_without_internal_ids(row) for row in inactive_wells],
+            "partial_shutdown_wells": [
+                _without_internal_ids(row) for row in partial_shutdown_wells
+            ],
+            "partial_shutdown_well_names": [
+                row["well"] for row in partial_shutdown_wells
+            ],
+            "partial_shutdown_summary": (
+                "Partial shutdown wells: "
+                + ", ".join(row["well"] for row in partial_shutdown_wells)
+                if partial_shutdown_wells
+                else None
+            ),
+            "rules": {
+                "onrr_code_as_of": day_end.isoformat(sep=" "),
+                "short_shutdown_full_day_hours": 24,
+                "partial_shutdown_note": (
+                    "Partially shutdown wells are excluded from both active and "
+                    "inactive counts."
+                ),
+            },
+        }
+
     def _short_shutdowns(
         self, site_id: int, start_day: date, end_day: date
     ) -> list[dict[str, Any]]:
         query = text(
             """
-            SELECT wells.name AS well_name,
+            SELECT well_shutdowns.well_id,
+                wells.name AS well_name,
                 well_shutdowns.date,
                 well_shutdowns.hours,
                 well_shutdowns.downtime_code,
@@ -255,7 +318,8 @@ class ShutdownClient:
         end_time = datetime.combine(end_day, time.min) + timedelta(days=1)
         query = text(
             """
-            SELECT wells.name AS well_name,
+            SELECT well_shutdowns.well_id,
+                wells.name AS well_name,
                 well_shutdowns.long_shutdown_start,
                 well_shutdowns.long_shutdown_end,
                 well_shutdowns.downtime_code,
@@ -281,6 +345,128 @@ class ShutdownClient:
         )
         return [self._compact_shutdown_row(row, "long") for row in rows]
 
+    def _wells_with_onrr_state(
+        self, site_id: int, as_of_time: datetime
+    ) -> list[dict[str, Any]]:
+        query = text(
+            """
+            SELECT
+                w.id AS well_id,
+                w.name AS well_name,
+                COALESCE(
+                    (
+                        SELECT wh_before.new_value
+                        FROM well_histories wh_before
+                        WHERE wh_before.well_id = w.id
+                            AND wh_before.property = 'onrr_code_id'
+                            AND wh_before.changed_at < :as_of_time
+                        ORDER BY wh_before.changed_at DESC, wh_before.id DESC
+                        LIMIT 1
+                    ),
+                    (
+                        SELECT wh_after.old_value
+                        FROM well_histories wh_after
+                        WHERE wh_after.well_id = w.id
+                            AND wh_after.property = 'onrr_code_id'
+                            AND wh_after.changed_at >= :as_of_time
+                        ORDER BY wh_after.changed_at ASC, wh_after.id ASC
+                        LIMIT 1
+                    ),
+                    w.onrr_code_id
+                ) AS effective_onrr_code_id,
+                oc.name AS onrr_code_name,
+                oc.active_well
+            FROM wells w
+            LEFT JOIN onrr_codes oc
+                ON oc.id = COALESCE(
+                    (
+                        SELECT wh_before.new_value
+                        FROM well_histories wh_before
+                        WHERE wh_before.well_id = w.id
+                            AND wh_before.property = 'onrr_code_id'
+                            AND wh_before.changed_at < :as_of_time
+                        ORDER BY wh_before.changed_at DESC, wh_before.id DESC
+                        LIMIT 1
+                    ),
+                    (
+                        SELECT wh_after.old_value
+                        FROM well_histories wh_after
+                        WHERE wh_after.well_id = w.id
+                            AND wh_after.property = 'onrr_code_id'
+                            AND wh_after.changed_at >= :as_of_time
+                        ORDER BY wh_after.changed_at ASC, wh_after.id ASC
+                        LIMIT 1
+                    ),
+                    w.onrr_code_id
+                )
+            WHERE w.site_id = :site_id
+            ORDER BY w.name
+            LIMIT :limit
+            """
+        )
+        rows = self._execute(query, site_id=site_id, as_of_time=as_of_time)
+        return rows
+
+    def _day_shutdown_state_by_well(
+        self, site_id: int, day: date
+    ) -> dict[int, dict[str, Any]]:
+        short_shutdowns = self._short_shutdowns(site_id, day, day)
+        long_shutdowns = self._long_shutdowns(site_id, day, day)
+        day_start, day_end = self._day_bounds(day)
+
+        states: dict[int, dict[str, Any]] = {}
+        for shutdown in short_shutdowns:
+            well_id = int(shutdown["well_id"])
+            hours = float(shutdown.get("hours") or 0)
+            state = states.setdefault(
+                well_id,
+                {
+                    "short_shutdown_hours": 0.0,
+                    "long_shutdown_hours": 0.0,
+                    "shutdowns": [],
+                },
+            )
+            state["short_shutdown_hours"] += hours
+            state["shutdowns"].append(shutdown)
+
+        for shutdown in long_shutdowns:
+            well_id = int(shutdown["well_id"])
+            hours = self._long_shutdown_overlap_hours(shutdown, day_start, day_end)
+            state = states.setdefault(
+                well_id,
+                {
+                    "short_shutdown_hours": 0.0,
+                    "long_shutdown_hours": 0.0,
+                    "shutdowns": [],
+                },
+            )
+            state["long_shutdown_hours"] += hours
+            state["shutdowns"].append(shutdown)
+
+        classified = {}
+        for well_id, state in states.items():
+            short_hours = round(state["short_shutdown_hours"], 3)
+            long_hours = round(state["long_shutdown_hours"], 3)
+            total_hours = round(short_hours + long_hours, 3)
+            if short_hours >= 24 or long_hours >= 24 or total_hours >= 24:
+                status = "full_day_shutdown"
+                reason = "Shutdown covers the full day."
+            else:
+                status = "partial_shutdown"
+                reason = (
+                    "Shutdown covers part of the day, so the well is excluded "
+                    "from both active and inactive counts."
+                )
+            classified[well_id] = {
+                "status": status,
+                "reason": reason,
+                "short_shutdown_hours": short_hours,
+                "long_shutdown_hours": long_hours,
+                "total_shutdown_hours": total_hours,
+                "shutdowns": state["shutdowns"],
+            }
+        return classified
+
     def _execute(self, query, **params: Any) -> list[dict[str, Any]]:
         params.setdefault("limit", self.max_rows)
         try:
@@ -304,6 +490,7 @@ class ShutdownClient:
     def _compact_shutdown_row(row: dict[str, Any], shutdown_type: str) -> dict[str, Any]:
         compact = {
             "well": f"Well - {row['well_name']}",
+            "well_id": row.get("well_id"),
             "type": shutdown_type,
         }
         if shutdown_type == "short":
@@ -402,6 +589,9 @@ class UnavailableShutdownClient:
     ) -> dict[str, Any]:
         raise ShutdownClientError(self.reason)
 
+    def get_active_wells(self, site_id: int, active_date: str) -> dict[str, Any]:
+        raise ShutdownClientError(self.reason)
+
 
 def _parse_datetime_value(value: Any) -> datetime | None:
     if value is None:
@@ -417,3 +607,15 @@ def _parse_datetime_value(value: Any) -> datetime | None:
         return datetime.fromisoformat(text_value)
     except ValueError:
         return None
+
+
+def _without_internal_ids(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_without_internal_ids(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _without_internal_ids(item)
+            for key, item in value.items()
+            if key != "well_id"
+        }
+    return value

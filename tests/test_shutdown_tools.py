@@ -31,6 +31,20 @@ class FakeShutdownClient:
             "long_shutdowns": [],
         }
 
+    def get_active_wells(self, site_id, active_date):
+        return {
+            "site_id": site_id,
+            "date": active_date,
+            "active_count": 2,
+            "inactive_count": 1,
+            "partial_shutdown_count": 1,
+            "active_wells": [{"well": "Well - 11-1-1 Oil"}],
+            "inactive_wells": [{"well": "Well - 12-2-1 Oil"}],
+            "partial_shutdown_wells": [{"well": "Well - 13-3-1 Oil"}],
+            "partial_shutdown_well_names": ["Well - 13-3-1 Oil"],
+            "partial_shutdown_summary": "Partial shutdown wells: Well - 13-3-1 Oil",
+        }
+
     def list_downtime_codes(self):
         return {"downtime_codes": {}}
 
@@ -74,3 +88,18 @@ def test_summarize_shutdown_causes_tool_adds_operational_context():
     assert result["operational_context"]["matches"][0]["text"] == "Shutdown context"
     assert store.calls[0]["site_id"] == 4
     assert "Paraffin" in store.calls[0]["query"]
+
+
+def test_get_active_wells_tool_returns_counts():
+    tools = build_shutdown_tools(FakeShutdownClient(), site_id=4)
+
+    result = json.loads(
+        tool_by_name(tools, "get_active_wells").invoke(
+            {"active_date": "2026-06-21"}
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["active_count"] == 2
+    assert result["inactive_count"] == 1
+    assert result["partial_shutdown_count"] == 1

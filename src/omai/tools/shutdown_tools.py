@@ -35,6 +35,10 @@ class CurrentLongShutdownsInput(BaseModel):
     )
 
 
+class ActiveWellsInput(BaseModel):
+    active_date: str = Field(description="Date in YYYY-MM-DD format.")
+
+
 class ShutdownCauseSummaryInput(BaseModel):
     start_date: str = Field(description="Start date in YYYY-MM-DD format.")
     end_date: str = Field(description="End date in YYYY-MM-DD format.")
@@ -116,6 +120,20 @@ def build_shutdown_tools(
             logger.warning("Current long shutdown lookup failed: %s", exc)
             return _json_result({"ok": False, "error": str(exc)})
 
+    def get_active_wells(active_date: str) -> str:
+        """Count wells active on one day using ONRR state and shutdown records."""
+        logger.info("Getting active wells site_id=%s date=%s", site_id, active_date)
+        try:
+            return _json_result(
+                {
+                    "ok": True,
+                    **client.get_active_wells(site_id, active_date),
+                }
+            )
+        except ShutdownClientError as exc:
+            logger.warning("Active well lookup failed: %s", exc)
+            return _json_result({"ok": False, "error": str(exc)})
+
     def summarize_shutdown_causes(
         start_date: str,
         end_date: str,
@@ -177,6 +195,19 @@ def build_shutdown_tools(
                 "Use this for current or ongoing long shutdown questions."
             ),
             args_schema=CurrentLongShutdownsInput,
+        ),
+        StructuredTool.from_function(
+            func=get_active_wells,
+            name="get_active_wells",
+            description=(
+                "Count and list active wells for one date. Use this for questions "
+                "asking how many wells are active, inactive, online, producing, "
+                "or available on a specific day. A well is active only when its "
+                "ONRR code is active_well=true as of that day and it is not shut "
+                "down for the full day. Wells with partial shutdowns are returned "
+                "separately and excluded from active and inactive counts."
+            ),
+            args_schema=ActiveWellsInput,
         ),
         StructuredTool.from_function(
             func=summarize_shutdown_causes,

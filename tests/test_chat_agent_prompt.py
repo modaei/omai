@@ -180,6 +180,10 @@ def test_system_prompt_rejects_unsupported_actions():
     assert OUT_OF_DOMAIN_RESPONSE in system_prompt
     assert "Use search_operational_context" in system_prompt
     assert "Use summarize_shutdown_causes" in system_prompt
+    assert "Use get_active_wells" in system_prompt
+    assert "do not infer active wells from well-test activity" in system_prompt
+    assert "partial_shutdown_wells or partial_shutdown_well_names" in system_prompt
+    assert "If partial_shutdown_count is 0, do not mention partial shutdowns at all" in system_prompt
     assert "first prefer the most specific domain tool" in system_prompt
     assert "capability tools only as the lowest-priority path" in system_prompt
     assert "not for data retrieval" in system_prompt
