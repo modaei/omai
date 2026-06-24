@@ -39,6 +39,10 @@ class ActiveWellsInput(BaseModel):
     active_date: str = Field(description="Date in YYYY-MM-DD format.")
 
 
+class ProducingWellsInput(BaseModel):
+    producing_date: str = Field(description="Date in YYYY-MM-DD format.")
+
+
 class ShutdownCauseSummaryInput(BaseModel):
     start_date: str = Field(description="Start date in YYYY-MM-DD format.")
     end_date: str = Field(description="End date in YYYY-MM-DD format.")
@@ -134,6 +138,22 @@ def build_shutdown_tools(
             logger.warning("Active well lookup failed: %s", exc)
             return _json_result({"ok": False, "error": str(exc)})
 
+    def get_producing_wells(producing_date: str) -> str:
+        """Count producing wells on one day, excluding ONRR injection wells."""
+        logger.info(
+            "Getting producing wells site_id=%s date=%s", site_id, producing_date
+        )
+        try:
+            return _json_result(
+                {
+                    "ok": True,
+                    **client.get_producing_wells(site_id, producing_date),
+                }
+            )
+        except ShutdownClientError as exc:
+            logger.warning("Producing well lookup failed: %s", exc)
+            return _json_result({"ok": False, "error": str(exc)})
+
     def summarize_shutdown_causes(
         start_date: str,
         end_date: str,
@@ -208,6 +228,19 @@ def build_shutdown_tools(
                 "separately and excluded from active and inactive counts."
             ),
             args_schema=ActiveWellsInput,
+        ),
+        StructuredTool.from_function(
+            func=get_producing_wells,
+            name="get_producing_wells",
+            description=(
+                "Count and list producing wells for one date. Use this for "
+                "questions asking how many wells are producing or producing now. "
+                "A well is producing only when its ONRR code is active_well=true "
+                "and injection_well=false as of that day, and it is not shut down "
+                "for the full day. ONRR code name and description are returned "
+                "to explain non-producing wells such as injection wells."
+            ),
+            args_schema=ProducingWellsInput,
         ),
         StructuredTool.from_function(
             func=summarize_shutdown_causes,

@@ -222,6 +222,35 @@ class ShutdownClient:
 
     def get_active_wells(self, site_id: int, active_date: str) -> dict[str, Any]:
         """Classify wells as active, inactive, or partial-shutdown for one day."""
+        return self._classify_wells_by_onrr_and_shutdown(
+            site_id,
+            active_date,
+            result_type="active",
+            exclude_injection_wells=False,
+        )
+
+    def get_producing_wells(self, site_id: int, producing_date: str) -> dict[str, Any]:
+        """Classify producing wells for one day, excluding ONRR injection wells."""
+        result = self._classify_wells_by_onrr_and_shutdown(
+            site_id,
+            producing_date,
+            result_type="producing",
+            exclude_injection_wells=True,
+        )
+        result["producing_count"] = result.pop("active_count")
+        result["non_producing_count"] = result.pop("inactive_count")
+        result["producing_wells"] = result.pop("active_wells")
+        result["non_producing_wells"] = result.pop("inactive_wells")
+        return result
+
+    def _classify_wells_by_onrr_and_shutdown(
+        self,
+        site_id: int,
+        active_date: str,
+        *,
+        result_type: str,
+        exclude_injection_wells: bool,
+    ) -> dict[str, Any]:
         day = self._parse_date(active_date)
         day_start, day_end = self._day_bounds(day)
         wells = self._wells_with_onrr_state(site_id, day_end)
@@ -235,12 +264,25 @@ class ShutdownClient:
             well_result = {
                 "well": f"Well - {well['well_name']}",
                 "onrr_code": well.get("onrr_code_name"),
+                "onrr_code_description": well.get("onrr_code_description"),
                 "onrr_active_well": bool(well.get("active_well")),
+                "onrr_injection_well": bool(well.get("injection_well")),
             }
             if shutdown_state and shutdown_state["status"] == "partial_shutdown":
                 partial_shutdown_wells.append({**well_result, **shutdown_state})
             elif shutdown_state and shutdown_state["status"] == "full_day_shutdown":
                 inactive_wells.append({**well_result, **shutdown_state})
+            elif exclude_injection_wells and well.get("injection_well"):
+                inactive_wells.append(
+                    {
+                        **well_result,
+                        "status": "onrr_injection_well",
+                        "reason": (
+                            "ONRR code is marked as an injection well, so it is "
+                            "not counted as producing."
+                        ),
+                    }
+                )
             elif well.get("active_well"):
                 active_wells.append(well_result)
             else:
@@ -255,6 +297,7 @@ class ShutdownClient:
         return {
             "site_id": site_id,
             "date": day.isoformat(),
+            "result_type": result_type,
             "active_count": len(active_wells),
             "inactive_count": len(inactive_wells),
             "partial_shutdown_count": len(partial_shutdown_wells),
@@ -274,10 +317,19 @@ class ShutdownClient:
             ),
             "rules": {
                 "onrr_code_as_of": day_end.isoformat(sep=" "),
+                "producing_well_rule": (
+                    "Producing wells must have active_well=true and "
+                    "injection_well=false on the ONRR code as of that day."
+                    if exclude_injection_wells
+                    else None
+                ),
                 "short_shutdown_full_day_hours": 24,
                 "partial_shutdown_note": (
-                    "Partially shutdown wells are excluded from both active and "
-                    "inactive counts."
+                    "Partially shutdown wells are excluded from both producing "
+                    "and non-producing counts."
+                    if exclude_injection_wells
+                    else "Partially shutdown wells are excluded from both active "
+                    "and inactive counts."
                 ),
             },
         }
@@ -375,7 +427,9 @@ class ShutdownClient:
                     w.onrr_code_id
                 ) AS effective_onrr_code_id,
                 oc.name AS onrr_code_name,
-                oc.active_well
+                oc.active_well,
+                oc.injection_well,
+                oc.description AS onrr_code_description
             FROM wells w
             LEFT JOIN onrr_codes oc
                 ON oc.id = COALESCE(
@@ -590,6 +644,9 @@ class UnavailableShutdownClient:
         raise ShutdownClientError(self.reason)
 
     def get_active_wells(self, site_id: int, active_date: str) -> dict[str, Any]:
+        raise ShutdownClientError(self.reason)
+
+    def get_producing_wells(self, site_id: int, producing_date: str) -> dict[str, Any]:
         raise ShutdownClientError(self.reason)
 
 

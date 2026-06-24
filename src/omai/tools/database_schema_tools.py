@@ -34,6 +34,7 @@ MYSQL_SQL_DIALECT_GUIDANCE = {
 
 
 COMMON_AGGREGATE_HINTS = [
+    "ONRR well status: join wells w to onrr_codes oc on oc.id = w.onrr_code_id and filter w.site_id = :site_id. Active wells require oc.active_well = 1. Producing wells require oc.active_well = 1 and oc.injection_well = 0. Injection wells require oc.injection_well = 1.",
     "Shutdown totals/reasons: join well_shutdowns ws to wells w, filter w.site_id = :site_id, use ws.date, SUM(ws.hours), and group by ws.downtime_code or w.name.",
     "Well-test aggregates: join well_tests wt to wells w, filter w.site_id = :site_id, use wt.time and aggregate wt.oil, wt.water, wt.gas, or wt.runtime.",
     "Well-test battery aggregates: left join batteries b on b.id = w.battery_id and group by COALESCE(b.name, 'No Battery').",

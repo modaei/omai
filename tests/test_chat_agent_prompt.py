@@ -179,9 +179,14 @@ def test_system_prompt_rejects_unsupported_actions():
     assert "outside Ometrics" in system_prompt
     assert OUT_OF_DOMAIN_RESPONSE in system_prompt
     assert "Use search_operational_context" in system_prompt
+    assert "Use ONRR tools" in system_prompt
+    assert "resolved as of the requested date using well history" in system_prompt
     assert "Use summarize_shutdown_causes" in system_prompt
     assert "Use get_active_wells" in system_prompt
+    assert "Use get_producing_wells" in system_prompt
+    assert "must exclude ONRR injection wells" in system_prompt
     assert "do not infer active wells from well-test activity" in system_prompt
+    assert "get_active_wells or get_producing_wells returns" in system_prompt
     assert "partial_shutdown_wells or partial_shutdown_well_names" in system_prompt
     assert "If partial_shutdown_count is 0, do not mention partial shutdowns at all" in system_prompt
     assert "first prefer the most specific domain tool" in system_prompt

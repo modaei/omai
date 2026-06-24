@@ -436,6 +436,20 @@ CHART_NOTE_QUERY = f"""
 # ignored. The resulting RagDocument objects are the only data sent to the vector DB.
 SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
     SourceDefinition(
+        source_type="onrr_code",
+        required_tables={"onrr_codes"},
+        query="""
+            SELECT id, :site_id AS site_id, name, active_well, injection_well,
+                description, updated_at
+            FROM onrr_codes
+        """,
+        text_fields=("name", "active_well", "injection_well", "description"),
+        entity_type="onrr_code",
+        entity_id_field="id",
+        entity_name_field="name",
+        title="ONRR code",
+    ),
+    SourceDefinition(
         source_type="general_note",
         required_tables={"general_notes"},
         query=f"""

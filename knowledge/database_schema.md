@@ -292,6 +292,17 @@ WHERE wells.site_id = :site_id
 Use `wells.name` as the display name. For Hartzog numeric references such as
 `4048`, match by suffix or by `HARTZOG DRAW UNIT 4048` where appropriate.
 
+ONRR code status:
+
+- `wells.onrr_code_id -> onrr_codes.id`
+- Active wells require `onrr_codes.active_well = 1`.
+- Producing wells require `onrr_codes.active_well = 1` and `onrr_codes.injection_well = 0`.
+- Injection wells require `onrr_codes.injection_well = 1`.
+- Include `onrr_codes.description` when explaining why a well is active,
+  producing, injection, inactive, or non-producing.
+- If the question asks for historical status, use `well_histories` records where
+  `property = 'onrr_code_id'` to determine the effective ONRR code at that time.
+
 Common shutdown columns:
 
 - `well_shutdowns.date`

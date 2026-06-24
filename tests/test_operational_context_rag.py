@@ -405,6 +405,48 @@ def test_operational_text_extractor_reads_general_notes_without_mysql_writes():
     assert documents[0].text == "General note. Comments: Pump issue mentioned."
 
 
+def test_operational_text_extractor_indexes_onrr_codes_as_reference_data():
+    engine = create_engine("sqlite:///:memory:")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE onrr_codes (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    active_well INTEGER NOT NULL,
+                    injection_well INTEGER NOT NULL,
+                    description TEXT,
+                    updated_at DATETIME
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO onrr_codes
+                    (id, name, active_well, injection_well, description, updated_at)
+                VALUES
+                    (1, 'WIW', 1, 1, 'Water injection well', '2026-06-01 00:00:00')
+                """
+            )
+        )
+
+    documents = OperationalTextExtractor(engine).extract(
+        site_id=4,
+        source_types={"onrr_code"},
+    )
+
+    assert len(documents) == 1
+    assert documents[0].source_type == "onrr_code"
+    assert documents[0].site_id == 4
+    assert documents[0].entity_type == "onrr_code"
+    assert documents[0].entity_name == "WIW"
+    assert "Injection Well: 1" in documents[0].text
+    assert "Description: Water injection well" in documents[0].text
+
+
 def test_operational_text_extractor_indexes_work_orders_by_work_order_time():
     engine = create_engine("sqlite:///:memory:")
     with engine.begin() as connection:

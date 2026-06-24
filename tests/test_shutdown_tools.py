@@ -45,6 +45,27 @@ class FakeShutdownClient:
             "partial_shutdown_summary": "Partial shutdown wells: Well - 13-3-1 Oil",
         }
 
+    def get_producing_wells(self, site_id, producing_date):
+        return {
+            "site_id": site_id,
+            "date": producing_date,
+            "producing_count": 1,
+            "non_producing_count": 1,
+            "partial_shutdown_count": 0,
+            "producing_wells": [{"well": "Well - 11-1-1 Oil"}],
+            "non_producing_wells": [
+                {
+                    "well": "Well - 12-2-1 Injection",
+                    "status": "onrr_injection_well",
+                    "onrr_code": "INJ",
+                    "onrr_code_description": "Active injection well",
+                }
+            ],
+            "partial_shutdown_wells": [],
+            "partial_shutdown_well_names": [],
+            "partial_shutdown_summary": None,
+        }
+
     def list_downtime_codes(self):
         return {"downtime_codes": {}}
 
@@ -103,3 +124,17 @@ def test_get_active_wells_tool_returns_counts():
     assert result["active_count"] == 2
     assert result["inactive_count"] == 1
     assert result["partial_shutdown_count"] == 1
+
+
+def test_get_producing_wells_tool_returns_counts():
+    tools = build_shutdown_tools(FakeShutdownClient(), site_id=4)
+
+    result = json.loads(
+        tool_by_name(tools, "get_producing_wells").invoke(
+            {"producing_date": "2026-06-21"}
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["producing_count"] == 1
+    assert result["non_producing_wells"][0]["status"] == "onrr_injection_well"

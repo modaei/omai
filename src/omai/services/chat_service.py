@@ -15,6 +15,7 @@ from omai.clients.database_schema_client import (
     DatabaseSchemaClient,
     UnavailableDatabaseSchemaClient,
 )
+from omai.clients.onrr_client import OnrrClient, UnavailableOnrrClient
 from omai.clients.reading_client import ReadingClient, UnavailableReadingClient
 from omai.clients.report_client import ReportClient
 from omai.clients.shutdown_client import ShutdownClient, UnavailableShutdownClient
@@ -31,6 +32,7 @@ from omai.rag.vector_store import (
 )
 from omai.tools.capability_tools import build_capability_tools
 from omai.tools.database_schema_tools import build_database_schema_tools
+from omai.tools.onrr_tools import build_onrr_tools
 from omai.tools.operational_context_tools import build_operational_context_tools
 from omai.tools.reading_tools import build_reading_tools
 from omai.tools.report_tools import build_report_tools
@@ -66,6 +68,10 @@ def answer_chat(
         shutdown_client = ShutdownClient.from_settings(settings)
     except ValueError as exc:
         shutdown_client = UnavailableShutdownClient(str(exc))
+    try:
+        onrr_client = OnrrClient.from_settings(settings)
+    except ValueError as exc:
+        onrr_client = UnavailableOnrrClient(str(exc))
     operational_context_store = _operational_context_store_from_settings(settings)
     try:
         well_timeline_client = WellTimelineClient.from_settings(settings)
@@ -108,6 +114,7 @@ def answer_chat(
             site_id,
             operational_context_store=operational_context_store,
         ),
+        *build_onrr_tools(onrr_client, site_id),
         *build_shutdown_tools(
             shutdown_client,
             site_id,

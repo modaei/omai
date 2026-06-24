@@ -29,7 +29,9 @@ def make_shutdown_client() -> ShutdownClient:
                 CREATE TABLE onrr_codes (
                     id INTEGER PRIMARY KEY,
                     name TEXT NOT NULL,
-                    active_well INTEGER NOT NULL
+                    active_well INTEGER NOT NULL,
+                    injection_well INTEGER NOT NULL DEFAULT 0,
+                    description TEXT
                 )
                 """
             )
@@ -68,10 +70,11 @@ def make_shutdown_client() -> ShutdownClient:
         connection.execute(
             text(
                 """
-                INSERT INTO onrr_codes (id, name, active_well)
+                INSERT INTO onrr_codes (id, name, active_well, injection_well, description)
                 VALUES
-                    (1, 'POW', 1),
-                    (2, 'SIW', 0)
+                    (1, 'POW', 1, 0, 'Producing oil well'),
+                    (2, 'SIW', 0, 0, 'Shut-in well'),
+                    (3, 'INJ', 1, 1, 'Active injection well')
                 """
             )
         )
@@ -86,7 +89,8 @@ def make_shutdown_client() -> ShutdownClient:
                     (4, 1, '13-3-1 Oil', 2),
                     (5, 1, '14-4-1 Oil', 1),
                     (6, 1, '15-5-1 Oil', 2),
-                    (7, 1, '16-6-1 Oil', 1)
+                    (7, 1, '16-6-1 Oil', 1),
+                    (8, 1, '17-7-1 Injection', 3)
                 """
             )
         )
@@ -189,10 +193,11 @@ def test_list_downtime_codes():
 def test_get_active_wells_uses_onrr_state_and_shutdown_rules():
     result = make_shutdown_client().get_active_wells(1, "2026-06-21")
 
-    assert result["active_count"] == 2
+    assert result["active_count"] == 3
     assert [row["well"] for row in result["active_wells"]] == [
         "Well - 11-1-1 Oil",
         "Well - 15-5-1 Oil",
+        "Well - 17-7-1 Injection",
     ]
     assert result["inactive_count"] == 3
     assert [row["well"] for row in result["inactive_wells"]] == [
@@ -211,6 +216,26 @@ def test_get_active_wells_uses_current_onrr_when_no_history_exists():
     result = make_shutdown_client().get_active_wells(1, "2026-06-23")
 
     assert "Well - 15-5-1 Oil" in [row["well"] for row in result["inactive_wells"]]
+
+
+def test_get_producing_wells_excludes_onrr_injection_wells():
+    result = make_shutdown_client().get_producing_wells(1, "2026-06-23")
+
+    assert result["producing_count"] == 3
+    assert [row["well"] for row in result["producing_wells"]] == [
+        "Well - 11-1-1 Oil",
+        "Well - 14-4-1 Oil",
+        "Well - 16-6-1 Oil",
+    ]
+    injection_well = next(
+        row
+        for row in result["non_producing_wells"]
+        if row["well"] == "Well - 17-7-1 Injection"
+    )
+    assert injection_well["status"] == "onrr_injection_well"
+    assert injection_well["onrr_code"] == "INJ"
+    assert injection_well["onrr_code_description"] == "Active injection well"
+    assert injection_well["onrr_injection_well"] is True
 
 
 def test_shutdown_date_order_is_validated():
