@@ -176,6 +176,11 @@ def test_system_prompt_rejects_unsupported_actions():
     assert "Only run report tools" in system_prompt
     assert "Use summarize_report_by_month" in system_prompt
     assert "do not call run_report separately for each" in system_prompt
+    assert "Use summarize_well_allocation" in system_prompt
+    assert "Do not use well tests for specific well or well-group" in system_prompt
+    assert "Well-group filters are case-insensitive" in system_prompt
+    assert "TA wells mean onrr_code = 'TA'" in system_prompt
+    assert "Rod wells mean wells.pump_type = 'ROD'" in system_prompt
     assert "outside Ometrics" in system_prompt
     assert OUT_OF_DOMAIN_RESPONSE in system_prompt
     assert "Use search_operational_context" in system_prompt

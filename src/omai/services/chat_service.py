@@ -24,6 +24,10 @@ from omai.clients.well_timeline_client import (
     UnavailableWellTimelineClient,
     WellTimelineClient,
 )
+from omai.clients.well_filter_client import (
+    UnavailableWellFilterClient,
+    WellFilterClient,
+)
 from omai.clients.work_order_client import UnavailableWorkOrderClient, WorkOrderClient
 from omai.config.settings import Settings
 from omai.rag.vector_store import (
@@ -72,6 +76,10 @@ def answer_chat(
         onrr_client = OnrrClient.from_settings(settings)
     except ValueError as exc:
         onrr_client = UnavailableOnrrClient(str(exc))
+    try:
+        well_filter_client = WellFilterClient.from_settings(settings)
+    except ValueError as exc:
+        well_filter_client = UnavailableWellFilterClient(str(exc))
     operational_context_store = _operational_context_store_from_settings(settings)
     try:
         well_timeline_client = WellTimelineClient.from_settings(settings)
@@ -108,6 +116,7 @@ def answer_chat(
             site_id,
             resolved_site_name,
             operational_context_store=operational_context_store,
+            well_filter_client=well_filter_client,
         ),
         *build_reading_tools(
             reading_client,

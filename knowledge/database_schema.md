@@ -340,6 +340,17 @@ and `runtime` for numeric aggregates. Use `wells.name` as the well display
 name. Join through `wells` for site scoping, then optionally left join
 `batteries` through `wells.battery_id`.
 
+Only use well-test aggregates when the user explicitly asks about well tests.
+For specific well or well-group production/injection contribution, use the
+allocation report tools instead. Well tests are samples; allocation reports
+attribute measured production and injection back to wells.
+
+For well-attribute grouping, use case-insensitive comparisons. Rod wells mean
+`LOWER(wells.pump_type) = LOWER('ROD')`; ESP/JET/flowing wells use
+`wells.pump_type`; TA/POW/WIW/WIWSI wells use `onrr_codes.name` through
+`wells.onrr_code_id`. Allocation questions should use the allocation tool when
+available instead of SQL over `well_tests`.
+
 Average oil from well tests by battery:
 
 ```sql

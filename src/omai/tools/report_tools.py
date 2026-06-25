@@ -11,6 +11,11 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from omai.clients.report_client import AVAILABLE_REPORTS, ReportClient, ReportClientError
+from omai.clients.well_filter_client import (
+    UnavailableWellFilterClient,
+    WellFilterClient,
+    WellFilterClientError,
+)
 from omai.tools.rag_enrichment import (
     OperationalContextSearchStore,
     add_operational_context,
@@ -65,6 +70,28 @@ class MonthlyReportSummaryInput(BaseModel):
         description=(
             "Optional metric key inside each daily row. Leave empty for single-metric "
             "reports such as oil_production, gas_flared, and water_injection."
+        ),
+    )
+
+
+class WellAllocationSummaryInput(BaseModel):
+    allocation_type: Literal["production", "injection"] = Field(
+        description="Use production for oil/water/gas allocation, injection for injection allocation.",
+    )
+    start_date: str = Field(description="Start date in YYYY-MM-DD format.")
+    end_date: str = Field(description="End date in YYYY-MM-DD format.")
+    well_name: str | None = Field(
+        default=None,
+        description="Optional well name, key, or partial well identifier.",
+    )
+    well_filters: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Optional well attribute filters. Each filter is {'field': field, 'value': value}. "
+            "Supported fields include pump_type, onrr_code, wogcc_class, wogcc_status, "
+            "direction, prod_fm, battery, lact, monitored, disable_reading, and "
+            "multiple_injection_form. Examples: rod wells => pump_type=ROD; "
+            "TA wells => onrr_code=TA."
         ),
     )
 
@@ -129,6 +156,95 @@ def _single_metric_value_key(report_name: str, rows: list[dict[str, Any]]) -> st
     if rows and "value" in rows[0]:
         return "value"
     return None
+
+
+def _allocation_report_name(allocation_type: str) -> str:
+    return "injection_allocation" if allocation_type == "injection" else "production_allocation"
+
+
+def _allocation_metric_keys(allocation_type: str) -> tuple[str, ...]:
+    if allocation_type == "injection":
+        return ("total_allocated_injection",)
+    return ("total_allocated_oil", "total_allocated_water", "total_allocated_gas")
+
+
+def _matches_well_name(row_name: str, requested: str) -> bool:
+    row_norm = _normalize_name(row_name)
+    requested_norm = _normalize_name(requested)
+    return requested_norm in row_norm
+
+
+def _summarize_allocation_rows(
+    rows: Any,
+    allocation_type: str,
+    well_names: set[str] | None = None,
+    well_name: str | None = None,
+    row_filters: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    if not isinstance(rows, list):
+        return {
+            "ok": False,
+            "error": "Allocation report result was not a list of well rows.",
+        }
+
+    selected_rows = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        row_name = str(row.get("name") or "")
+        if well_names is not None and row_name not in well_names:
+            continue
+        if well_name and not _matches_well_name(row_name, well_name):
+            continue
+        if not _matches_allocation_row_filters(row, row_filters or []):
+            continue
+        selected_rows.append(row)
+
+    totals = {key: 0.0 for key in _allocation_metric_keys(allocation_type)}
+    for row in selected_rows:
+        for key in totals:
+            value = row.get(key)
+            if value is None:
+                continue
+            try:
+                totals[key] += float(value)
+            except (TypeError, ValueError):
+                continue
+
+    return {
+        "ok": True,
+        "matched_well_count": len(selected_rows),
+        "matched_wells": [row.get("name") for row in selected_rows if row.get("name")],
+        "totals": {key: round(value, 2) for key, value in totals.items()},
+    }
+
+
+def _matches_allocation_row_filters(
+    row: dict[str, Any], row_filters: list[dict[str, Any]]
+) -> bool:
+    for filter_item in row_filters:
+        field = str(filter_item.get("field", "")).strip().lower()
+        value = str(filter_item.get("value", "")).strip()
+        if field == "onrr_code":
+            if str(row.get("onrr_code") or "").lower() != value.lower():
+                return False
+    return True
+
+
+def _report_row_filters(filters: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        filter_item
+        for filter_item in filters
+        if str(filter_item.get("field", "")).strip().lower() == "onrr_code"
+    ]
+
+
+def _database_well_filters(filters: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        filter_item
+        for filter_item in filters
+        if str(filter_item.get("field", "")).strip().lower() != "onrr_code"
+    ]
 
 
 def _monthly_summary(
@@ -210,6 +326,7 @@ def build_report_tools(
     site_id: int,
     site_name: str | None = None,
     operational_context_store: OperationalContextSearchStore | None = None,
+    well_filter_client: WellFilterClient | UnavailableWellFilterClient | None = None,
 ) -> list[StructuredTool]:
     site_display_name = site_name or "selected site"
 
@@ -337,6 +454,71 @@ def build_report_tools(
             logger.warning("Monthly report summary failed: %s", exc)
             return _json_result({"ok": False, "error": str(exc)})
 
+    def summarize_well_allocation(
+        allocation_type: str,
+        start_date: str,
+        end_date: str,
+        well_name: str | None = None,
+        well_filters: list[dict[str, Any]] | None = None,
+    ) -> str:
+        """Run allocation report and summarize totals for matching wells."""
+        report_name = _allocation_report_name(allocation_type)
+        well_filters = well_filters or []
+        db_filters = _database_well_filters(well_filters)
+        row_filters = _report_row_filters(well_filters)
+        logger.info(
+            "Summarizing well allocation site_id=%s report=%s start=%s end=%s well=%s filters=%s",
+            site_id,
+            report_name,
+            start_date,
+            end_date,
+            well_name,
+            well_filters,
+        )
+        try:
+            matching_well_names = None
+            matched_well_filter = None
+            if db_filters or well_name:
+                if well_filter_client is None:
+                    raise WellFilterClientError("Well filter client is not available.")
+                matched_well_filter = well_filter_client.find_wells(
+                    site_id=site_id,
+                    well_name=well_name,
+                    filters=db_filters,
+                )
+                matching_well_names = {
+                    str(row["name"])
+                    for row in matched_well_filter.get("wells", [])
+                    if row.get("name")
+                }
+
+            data = client.run_report(site_id, report_name, start_date, end_date)
+            summary = _summarize_allocation_rows(
+                data,
+                allocation_type=allocation_type,
+                well_names=matching_well_names,
+                well_name=well_name if matching_well_names is None else None,
+                row_filters=row_filters,
+            )
+            summary.update(
+                {
+                    "site_name": site_display_name,
+                    "report_name": report_name,
+                    "allocation_type": allocation_type,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "filters": {
+                        **({"well_name": well_name} if well_name else {}),
+                        **({"well_filters": well_filters} if well_filters else {}),
+                    },
+                    "well_filter": matched_well_filter,
+                }
+            )
+            return _json_result(summary)
+        except (ReportClientError, WellFilterClientError) as exc:
+            logger.warning("Well allocation summary failed: %s", exc)
+            return _json_result({"ok": False, "error": str(exc)})
+
     return [
         StructuredTool.from_function(
             func=list_available_reports,
@@ -370,5 +552,20 @@ def build_report_tools(
                 "battery comparisons instead of calling run_report once per month."
             ),
             args_schema=MonthlyReportSummaryInput,
+        ),
+        StructuredTool.from_function(
+            func=summarize_well_allocation,
+            name="summarize_well_allocation",
+            description=(
+                "Run production_allocation or injection_allocation and summarize "
+                "well-level allocation totals. Use this for questions about how "
+                "much a specific well or well group produced or injected. Well "
+                "groups can be filtered by attributes such as pump_type, onrr_code, "
+                "battery, lact, direction, and status fields. Use pump_type=ROD "
+                "for rod wells and onrr_code=TA for TA wells. Attribute filters "
+                "are case-insensitive. Do not use well tests for production or "
+                "injection allocation totals."
+            ),
+            args_schema=WellAllocationSummaryInput,
         ),
     ]
