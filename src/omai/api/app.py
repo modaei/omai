@@ -105,7 +105,7 @@ def create_app(
             reasoning_effort = reasoning_effort_for_response_mode(payload.response_mode)
             if not history and not is_in_domain(payload.message):
                 repository.append_message(conversation, "user", payload.message)
-                repository.append_message(
+                assistant_message_id = repository.append_message(
                     conversation,
                     "assistant",
                     OUT_OF_DOMAIN_RESPONSE,
@@ -114,6 +114,7 @@ def create_app(
                 return ChatResponse(
                     conversation_id=conversation.uuid,
                     answer=OUT_OF_DOMAIN_RESPONSE,
+                    assistant_message_id=assistant_message_id,
                 )
             answer, tool_calls, stats = app.state.chat_handler(
                 settings,
@@ -124,14 +125,18 @@ def create_app(
                 payload.response_mode,
             )
             repository.append_message(conversation, "user", payload.message)
-            repository.append_message(
+            assistant_message_id = repository.append_message(
                 conversation,
                 "assistant",
                 answer,
                 reasoning_effort=reasoning_effort,
                 info=_assistant_info(tool_calls, stats, payload.response_mode),
             )
-            return ChatResponse(conversation_id=conversation.uuid, answer=answer)
+            return ChatResponse(
+                conversation_id=conversation.uuid,
+                answer=answer,
+                assistant_message_id=assistant_message_id,
+            )
         except ConversationNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except DailyUsageLimitExceeded as exc:

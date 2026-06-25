@@ -32,3 +32,4 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     conversation_id: str
     answer: str
+    assistant_message_id: int

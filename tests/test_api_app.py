@@ -188,7 +188,7 @@ def stored_messages(repository: ConversationRepository, conversation_id: int):
             for row in connection.execute(
                 text(
                     """
-                    SELECT role, content, reasoning_effort, info
+                    SELECT id, role, content, reasoning_effort, info
                     FROM ai_messages
                     WHERE ai_conversation_id = :conversation_id
                     ORDER BY id
@@ -296,6 +296,7 @@ def test_chat_endpoint_creates_conversation_and_returns_answer_only():
     body = response.model_dump()
     assert body["answer"] == "db lookup: How much gas was flared in May? [fast]"
     assert body["conversation_id"]
+    assert body["assistant_message_id"]
     assert "tool_calls" not in body
     assert "stats" not in body
     conversation = repository.get(body["conversation_id"], user_id=9, site_id=4)
@@ -305,18 +306,21 @@ def test_chat_endpoint_creates_conversation_and_returns_answer_only():
     ]
     assert stored_messages(repository, conversation.id) == [
         {
+            "id": 1,
             "role": "user",
             "content": "How much gas was flared in May?",
             "reasoning_effort": None,
             "info": None,
         },
-            {
-                "role": "assistant",
-                "content": body["answer"],
-                "reasoning_effort": "medium",
-                "info": stored_messages(repository, conversation.id)[1]["info"],
-            },
+        {
+            "id": body["assistant_message_id"],
+            "role": "assistant",
+            "content": body["answer"],
+            "reasoning_effort": "medium",
+            "info": stored_messages(repository, conversation.id)[1]["info"],
+        },
     ]
+    assert body["assistant_message_id"] == 2
     info = json.loads(stored_messages(repository, conversation.id)[1]["info"])
     assert info["response_mode"] == "fast"
     assert info["tool_calls"] == [
@@ -510,6 +514,7 @@ def test_chat_endpoint_refuses_out_of_domain_question_without_calling_model():
 
     body = response.model_dump()
     assert body["answer"] == OUT_OF_DOMAIN_RESPONSE
+    assert body["assistant_message_id"]
     conversation = repository.get(body["conversation_id"], user_id=9, site_id=4)
     assert repository.load_history(conversation) == [
         {"role": "user", "content": "How old is Paris?"},
@@ -519,6 +524,7 @@ def test_chat_endpoint_refuses_out_of_domain_question_without_calling_model():
         },
     ]
     assert stored_messages(repository, conversation.id)[1]["reasoning_effort"] == "medium"
+    assert stored_messages(repository, conversation.id)[1]["id"] == body["assistant_message_id"]
 
 
 def test_chat_endpoint_rejects_when_daily_user_limit_is_reached():
