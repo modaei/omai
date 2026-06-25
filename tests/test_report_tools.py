@@ -339,3 +339,60 @@ def test_summarize_well_allocation_combines_db_and_report_filters():
     assert result["matched_well_count"] == 1
     assert result["matched_wells"] == ["HARTZOG DRAW UNIT 1002"]
     assert result["totals"]["total_allocated_oil"] == 5.0
+
+
+def test_list_well_allocation_returns_ranked_per_well_rows():
+    tools = build_report_tools(
+        FakeAllocationReportClient(),
+        4,
+        "HARTZOG DRAW",
+        well_filter_client=FakeWellFilterClient(),
+    )
+
+    result = json.loads(
+        tool_by_name(tools, "list_well_allocation").invoke(
+            {
+                "allocation_type": "production",
+                "start_date": "2026-06-01",
+                "end_date": "2026-06-05",
+                "sort_by": "total_allocated_oil",
+                "limit": 2,
+            }
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["matched_well_count"] == 3
+    assert result["sort_by"] == "total_allocated_oil"
+    assert [row["name"] for row in result["rows"]] == [
+        "HARTZOG DRAW UNIT 2001",
+        "HARTZOG DRAW UNIT 1001",
+    ]
+    assert result["rows"][0]["total_allocated_oil"] == 99.0
+    assert result["rows"][0]["daily_avg_allocated_oil"] == 19.8
+
+
+def test_list_well_allocation_applies_well_filters():
+    tools = build_report_tools(
+        FakeAllocationReportClient(),
+        4,
+        "HARTZOG DRAW",
+        well_filter_client=FakeWellFilterClient(),
+    )
+
+    result = json.loads(
+        tool_by_name(tools, "list_well_allocation").invoke(
+            {
+                "allocation_type": "production",
+                "start_date": "2026-06-01",
+                "end_date": "2026-06-01",
+                "well_filters": [{"field": "pump_type", "value": "ROD"}],
+                "sort_by": "total_allocated_oil",
+            }
+        )
+    )
+
+    assert [row["name"] for row in result["rows"]] == [
+        "HARTZOG DRAW UNIT 1001",
+        "HARTZOG DRAW UNIT 1002",
+    ]

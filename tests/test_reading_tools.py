@@ -47,6 +47,103 @@ class FakeReadingClient:
             "rows": [{"entity_name": entity_name, "reading": 42}],
         }
 
+    def search_tank_readings(
+        self,
+        site_id,
+        start_date,
+        end_date,
+        battery_name=None,
+        tank_name=None,
+        tank_key=None,
+        tank_type=None,
+        contains=None,
+        monitored=None,
+        disable_reading=None,
+        filters=None,
+    ):
+        return {
+            "reading_type": "tank",
+            "start_date": start_date,
+            "end_date": end_date,
+            "filters": {
+                "battery_name": battery_name,
+                "contains": contains,
+                "computed_filters": filters or [],
+            },
+            "count": 1,
+            "readings": [
+                {
+                    "tank_name": "Mixed A",
+                    "battery_name": battery_name,
+                    "oil_volume": 10,
+                }
+            ],
+        }
+
+    def search_equipment_readings(
+        self,
+        site_id,
+        reading_type,
+        start_date,
+        end_date,
+        battery_name=None,
+        entity_name=None,
+        entity_key=None,
+        monitored=None,
+        disable_reading=None,
+        equipment_filters=None,
+        reading_filters=None,
+        computed_filters=None,
+        contains=None,
+    ):
+        return {
+            "reading_type": reading_type,
+            "start_date": start_date,
+            "end_date": end_date,
+            "filters": {
+                "battery_name": battery_name,
+                "entity_name": entity_name,
+                "equipment_filters": equipment_filters or [],
+                "reading_filters": reading_filters or [],
+                "computed_filters": computed_filters or [],
+                "contains": contains,
+            },
+            "count": 1,
+            "readings": [
+                {
+                    "entity_name": "FM Battery 6 Gas",
+                    "battery_name": battery_name,
+                    "total": 150,
+                }
+            ],
+        }
+
+    def list_equipment(
+        self,
+        site_id,
+        equipment_type,
+        battery_name=None,
+        entity_name=None,
+        entity_key=None,
+        monitored=None,
+        disable_reading=None,
+        equipment_filters=None,
+    ):
+        return {
+            "equipment_type": equipment_type,
+            "filters": {
+                "battery_name": battery_name,
+                "equipment_filters": equipment_filters or [],
+            },
+            "count": 1,
+            "entities": [
+                {
+                    "entity_name": "Tank 6-1 Oil",
+                    "battery_name": battery_name,
+                }
+            ],
+        }
+
     def get_reading_for_entity(
         self,
         site_id,
@@ -139,6 +236,75 @@ def test_search_readings_tool_does_not_add_operational_context():
     assert result["ok"] is True
     assert "operational_context" not in result
     assert store.calls == []
+
+
+def test_search_tank_readings_tool_uses_battery_and_computed_filters():
+    tools = build_reading_tools(FakeReadingClient(), 4)
+    result = json.loads(
+        tool_by_name(tools, "search_tank_readings").invoke(
+            {
+                "start_date": "2026-06-24",
+                "end_date": "2026-06-24",
+                "battery_name": "Battery 6",
+                "contains": "oil",
+                "filters": [
+                    {"field": "oil_volume", "operator": ">", "value": 0},
+                ],
+            }
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["filters"]["battery_name"] == "Battery 6"
+    assert result["filters"]["contains"] == "oil"
+    assert result["readings"][0]["oil_volume"] == 10
+
+
+def test_search_equipment_readings_tool_uses_relation_and_filters():
+    tools = build_reading_tools(FakeReadingClient(), 4)
+    result = json.loads(
+        tool_by_name(tools, "search_equipment_readings").invoke(
+            {
+                "reading_type": "flow_meter",
+                "start_date": "2026-06-24",
+                "end_date": "2026-06-24",
+                "battery_name": "Battery 6",
+                "equipment_filters": [
+                    {"field": "type", "operator": "=", "value": "gas"},
+                ],
+                "reading_filters": [
+                    {"field": "total", "operator": ">", "value": 100},
+                ],
+            }
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["filters"]["battery_name"] == "Battery 6"
+    assert result["filters"]["equipment_filters"] == [
+        {"field": "type", "operator": "=", "value": "gas"}
+    ]
+    assert result["filters"]["reading_filters"] == [
+        {"field": "total", "operator": ">", "value": 100.0}
+    ]
+    assert result["readings"][0]["total"] == 150
+
+
+def test_list_equipment_tool_does_not_require_reading_date():
+    tools = build_reading_tools(FakeReadingClient(), 4)
+    result = json.loads(
+        tool_by_name(tools, "list_equipment").invoke(
+            {
+                "equipment_type": "tank",
+                "battery_name": "Battery 6",
+            }
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["equipment_type"] == "tank"
+    assert result["filters"]["battery_name"] == "Battery 6"
+    assert result["entities"][0]["entity_name"] == "Tank 6-1 Oil"
 
 
 def test_get_reading_for_entity_tool_uses_resolver_client_call():

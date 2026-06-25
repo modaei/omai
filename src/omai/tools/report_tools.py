@@ -96,6 +96,32 @@ class WellAllocationSummaryInput(BaseModel):
     )
 
 
+class WellAllocationListInput(BaseModel):
+    allocation_type: Literal["production", "injection"] = Field(
+        description="Use production for oil/water/gas allocation, injection for injection allocation.",
+    )
+    start_date: str = Field(description="Start date in YYYY-MM-DD format.")
+    end_date: str = Field(description="End date in YYYY-MM-DD format.")
+    well_name: str | None = Field(
+        default=None,
+        description="Optional well name, key, or partial well identifier.",
+    )
+    well_filters: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Optional well attribute filters, same format as summarize_well_allocation.",
+    )
+    sort_by: str | None = Field(
+        default=None,
+        description=(
+            "Optional row metric to sort by, such as total_allocated_oil, "
+            "daily_avg_allocated_oil, total_allocated_water, total_allocated_gas, "
+            "or total_allocated_injection."
+        ),
+    )
+    sort_direction: Literal["asc", "desc"] = "desc"
+    limit: int = Field(default=20, ge=1, le=100)
+
+
 def _json_result(value: Any) -> str:
     return json.dumps(value, default=str, separators=(",", ":"))
 
@@ -219,6 +245,53 @@ def _summarize_allocation_rows(
     }
 
 
+def _list_allocation_rows(
+    rows: Any,
+    allocation_type: str,
+    start_date: str,
+    end_date: str,
+    well_names: set[str] | None = None,
+    well_name: str | None = None,
+    row_filters: list[dict[str, Any]] | None = None,
+    sort_by: str | None = None,
+    sort_direction: str = "desc",
+    limit: int = 20,
+) -> dict[str, Any]:
+    if not isinstance(rows, list):
+        return {
+            "ok": False,
+            "error": "Allocation report result was not a list of well rows.",
+        }
+
+    day_count = _inclusive_day_count(start_date, end_date)
+    selected_rows = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        row_name = str(row.get("name") or "")
+        if well_names is not None and row_name not in well_names:
+            continue
+        if well_name and not _matches_well_name(row_name, well_name):
+            continue
+        if not _matches_allocation_row_filters(row, row_filters or []):
+            continue
+        selected_rows.append(_compact_allocation_row(row, allocation_type, day_count))
+
+    sort_key = sort_by or _default_allocation_sort_key(allocation_type)
+    selected_rows.sort(
+        key=lambda row: _numeric_sort_value(row.get(sort_key)),
+        reverse=sort_direction != "asc",
+    )
+    return {
+        "ok": True,
+        "matched_well_count": len(selected_rows),
+        "sort_by": sort_key,
+        "sort_direction": sort_direction,
+        "limit": limit,
+        "rows": selected_rows[:limit],
+    }
+
+
 def _matches_allocation_row_filters(
     row: dict[str, Any], row_filters: list[dict[str, Any]]
 ) -> bool:
@@ -229,6 +302,50 @@ def _matches_allocation_row_filters(
             if str(row.get("onrr_code") or "").lower() != value.lower():
                 return False
     return True
+
+
+def _inclusive_day_count(start_date: str, end_date: str) -> int:
+    try:
+        start = date.fromisoformat(start_date)
+        end = date.fromisoformat(end_date)
+    except ValueError:
+        return 1
+    return max((end - start).days + 1, 1)
+
+
+def _default_allocation_sort_key(allocation_type: str) -> str:
+    return (
+        "total_allocated_injection"
+        if allocation_type == "injection"
+        else "total_allocated_oil"
+    )
+
+
+def _numeric_sort_value(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _compact_allocation_row(
+    row: dict[str, Any], allocation_type: str, day_count: int
+) -> dict[str, Any]:
+    compact = {
+        "name": row.get("name"),
+        "onrr_code": row.get("onrr_code"),
+    }
+    if row.get("onrr_code_description") is not None:
+        compact["onrr_code_description"] = row.get("onrr_code_description")
+    for key in _allocation_metric_keys(allocation_type):
+        value = row.get(key)
+        if value is None:
+            continue
+        numeric_value = round(_numeric_sort_value(value), 2)
+        compact[key] = numeric_value
+        avg_key = key.replace("total_", "daily_avg_", 1)
+        compact[avg_key] = round(numeric_value / day_count, 2)
+    return compact
 
 
 def _report_row_filters(filters: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -519,6 +636,80 @@ def build_report_tools(
             logger.warning("Well allocation summary failed: %s", exc)
             return _json_result({"ok": False, "error": str(exc)})
 
+    def list_well_allocation(
+        allocation_type: str,
+        start_date: str,
+        end_date: str,
+        well_name: str | None = None,
+        well_filters: list[dict[str, Any]] | None = None,
+        sort_by: str | None = None,
+        sort_direction: str = "desc",
+        limit: int = 20,
+    ) -> str:
+        """Run allocation report and return per-well rows."""
+        report_name = _allocation_report_name(allocation_type)
+        well_filters = well_filters or []
+        db_filters = _database_well_filters(well_filters)
+        row_filters = _report_row_filters(well_filters)
+        logger.info(
+            "Listing well allocation site_id=%s report=%s start=%s end=%s well=%s filters=%s sort=%s",
+            site_id,
+            report_name,
+            start_date,
+            end_date,
+            well_name,
+            well_filters,
+            sort_by,
+        )
+        try:
+            matching_well_names = None
+            matched_well_filter = None
+            if db_filters or well_name:
+                if well_filter_client is None:
+                    raise WellFilterClientError("Well filter client is not available.")
+                matched_well_filter = well_filter_client.find_wells(
+                    site_id=site_id,
+                    well_name=well_name,
+                    filters=db_filters,
+                )
+                matching_well_names = {
+                    str(row["name"])
+                    for row in matched_well_filter.get("wells", [])
+                    if row.get("name")
+                }
+
+            data = client.run_report(site_id, report_name, start_date, end_date)
+            result = _list_allocation_rows(
+                data,
+                allocation_type=allocation_type,
+                start_date=start_date,
+                end_date=end_date,
+                well_names=matching_well_names,
+                well_name=well_name if matching_well_names is None else None,
+                row_filters=row_filters,
+                sort_by=sort_by,
+                sort_direction=sort_direction,
+                limit=limit,
+            )
+            result.update(
+                {
+                    "site_name": site_display_name,
+                    "report_name": report_name,
+                    "allocation_type": allocation_type,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "filters": {
+                        **({"well_name": well_name} if well_name else {}),
+                        **({"well_filters": well_filters} if well_filters else {}),
+                    },
+                    "well_filter": matched_well_filter,
+                }
+            )
+            return _json_result(result)
+        except (ReportClientError, WellFilterClientError) as exc:
+            logger.warning("Well allocation listing failed: %s", exc)
+            return _json_result({"ok": False, "error": str(exc)})
+
     return [
         StructuredTool.from_function(
             func=list_available_reports,
@@ -567,5 +758,17 @@ def build_report_tools(
                 "injection allocation totals."
             ),
             args_schema=WellAllocationSummaryInput,
+        ),
+        StructuredTool.from_function(
+            func=list_well_allocation,
+            name="list_well_allocation",
+            description=(
+                "Run production_allocation or injection_allocation and return one "
+                "row per matched well. Use this for top/bottom/ranked well "
+                "allocation questions such as which well produced the most oil, "
+                "top 10 producers, or per-well daily averages. Do not use well "
+                "tests for production or injection allocation rankings."
+            ),
+            args_schema=WellAllocationListInput,
         ),
     ]

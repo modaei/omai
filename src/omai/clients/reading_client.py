@@ -29,6 +29,14 @@ class ReadingDefinition:
     supports_missing: bool = True
 
 
+@dataclass(frozen=True)
+class EquipmentDefinition:
+    label: str
+    table: str
+    key: str
+    metadata_fields: tuple[str, ...]
+
+
 READING_DEFINITIONS: dict[str, ReadingDefinition] = {
     "lact": ReadingDefinition(
         "LACT readings",
@@ -224,8 +232,84 @@ TANK_VOLUME_FIELDS = (
     "oil_volume",
     "water_volume",
     "total_volume",
+    "initial_water_volume",
+    "final_water_volume",
     "volume_status",
+    "content_type",
+    "content_assumption",
 )
+
+EQUIPMENT_METADATA_FIELDS: dict[str, tuple[str, ...]] = {
+    "lact": ("monitored", "disable_reading"),
+    "flare": ("monitored", "disable_reading"),
+    "linear_tank": (
+        "monitored",
+        "disable_reading",
+        "type",
+        "bbl_foot",
+        "non_linear_volume_mapping_id",
+    ),
+    "mixed_tank": (
+        "monitored",
+        "disable_reading",
+        "type",
+        "bbl_foot",
+        "non_linear_volume_mapping_id",
+    ),
+    "non_linear_tank": (
+        "monitored",
+        "disable_reading",
+        "type",
+        "bbl_foot",
+        "non_linear_volume_mapping_id",
+    ),
+    "water_plant": ("monitored", "disable_reading"),
+    "flow_meter": (
+        "monitored",
+        "disable_reading",
+        "type",
+        "measurement_method",
+        "water_plant_id",
+        "flared_gas_report",
+        "water_transfer_report",
+    ),
+    "treater": ("monitored", "disable_reading"),
+    "knock_out": ("monitored", "disable_reading"),
+    "pump": ("monitored", "disable_reading", "type", "water_plant_id"),
+}
+
+EQUIPMENT_SEARCH_READING_TYPES = tuple(EQUIPMENT_METADATA_FIELDS)
+
+EQUIPMENT_DEFINITIONS: dict[str, EquipmentDefinition] = {
+    "lact": EquipmentDefinition("LACTs", "lacts", "id", EQUIPMENT_METADATA_FIELDS["lact"]),
+    "flare": EquipmentDefinition("Flares", "flares", "id", EQUIPMENT_METADATA_FIELDS["flare"]),
+    "tank": EquipmentDefinition("Tanks", "tanks", "id", EQUIPMENT_METADATA_FIELDS["linear_tank"]),
+    "water_plant": EquipmentDefinition(
+        "Water plants",
+        "water_plants",
+        "id",
+        EQUIPMENT_METADATA_FIELDS["water_plant"],
+    ),
+    "flow_meter": EquipmentDefinition(
+        "Flow meters",
+        "flow_meters",
+        "id",
+        EQUIPMENT_METADATA_FIELDS["flow_meter"],
+    ),
+    "treater": EquipmentDefinition(
+        "Treaters",
+        "treaters",
+        "id",
+        EQUIPMENT_METADATA_FIELDS["treater"],
+    ),
+    "knock_out": EquipmentDefinition(
+        "Knock-outs",
+        "knock_outs",
+        "id",
+        EQUIPMENT_METADATA_FIELDS["knock_out"],
+    ),
+    "pump": EquipmentDefinition("Pumps", "pumps", "id", EQUIPMENT_METADATA_FIELDS["pump"]),
+}
 
 
 def list_supported_reading_types() -> list[dict[str, Any]]:
@@ -645,6 +729,283 @@ class ReadingClient:
             ),
         }
 
+    def search_tank_readings(
+        self,
+        site_id: int,
+        start_date: str,
+        end_date: str,
+        battery_name: str | None = None,
+        tank_name: str | None = None,
+        tank_key: str | None = None,
+        tank_type: str | None = None,
+        contains: str | None = None,
+        monitored: bool | None = None,
+        disable_reading: bool | None = None,
+        filters: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Search tank readings with tank/battery metadata and computed volumes.
+
+        This is intentionally separate from the generic `search_readings` method.
+        Tank questions commonly filter by battery relation or computed volume
+        fields, neither of which maps cleanly to raw reading-table columns.
+        """
+        start_day = self._parse_date(start_date)
+        end_day = self._parse_date(end_date)
+        if end_day < start_day:
+            raise ReadingClientError("end_date must be on or after start_date.")
+
+        normalized_type = _normalize_tank_type(tank_type)
+        reading_types = (
+            [normalized_type]
+            if normalized_type
+            else ["linear_tank", "mixed_tank", "non_linear_tank"]
+        )
+        normalized_contains = _normalize_contains(contains)
+        filters = filters or []
+        rows: list[dict[str, Any]] = []
+        for reading_type in reading_types:
+            rows.extend(
+                self._search_tank_readings_for_type(
+                    site_id=site_id,
+                    reading_type=reading_type,
+                    start_day=start_day,
+                    end_day=end_day,
+                    battery_name=battery_name,
+                    tank_name=tank_name,
+                    tank_key=tank_key,
+                    monitored=monitored,
+                    disable_reading=disable_reading,
+                )
+            )
+
+        filtered_rows = [
+            row
+            for row in rows
+            if _matches_contains(row, normalized_contains)
+            and _matches_computed_filters(row, filters)
+        ]
+        return {
+            "reading_type": "tank",
+            "label": "Tank readings",
+            "site_id": site_id,
+            "start_date": start_day.isoformat(),
+            "end_date": end_day.isoformat(),
+            "filters": {
+                **({"battery_name": battery_name} if battery_name else {}),
+                **({"tank_name": tank_name} if tank_name else {}),
+                **({"tank_key": tank_key} if tank_key else {}),
+                **({"tank_type": normalized_type} if normalized_type else {}),
+                **({"contains": normalized_contains} if normalized_contains else {}),
+                **({"monitored": monitored} if monitored is not None else {}),
+                **(
+                    {"disable_reading": disable_reading}
+                    if disable_reading is not None
+                    else {}
+                ),
+                **({"computed_filters": filters} if filters else {}),
+            },
+            "count": len(filtered_rows),
+            "readings": filtered_rows[: self.max_rows],
+        }
+
+    def search_equipment_readings(
+        self,
+        site_id: int,
+        reading_type: str,
+        start_date: str,
+        end_date: str,
+        battery_name: str | None = None,
+        entity_name: str | None = None,
+        entity_key: str | None = None,
+        monitored: bool | None = None,
+        disable_reading: bool | None = None,
+        equipment_filters: list[dict[str, Any]] | None = None,
+        reading_filters: list[dict[str, Any]] | None = None,
+        computed_filters: list[dict[str, Any]] | None = None,
+        contains: str | None = None,
+    ) -> dict[str, Any]:
+        """Search readings with equipment metadata and battery relation filters.
+
+        This is the relation-aware counterpart to `search_readings`. It uses
+        whitelisted reading/base-table fields and joins batteries by the actual
+        database relation instead of relying on equipment names.
+        """
+        start_day = self._parse_date(start_date)
+        end_day = self._parse_date(end_date)
+        if end_day < start_day:
+            raise ReadingClientError("end_date must be on or after start_date.")
+
+        reading_types = (
+            ["linear_tank", "mixed_tank", "non_linear_tank"]
+            if reading_type == "tank"
+            else [_normalize_equipment_reading_type(reading_type)]
+        )
+        normalized_contains = _normalize_contains(contains)
+        equipment_filters = equipment_filters or []
+        reading_filters = reading_filters or []
+        computed_filters = computed_filters or []
+        rows: list[dict[str, Any]] = []
+        applied_equipment_filters: list[dict[str, Any]] = []
+        applied_reading_filters: list[dict[str, Any]] = []
+
+        for resolved_type in reading_types:
+            if resolved_type not in EQUIPMENT_SEARCH_READING_TYPES:
+                raise ReadingClientError(
+                    f"Equipment search is not supported for {reading_type}."
+                )
+            result = self._search_equipment_readings_for_type(
+                site_id=site_id,
+                reading_type=resolved_type,
+                start_day=start_day,
+                end_day=end_day,
+                battery_name=battery_name,
+                entity_name=entity_name,
+                entity_key=entity_key,
+                monitored=monitored,
+                disable_reading=disable_reading,
+                equipment_filters=equipment_filters,
+                reading_filters=reading_filters,
+            )
+            rows.extend(result["rows"])
+            applied_equipment_filters.extend(result["equipment_filters"])
+            applied_reading_filters.extend(result["reading_filters"])
+
+        filtered_rows = [
+            row
+            for row in rows
+            if _matches_contains(row, normalized_contains)
+            and _matches_computed_filters(row, computed_filters)
+        ]
+        return {
+            "reading_type": reading_type,
+            "label": "Equipment readings",
+            "site_id": site_id,
+            "start_date": start_day.isoformat(),
+            "end_date": end_day.isoformat(),
+            "filters": {
+                **({"battery_name": battery_name} if battery_name else {}),
+                **({"entity_name": entity_name} if entity_name else {}),
+                **({"entity_key": entity_key} if entity_key else {}),
+                **({"monitored": monitored} if monitored is not None else {}),
+                **(
+                    {"disable_reading": disable_reading}
+                    if disable_reading is not None
+                    else {}
+                ),
+                **({"contains": normalized_contains} if normalized_contains else {}),
+                **(
+                    {"equipment_filters": applied_equipment_filters}
+                    if applied_equipment_filters
+                    else {}
+                ),
+                **(
+                    {"reading_filters": applied_reading_filters}
+                    if applied_reading_filters
+                    else {}
+                ),
+                **(
+                    {"computed_filters": computed_filters}
+                    if computed_filters
+                    else {}
+                ),
+            },
+            "count": len(filtered_rows),
+            "readings": filtered_rows[: self.max_rows],
+        }
+
+    def list_equipment(
+        self,
+        site_id: int,
+        equipment_type: str,
+        battery_name: str | None = None,
+        entity_name: str | None = None,
+        entity_key: str | None = None,
+        monitored: bool | None = None,
+        disable_reading: bool | None = None,
+        equipment_filters: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """List configured equipment entities without requiring readings."""
+        definition = _equipment_definition(equipment_type)
+        conditions = ["b.site_id = :site_id"]
+        params: dict[str, Any] = {"site_id": site_id}
+        if battery_name:
+            _append_battery_condition(conditions, params, battery_name)
+        if entity_name:
+            conditions.append("LOWER(b.name) LIKE LOWER(:entity_name)")
+            params["entity_name"] = f"%{entity_name}%"
+        if entity_key:
+            if not self._table_has_column(definition.table, "key"):
+                raise ReadingClientError(f"{definition.label} do not have a key field.")
+            conditions.append("LOWER(b.`key`) LIKE LOWER(:entity_key)")
+            params["entity_key"] = f"%{entity_key}%"
+        if monitored is not None:
+            if self._table_has_column(definition.table, "monitored"):
+                conditions.append("COALESCE(b.`monitored`, 0) = :monitored")
+                params["monitored"] = 1 if monitored else 0
+        if disable_reading is not None:
+            if self._table_has_column(definition.table, "disable_reading"):
+                conditions.append("COALESCE(b.`disable_reading`, 0) = :disable_reading")
+                params["disable_reading"] = 1 if disable_reading else 0
+
+        applied_filters = self._equipment_list_filter_conditions(
+            definition, equipment_filters or [], conditions, params
+        )
+        metadata_fields = [
+            field
+            for field in definition.metadata_fields
+            if self._table_has_column(definition.table, field)
+        ]
+        metadata_sql = "".join(
+            f",\n                b.`{field}` AS equipment_{field}"
+            for field in metadata_fields
+        )
+        key_sql = (
+            ",\n                b.`key` AS entity_key"
+            if self._table_has_column(definition.table, "key")
+            else ""
+        )
+        battery_join_sql = _equipment_list_battery_join_sql(equipment_type)
+        query = text(
+            f"""
+            SELECT b.{definition.key} AS entity_id,
+                b.name AS entity_name
+                {key_sql},
+                bat.id AS battery_id,
+                bat.name AS battery_name,
+                bat.`key` AS battery_key
+                {metadata_sql}
+            FROM {definition.table} b
+            {battery_join_sql}
+            WHERE {" AND ".join(conditions)}
+            ORDER BY bat.name, b.name
+            LIMIT :limit
+            """
+        )
+        rows = self._execute(query, **params)
+        entities = [
+            _compact_equipment_entity_row(equipment_type, definition, row, metadata_fields)
+            for row in rows
+        ]
+        return {
+            "equipment_type": equipment_type,
+            "label": definition.label,
+            "site_id": site_id,
+            "filters": {
+                **({"battery_name": battery_name} if battery_name else {}),
+                **({"entity_name": entity_name} if entity_name else {}),
+                **({"entity_key": entity_key} if entity_key else {}),
+                **({"monitored": monitored} if monitored is not None else {}),
+                **(
+                    {"disable_reading": disable_reading}
+                    if disable_reading is not None
+                    else {}
+                ),
+                **({"equipment_filters": applied_filters} if applied_filters else {}),
+            },
+            "count": len(entities),
+            "entities": entities,
+        }
+
     def resolve_reading_entity(
         self,
         site_id: int,
@@ -947,6 +1308,268 @@ class ReadingClient:
             "groups": groups,
         }
 
+    def _search_tank_readings_for_type(
+        self,
+        site_id: int,
+        reading_type: str,
+        start_day: date,
+        end_day: date,
+        battery_name: str | None = None,
+        tank_name: str | None = None,
+        tank_key: str | None = None,
+        monitored: bool | None = None,
+        disable_reading: bool | None = None,
+    ) -> list[dict[str, Any]]:
+        definition = self._definition(reading_type)
+        start_time = datetime.combine(start_day, time.min)
+        end_time = datetime.combine(end_day + timedelta(days=1), time.min)
+        conditions = [
+            "t.site_id = :site_id",
+            "r.time >= :start_time",
+            "r.time < :end_time",
+        ]
+        if definition.base_filter:
+            conditions.append(
+                definition.base_filter.removeprefix("AND ").replace("b.", "t.")
+            )
+
+        params: dict[str, Any] = {
+            "site_id": site_id,
+            "start_time": start_time,
+            "end_time": end_time,
+        }
+        if battery_name:
+            battery_reference = _battery_match_reference(battery_name)
+            if battery_reference["is_number"]:
+                conditions.append(
+                    "("
+                    "LOWER(REPLACE(bat.name, ' ', '')) IN (:battery_compact, :battery_number) "
+                    "OR LOWER(REPLACE(REPLACE(bat.`key`, '_', ''), ' ', '')) IN (:battery_compact, :battery_number)"
+                    ")"
+                )
+                params["battery_compact"] = battery_reference["compact"]
+                params["battery_number"] = battery_reference["number"]
+            else:
+                conditions.append(
+                    "(LOWER(bat.name) LIKE LOWER(:battery_name) OR LOWER(bat.`key`) LIKE LOWER(:battery_name))"
+                )
+                params["battery_name"] = battery_reference["pattern"]
+        if tank_name:
+            conditions.append("LOWER(t.name) LIKE LOWER(:tank_name)")
+            params["tank_name"] = f"%{tank_name}%"
+        if tank_key:
+            conditions.append("LOWER(t.`key`) LIKE LOWER(:tank_key)")
+            params["tank_key"] = f"%{tank_key}%"
+        if monitored is not None:
+            conditions.append("COALESCE(t.monitored, 0) = :monitored")
+            params["monitored"] = 1 if monitored else 0
+        if disable_reading is not None:
+            conditions.append("COALESCE(t.disable_reading, 0) = :disable_reading")
+            params["disable_reading"] = 1 if disable_reading else 0
+
+        field_sql = _reading_select_fields(definition, table_alias="r", base_alias="t")
+        query = text(
+            f"""
+            SELECT r.time,
+                t.id AS tank_id,
+                t.name AS tank_name,
+                t.`key` AS tank_key,
+                t.type AS tank_type,
+                t.bbl_foot,
+                t.non_linear_volume_mapping_id,
+                t.monitored,
+                t.disable_reading,
+                bat.id AS battery_id,
+                bat.name AS battery_name,
+                bat.`key` AS battery_key,
+                {field_sql}
+            FROM {definition.table} r
+            JOIN tanks t ON r.tank_id = t.id
+            LEFT JOIN batteries bat ON bat.id = t.battery_id
+            WHERE {" AND ".join(conditions)}
+            ORDER BY r.time, bat.name, t.name
+            LIMIT :limit
+            """
+        )
+        rows = self._execute(query, **params)
+        if reading_type == "non_linear_tank":
+            rows = self._attach_non_linear_mapping_details(rows)
+        rows = self._with_tank_volumes(reading_type, rows)
+        return [
+            _compact_tank_reading_row(reading_type, definition, row)
+            for row in rows
+        ]
+
+    def _search_equipment_readings_for_type(
+        self,
+        site_id: int,
+        reading_type: str,
+        start_day: date,
+        end_day: date,
+        battery_name: str | None = None,
+        entity_name: str | None = None,
+        entity_key: str | None = None,
+        monitored: bool | None = None,
+        disable_reading: bool | None = None,
+        equipment_filters: list[dict[str, Any]] | None = None,
+        reading_filters: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        definition = self._definition(reading_type)
+        start_time = datetime.combine(start_day, time.min)
+        end_time = datetime.combine(end_day + timedelta(days=1), time.min)
+        conditions = [
+            "b.site_id = :site_id",
+            "r.time >= :start_time",
+            "r.time < :end_time",
+        ]
+        if definition.base_filter:
+            conditions.append(definition.base_filter.removeprefix("AND "))
+
+        params: dict[str, Any] = {
+            "site_id": site_id,
+            "start_time": start_time,
+            "end_time": end_time,
+        }
+        if battery_name:
+            _append_battery_condition(conditions, params, battery_name)
+        if entity_name:
+            conditions.append("LOWER(b.name) LIKE LOWER(:entity_name)")
+            params["entity_name"] = f"%{entity_name}%"
+        if entity_key:
+            if not self._table_has_column(definition.base_table, "key"):
+                raise ReadingClientError(
+                    f"{definition.label} entities do not have a key field."
+                )
+            conditions.append("LOWER(b.`key`) LIKE LOWER(:entity_key)")
+            params["entity_key"] = f"%{entity_key}%"
+        if monitored is not None:
+            _append_boolean_metadata_condition(
+                self,
+                definition,
+                conditions,
+                params,
+                "monitored",
+                monitored,
+            )
+        if disable_reading is not None:
+            _append_boolean_metadata_condition(
+                self,
+                definition,
+                conditions,
+                params,
+                "disable_reading",
+                disable_reading,
+            )
+
+        applied_equipment_filters = self._equipment_filter_conditions(
+            definition, equipment_filters or [], conditions, params
+        )
+        applied_reading_filters = self._filter_conditions(
+            definition, reading_filters or [], conditions, params
+        )
+        metadata_fields = [
+            field
+            for field in EQUIPMENT_METADATA_FIELDS.get(reading_type, ())
+            if self._table_has_column(definition.base_table, field)
+        ]
+        metadata_sql = "".join(
+            f",\n                b.`{field}` AS equipment_{field}"
+            for field in metadata_fields
+        )
+        key_sql = (
+            ",\n                b.`key` AS entity_key"
+            if self._table_has_column(definition.base_table, "key")
+            else ""
+        )
+        field_sql = _reading_select_fields(definition)
+        battery_join_sql = _equipment_battery_join_sql(reading_type)
+        query = text(
+            f"""
+            SELECT r.time,
+                b.{definition.base_key} AS entity_id,
+                b.name AS entity_name
+                {key_sql},
+                bat.id AS battery_id,
+                bat.name AS battery_name,
+                bat.`key` AS battery_key
+                {metadata_sql},
+                {field_sql}
+            FROM {definition.table} r
+            JOIN {definition.base_table} b
+                ON r.{definition.foreign_key} = b.{definition.base_key}
+            {battery_join_sql}
+            WHERE {" AND ".join(conditions)}
+            ORDER BY r.time, bat.name, b.name
+            LIMIT :limit
+            """
+        )
+        rows = self._execute(query, **params)
+        if reading_type == "non_linear_tank":
+            rows = self._attach_non_linear_mapping_details_for_base_rows(rows)
+        rows = self._with_tank_volumes(reading_type, rows)
+        return {
+            "equipment_filters": applied_equipment_filters,
+            "reading_filters": applied_reading_filters,
+            "rows": [
+                _compact_equipment_reading_row(
+                    reading_type,
+                    definition,
+                    row,
+                    metadata_fields,
+                )
+                for row in rows
+            ],
+        }
+
+    def _attach_non_linear_mapping_details(
+        self, rows: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        mapping_ids = sorted(
+            {
+                int(row["non_linear_volume_mapping_id"])
+                for row in rows
+                if _is_number(row.get("non_linear_volume_mapping_id"))
+            }
+        )
+        if not mapping_ids:
+            return rows
+        query = text(
+            """
+            SELECT tank_volume_mapping_id, feet, inches, volume
+            FROM non_linear_tank_volume_mapping_details
+            WHERE tank_volume_mapping_id IN :mapping_ids
+            ORDER BY tank_volume_mapping_id, feet, inches
+            """
+        ).bindparams(bindparam("mapping_ids", expanding=True))
+        detail_rows = self._execute(query, mapping_ids=mapping_ids)
+        details_by_mapping: dict[int, dict[int, list[tuple[float, float]]]] = {}
+        for detail in detail_rows:
+            mapping_id = int(detail["tank_volume_mapping_id"])
+            feet = int(detail["feet"])
+            details_by_mapping.setdefault(mapping_id, {}).setdefault(feet, []).append(
+                (float(detail["inches"]), float(detail["volume"]))
+            )
+        enriched = []
+        for row in rows:
+            row = dict(row)
+            mapping_id = row.get("non_linear_volume_mapping_id")
+            if _is_number(mapping_id):
+                row["_mapping_details"] = details_by_mapping.get(int(mapping_id), {})
+            enriched.append(row)
+        return enriched
+
+    def _attach_non_linear_mapping_details_for_base_rows(
+        self, rows: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        remapped = []
+        for row in rows:
+            row = dict(row)
+            row["non_linear_volume_mapping_id"] = row.get(
+                "equipment_non_linear_volume_mapping_id"
+            )
+            remapped.append(row)
+        return self._attach_non_linear_mapping_details(remapped)
+
     def _execute(self, query, **params: Any) -> list[dict[str, Any]]:
         params.setdefault("limit", self.max_rows)
         try:
@@ -1155,7 +1778,7 @@ class ReadingClient:
         reading_type: str,
         rows: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        if reading_type not in {"linear_tank", "mixed_tank"}:
+        if reading_type not in {"linear_tank", "mixed_tank", "non_linear_tank"}:
             return rows
 
         enriched = []
@@ -1165,6 +1788,8 @@ class ReadingClient:
                 row.update(_linear_tank_volume(row))
             elif reading_type == "mixed_tank":
                 row.update(_mixed_tank_volumes(row))
+            elif reading_type == "non_linear_tank":
+                row.update(_non_linear_tank_volumes(row))
             enriched.append(row)
         return enriched
 
@@ -1244,6 +1869,102 @@ class ReadingClient:
             param_name = f"filter_{index}"
             conditions.append(f"r.{field} {operator} :{param_name}")
             params[param_name] = value
+            applied.append({"field": field, "operator": operator, "value": value})
+        return applied
+
+    def _equipment_filter_conditions(
+        self,
+        definition: ReadingDefinition,
+        filters: list[dict[str, Any]],
+        conditions: list[str],
+        params: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        reading_type = _reading_type_for_definition(definition)
+        allowed_fields = set(EQUIPMENT_METADATA_FIELDS.get(reading_type, ()))
+        operators = {
+            ">": ">",
+            ">=": ">=",
+            "<": "<",
+            "<=": "<=",
+            "=": "=",
+            "==": "=",
+            "!=": "!=",
+            "contains": "contains",
+        }
+        applied = []
+        for index, filter_item in enumerate(filters):
+            field = str(filter_item.get("field", "")).strip()
+            operator = operators.get(str(filter_item.get("operator", "")).strip())
+            value = filter_item.get("value")
+            if field not in allowed_fields:
+                raise ReadingClientError(
+                    f"Cannot filter {definition.label} equipment by unsupported field: {field}."
+                )
+            if not self._table_has_column(definition.base_table, field):
+                raise ReadingClientError(
+                    f"{definition.label} entities do not have field: {field}."
+                )
+            if operator is None:
+                raise ReadingClientError(
+                    "Equipment filter operator must be one of >, >=, <, <=, =, ==, !=, contains."
+                )
+
+            param_name = f"equipment_filter_{index}"
+            if operator == "contains":
+                conditions.append(f"LOWER(b.`{field}`) LIKE LOWER(:{param_name})")
+                params[param_name] = f"%{value}%"
+                applied.append({"field": field, "operator": operator, "value": value})
+                continue
+            if operator in {">", ">=", "<", "<="} and not _is_number(value):
+                raise ReadingClientError("Range equipment filter values must be numbers.")
+
+            conditions.append(f"b.`{field}` {operator} :{param_name}")
+            params[param_name] = _coerce_bool_to_int(value)
+            applied.append({"field": field, "operator": operator, "value": value})
+        return applied
+
+    def _equipment_list_filter_conditions(
+        self,
+        definition: EquipmentDefinition,
+        filters: list[dict[str, Any]],
+        conditions: list[str],
+        params: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        allowed_fields = set(definition.metadata_fields)
+        operators = {
+            ">": ">",
+            ">=": ">=",
+            "<": "<",
+            "<=": "<=",
+            "=": "=",
+            "==": "=",
+            "!=": "!=",
+            "contains": "contains",
+        }
+        applied = []
+        for index, filter_item in enumerate(filters):
+            field = str(filter_item.get("field", "")).strip()
+            operator = operators.get(str(filter_item.get("operator", "")).strip())
+            value = filter_item.get("value")
+            if field not in allowed_fields:
+                raise ReadingClientError(
+                    f"Cannot filter {definition.label} by unsupported field: {field}."
+                )
+            if not self._table_has_column(definition.table, field):
+                raise ReadingClientError(f"{definition.label} do not have field: {field}.")
+            if operator is None:
+                raise ReadingClientError(
+                    "Equipment filter operator must be one of >, >=, <, <=, =, ==, !=, contains."
+                )
+            param_name = f"equipment_list_filter_{index}"
+            if operator == "contains":
+                conditions.append(f"LOWER(b.`{field}`) LIKE LOWER(:{param_name})")
+                params[param_name] = f"%{value}%"
+            else:
+                if operator in {">", ">=", "<", "<="} and not _is_number(value):
+                    raise ReadingClientError("Range equipment filter values must be numbers.")
+                conditions.append(f"b.`{field}` {operator} :{param_name}")
+                params[param_name] = _coerce_bool_to_int(value)
             applied.append({"field": field, "operator": operator, "value": value})
         return applied
 
@@ -1373,13 +2094,17 @@ def _entity_match_rank(row: dict[str, Any], normalized_query: str) -> int:
     return 2
 
 
-def _reading_select_fields(definition: ReadingDefinition) -> str:
-    fields = [f"r.{field}" for field in definition.fields]
+def _reading_select_fields(
+    definition: ReadingDefinition,
+    table_alias: str = "r",
+    base_alias: str = "b",
+) -> str:
+    fields = [f"{table_alias}.{field}" for field in definition.fields]
     if definition.base_table == "tanks" and definition.table in {
         "linear_tank_readings",
         "mixed_tank_readings",
     }:
-        fields.append("b.bbl_foot")
+        fields.append(f"{base_alias}.bbl_foot")
     return ",\n                ".join(fields)
 
 
@@ -1405,7 +2130,37 @@ def _linear_tank_volume(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "bbl_foot": float(bbl_foot),
         "volume": round(level * float(bbl_foot), 2),
+        "water_volume": round(level * float(bbl_foot), 2),
+        "content_type": "water",
+        "content_assumption": "Assuming linear tanks contain water only.",
     }
+
+
+def _non_linear_tank_volumes(row: dict[str, Any]) -> dict[str, Any]:
+    initial_volume = _non_linear_volume_from_mapping(
+        row, row.get("initial_feet"), row.get("initial_inches")
+    )
+    final_volume = _non_linear_volume_from_mapping(
+        row, row.get("final_feet"), row.get("final_inches")
+    )
+    result: dict[str, Any] = {
+        "content_type": "water",
+        "content_assumption": "Non-linear tanks are treated as water-only.",
+    }
+    if initial_volume is not None:
+        result["initial_water_volume"] = round(initial_volume, 2)
+    if final_volume is not None:
+        result["final_water_volume"] = round(final_volume, 2)
+        result["water_volume"] = round(final_volume, 2)
+        result["volume"] = round(final_volume, 2)
+    elif initial_volume is not None:
+        result["water_volume"] = round(initial_volume, 2)
+        result["volume"] = round(initial_volume, 2)
+    if initial_volume is not None and final_volume is not None:
+        result["total_volume"] = round(initial_volume - final_volume, 2)
+    if "volume" not in result:
+        result["volume_status"] = "missing_non_linear_mapping"
+    return result
 
 
 def _mixed_tank_volumes(row: dict[str, Any]) -> dict[str, Any]:
@@ -1432,7 +2187,352 @@ def _mixed_tank_volumes(row: dict[str, Any]) -> dict[str, Any]:
         "oil_volume": round(oil_volume, 2),
         "water_volume": round(water_volume, 2),
         "total_volume": round(total_volume, 2),
+        "content_type": "oil_and_water",
     }
+
+
+def _normalize_tank_type(value: str | None) -> str | None:
+    if value is None or not str(value).strip():
+        return None
+    normalized = str(value).strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "linear": "linear_tank",
+        "linear_tank": "linear_tank",
+        "linear_volume": "linear_tank",
+        "mixed": "mixed_tank",
+        "mixed_tank": "mixed_tank",
+        "mixed_water_oil": "mixed_tank",
+        "oil_water": "mixed_tank",
+        "non_linear": "non_linear_tank",
+        "non_linear_tank": "non_linear_tank",
+        "non_linear_volume": "non_linear_tank",
+    }
+    try:
+        return aliases[normalized]
+    except KeyError as exc:
+        raise ReadingClientError(f"Unsupported tank_type: {value}") from exc
+
+
+def _normalize_equipment_reading_type(value: str) -> str:
+    normalized = str(value).strip()
+    tank_aliases = {
+        "linear",
+        "linear_tank",
+        "linear-volume",
+        "linear_volume",
+        "mixed",
+        "mixed_tank",
+        "mixed-water-oil",
+        "mixed_water_oil",
+        "oil_water",
+        "non_linear",
+        "non-linear",
+        "non_linear_tank",
+        "non-linear_tank",
+        "non-linear-volume",
+        "non_linear_volume",
+    }
+    normalized_key = normalized.lower().replace("-", "_").replace(" ", "_")
+    if normalized_key in {item.replace("-", "_") for item in tank_aliases}:
+        resolved = _normalize_tank_type(normalized)
+        if resolved is not None:
+            return resolved
+    return normalized
+
+
+def _equipment_definition(equipment_type: str) -> EquipmentDefinition:
+    normalized = str(equipment_type).strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "lacts": "lact",
+        "flares": "flare",
+        "tanks": "tank",
+        "water_plants": "water_plant",
+        "waterplant": "water_plant",
+        "flow_meters": "flow_meter",
+        "flowmeter": "flow_meter",
+        "treaters": "treater",
+        "knockouts": "knock_out",
+        "knock_outs": "knock_out",
+        "knockout": "knock_out",
+        "pumps": "pump",
+    }
+    normalized = aliases.get(normalized, normalized)
+    try:
+        return EQUIPMENT_DEFINITIONS[normalized]
+    except KeyError as exc:
+        raise ReadingClientError(f"Unsupported equipment type: {equipment_type}") from exc
+
+
+def _normalize_contains(value: str | None) -> str | None:
+    if value is None or not str(value).strip():
+        return None
+    normalized = str(value).strip().lower()
+    aliases = {
+        "oil": "oil",
+        "water": "water",
+        "any": "any",
+        "volume": "any",
+        "fluid": "any",
+    }
+    try:
+        return aliases[normalized]
+    except KeyError as exc:
+        raise ReadingClientError("contains must be oil, water, or any.") from exc
+
+
+def _matches_contains(row: dict[str, Any], contains: str | None) -> bool:
+    if contains is None:
+        return True
+    if contains == "oil":
+        return _positive(row.get("oil_volume"))
+    if contains == "water":
+        return _positive(row.get("water_volume")) or (
+            row.get("content_type") == "water" and _positive(row.get("volume"))
+        )
+    return any(
+        _positive(row.get(field))
+        for field in ("oil_volume", "water_volume", "total_volume", "volume")
+    )
+
+
+def _matches_computed_filters(
+    row: dict[str, Any], filters: list[dict[str, Any]]
+) -> bool:
+    for filter_item in filters:
+        field = str(filter_item.get("field", "")).strip()
+        operator = str(filter_item.get("operator", "")).strip()
+        value = filter_item.get("value")
+        if field not in {
+            "oil_volume",
+            "water_volume",
+            "total_volume",
+            "volume",
+            "bbl_foot",
+            "initial_water_volume",
+            "final_water_volume",
+        }:
+            raise ReadingClientError(f"Unsupported tank computed filter field: {field}.")
+        if operator not in {">", ">=", "<", "<=", "=", "=="}:
+            raise ReadingClientError("Filter operator must be one of >, >=, <, <=, =, ==.")
+        if not _is_number(value):
+            raise ReadingClientError("Filter values must be numbers.")
+        current = row.get(field)
+        if not _is_number(current) or not _compare(float(current), operator, float(value)):
+            return False
+    return True
+
+
+def _compare(left: float, operator: str, right: float) -> bool:
+    if operator == ">":
+        return left > right
+    if operator == ">=":
+        return left >= right
+    if operator == "<":
+        return left < right
+    if operator == "<=":
+        return left <= right
+    return left == right
+
+
+def _positive(value: Any) -> bool:
+    return _is_number(value) and float(value) > 0
+
+
+def _battery_match_reference(value: str) -> dict[str, Any]:
+    normalized = str(value).strip()
+    digits = "".join(char for char in normalized if char.isdigit())
+    if digits and normalized.lower().replace(" ", "") in {digits, f"battery{digits}"}:
+        return {
+            "is_number": True,
+            "compact": f"battery{digits}",
+            "number": digits,
+        }
+    return {
+        "is_number": False,
+        "pattern": f"%{normalized}%",
+    }
+
+
+def _append_battery_condition(
+    conditions: list[str], params: dict[str, Any], battery_name: str
+) -> None:
+    battery_reference = _battery_match_reference(battery_name)
+    if battery_reference["is_number"]:
+        conditions.append(
+            "("
+            "LOWER(REPLACE(bat.name, ' ', '')) IN (:battery_compact, :battery_number) "
+            "OR LOWER(REPLACE(REPLACE(bat.`key`, '_', ''), ' ', '')) IN (:battery_compact, :battery_number)"
+            ")"
+        )
+        params["battery_compact"] = battery_reference["compact"]
+        params["battery_number"] = battery_reference["number"]
+        return
+
+    conditions.append(
+        "(LOWER(bat.name) LIKE LOWER(:battery_name) OR LOWER(bat.`key`) LIKE LOWER(:battery_name))"
+    )
+    params["battery_name"] = battery_reference["pattern"]
+
+
+def _append_boolean_metadata_condition(
+    client: ReadingClient,
+    definition: ReadingDefinition,
+    conditions: list[str],
+    params: dict[str, Any],
+    field: str,
+    value: bool,
+) -> None:
+    if not client._table_has_column(definition.base_table, field):
+        return
+    conditions.append(f"COALESCE(b.`{field}`, 0) = :{field}")
+    params[field] = 1 if value else 0
+
+
+def _equipment_battery_join_sql(reading_type: str) -> str:
+    if reading_type == "pump":
+        return """
+            LEFT JOIN water_plants wp ON wp.id = b.water_plant_id
+            LEFT JOIN batteries bat ON bat.id = wp.battery_id
+            """
+    return "LEFT JOIN batteries bat ON bat.id = b.battery_id"
+
+
+def _equipment_list_battery_join_sql(equipment_type: str) -> str:
+    normalized = str(equipment_type).strip().lower().replace("-", "_").replace(" ", "_")
+    if normalized in {"pump", "pumps"}:
+        return """
+            LEFT JOIN water_plants wp ON wp.id = b.water_plant_id
+            LEFT JOIN batteries bat ON bat.id = wp.battery_id
+            """
+    return "LEFT JOIN batteries bat ON bat.id = b.battery_id"
+
+
+def _coerce_bool_to_int(value: Any) -> Any:
+    if isinstance(value, bool):
+        return 1 if value else 0
+    return value
+
+
+def _compact_tank_reading_row(
+    reading_type: str,
+    definition: ReadingDefinition,
+    row: dict[str, Any],
+) -> dict[str, Any]:
+    compact = {
+        "date": str(row.get("time", ""))[:10],
+        "reading_type": reading_type,
+        "tank_id": row.get("tank_id"),
+        "tank_name": row.get("tank_name"),
+        "tank_key": row.get("tank_key"),
+        "tank_type": row.get("tank_type"),
+        "entity_display_name": f"Tank - {row.get('tank_name')}",
+        "battery_id": row.get("battery_id"),
+        "battery_name": row.get("battery_name"),
+        "battery_key": row.get("battery_key"),
+        "monitored": row.get("monitored"),
+        "disable_reading": row.get("disable_reading"),
+    }
+    for field in definition.fields:
+        value = row.get(field)
+        if value is not None:
+            compact[field] = value
+    for field in TANK_VOLUME_FIELDS:
+        value = row.get(field)
+        if value is not None:
+            compact[field] = value
+    return compact
+
+
+def _compact_equipment_reading_row(
+    reading_type: str,
+    definition: ReadingDefinition,
+    row: dict[str, Any],
+    metadata_fields: list[str],
+) -> dict[str, Any]:
+    entity_type = BASE_ENTITY_LABELS.get(definition.base_table, "Entity")
+    compact = {
+        "date": str(row.get("time", ""))[:10],
+        "reading_type": reading_type,
+        "entity_id": row.get("entity_id"),
+        "entity_name": row.get("entity_name"),
+        "entity_key": row.get("entity_key"),
+        "entity_type": entity_type,
+        "entity_display_name": f"{entity_type} - {row.get('entity_name')}",
+        "battery_id": row.get("battery_id"),
+        "battery_name": row.get("battery_name"),
+        "battery_key": row.get("battery_key"),
+    }
+    if definition.base_table == "tanks":
+        compact.update(
+            {
+                "tank_id": row.get("entity_id"),
+                "tank_name": row.get("entity_name"),
+                "tank_key": row.get("entity_key"),
+                "tank_type": row.get("equipment_type"),
+            }
+        )
+    for field in metadata_fields:
+        value = row.get(f"equipment_{field}")
+        if value is not None:
+            compact[field] = value
+    for field in definition.fields:
+        value = row.get(field)
+        if value is not None:
+            compact[field] = value
+    for field in TANK_VOLUME_FIELDS:
+        value = row.get(field)
+        if value is not None:
+            compact[field] = value
+    return compact
+
+
+def _compact_equipment_entity_row(
+    equipment_type: str,
+    definition: EquipmentDefinition,
+    row: dict[str, Any],
+    metadata_fields: list[str],
+) -> dict[str, Any]:
+    entity_type = BASE_ENTITY_LABELS.get(definition.table, "Entity")
+    compact = {
+        "equipment_type": equipment_type,
+        "entity_id": row.get("entity_id"),
+        "entity_name": row.get("entity_name"),
+        "entity_key": row.get("entity_key"),
+        "entity_type": entity_type,
+        "entity_display_name": f"{entity_type} - {row.get('entity_name')}",
+        "battery_id": row.get("battery_id"),
+        "battery_name": row.get("battery_name"),
+        "battery_key": row.get("battery_key"),
+    }
+    if definition.table == "tanks":
+        compact.update(
+            {
+                "tank_id": row.get("entity_id"),
+                "tank_name": row.get("entity_name"),
+                "tank_key": row.get("entity_key"),
+                "tank_type": row.get("equipment_type"),
+            }
+        )
+    for field in metadata_fields:
+        value = row.get(f"equipment_{field}")
+        if value is not None:
+            compact[field] = value
+    return compact
+
+
+def _non_linear_volume_from_mapping(
+    row: dict[str, Any], feet: Any, inches: Any
+) -> float | None:
+    details = row.get("_mapping_details")
+    if not isinstance(details, dict):
+        return None
+    if not _is_number(feet) or not _is_number(inches):
+        return None
+    candidates = details.get(int(feet))
+    if not candidates:
+        return None
+    nearest = min(candidates, key=lambda item: abs(float(item[0]) - float(inches)))
+    return float(nearest[1])
 
 
 def _direction(delta: float) -> str:
@@ -1552,6 +2652,37 @@ class UnavailableReadingClient:
         end_date: str,
         entity_name: str | None = None,
         filters: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        raise ReadingClientError(self.reason)
+
+    def search_equipment_readings(
+        self,
+        site_id: int,
+        reading_type: str,
+        start_date: str,
+        end_date: str,
+        battery_name: str | None = None,
+        entity_name: str | None = None,
+        entity_key: str | None = None,
+        monitored: bool | None = None,
+        disable_reading: bool | None = None,
+        equipment_filters: list[dict[str, Any]] | None = None,
+        reading_filters: list[dict[str, Any]] | None = None,
+        computed_filters: list[dict[str, Any]] | None = None,
+        contains: str | None = None,
+    ) -> dict[str, Any]:
+        raise ReadingClientError(self.reason)
+
+    def list_equipment(
+        self,
+        site_id: int,
+        equipment_type: str,
+        battery_name: str | None = None,
+        entity_name: str | None = None,
+        entity_key: str | None = None,
+        monitored: bool | None = None,
+        disable_reading: bool | None = None,
+        equipment_filters: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         raise ReadingClientError(self.reason)
 

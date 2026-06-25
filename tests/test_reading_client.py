@@ -112,6 +112,200 @@ def make_sqlite_client() -> ReadingClient:
     return ReadingClient(engine)
 
 
+def make_equipment_relation_client() -> ReadingClient:
+    engine = create_engine("sqlite:///:memory:")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE batteries (
+                    id INTEGER PRIMARY KEY,
+                    site_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    key TEXT
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE tanks (
+                    id INTEGER PRIMARY KEY,
+                    site_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    key TEXT,
+                    battery_id INTEGER,
+                    type TEXT,
+                    bbl_foot REAL,
+                    monitored INTEGER NOT NULL DEFAULT 0,
+                    disable_reading INTEGER NOT NULL DEFAULT 0,
+                    non_linear_volume_mapping_id INTEGER
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE flow_meters (
+                    id INTEGER PRIMARY KEY,
+                    site_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    key TEXT,
+                    battery_id INTEGER,
+                    type TEXT,
+                    measurement_method TEXT,
+                    monitored INTEGER NOT NULL DEFAULT 0,
+                    disable_reading INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE flow_meter_readings (
+                    id INTEGER PRIMARY KEY,
+                    flow_meter_id INTEGER NOT NULL,
+                    total REAL,
+                    flow REAL,
+                    odometer REAL,
+                    comments TEXT,
+                    time TEXT NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE water_plants (
+                    id INTEGER PRIMARY KEY,
+                    site_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    key TEXT,
+                    battery_id INTEGER,
+                    monitored INTEGER NOT NULL DEFAULT 0,
+                    disable_reading INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE pumps (
+                    id INTEGER PRIMARY KEY,
+                    site_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    key TEXT,
+                    water_plant_id INTEGER,
+                    type TEXT,
+                    monitored INTEGER NOT NULL DEFAULT 0,
+                    disable_reading INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE pump_readings (
+                    id INTEGER PRIMARY KEY,
+                    pump_id INTEGER NOT NULL,
+                    suction_pressure REAL,
+                    discharge_pressure REAL,
+                    comments TEXT,
+                    time TEXT NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO batteries (id, site_id, name, key)
+                VALUES
+                    (6, 1, 'Battery 6', 'battery_6'),
+                    (16, 1, 'Battery 16', 'battery_16')
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO tanks
+                    (id, site_id, name, key, battery_id, type, bbl_foot, monitored, disable_reading, non_linear_volume_mapping_id)
+                VALUES
+                    (101, 1, 'Tank 6-1 Oil', 'tank_6_1', 6, 'mixed-water-oil', 100.0, 1, 0, NULL),
+                    (102, 1, 'Tank 6-2 Water', 'tank_6_2', 6, 'linear-volume', 50.0, 1, 0, NULL),
+                    (103, 1, 'Tank 16-1 Oil', 'tank_16_1', 16, 'mixed-water-oil', 100.0, 1, 0, NULL)
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO flow_meters
+                    (id, site_id, name, key, battery_id, type, measurement_method, monitored, disable_reading)
+                VALUES
+                    (1, 1, 'FM Battery 6 Gas', 'fm_b6_gas', 6, 'gas', 'total', 1, 0),
+                    (2, 1, 'FM Battery 6 Water', 'fm_b6_water', 6, 'water', 'total', 1, 0),
+                    (3, 1, 'FM Battery 16 Gas', 'fm_b16_gas', 16, 'gas', 'total', 1, 0)
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO flow_meter_readings
+                    (id, flow_meter_id, total, flow, odometer, comments, time)
+                VALUES
+                    (10, 1, 150.0, 12.0, NULL, 'gas high', '2026-06-10 08:00:00'),
+                    (11, 2, 90.0, 6.0, NULL, 'water low', '2026-06-10 08:00:00'),
+                    (12, 3, 175.0, 11.0, NULL, 'battery 16', '2026-06-10 08:00:00')
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO water_plants
+                    (id, site_id, name, key, battery_id, monitored, disable_reading)
+                VALUES
+                    (20, 1, 'Water Plant 6', 'wp6', 6, 1, 0),
+                    (21, 1, 'Water Plant 16', 'wp16', 16, 1, 0)
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO pumps
+                    (id, site_id, name, key, water_plant_id, type, monitored, disable_reading)
+                VALUES
+                    (30, 1, 'Water Pump 6', 'pump6', 20, 'water', 1, 0),
+                    (31, 1, 'Chemical Pump 6', 'chem6', 20, 'chemical', 1, 0),
+                    (32, 1, 'Water Pump 16', 'pump16', 21, 'water', 1, 0)
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO pump_readings
+                    (id, pump_id, suction_pressure, discharge_pressure, comments, time)
+                VALUES
+                    (40, 30, 30.0, 120.0, 'water pump', '2026-06-10 08:00:00'),
+                    (41, 31, 20.0, 80.0, 'chemical pump', '2026-06-10 08:00:00'),
+                    (42, 32, 40.0, 150.0, 'battery 16 pump', '2026-06-10 08:00:00')
+                """
+            )
+        )
+    return ReadingClient(engine)
+
+
 def make_entity_resolution_client() -> ReadingClient:
     engine = create_engine("sqlite:///:memory:")
     with engine.begin() as connection:
@@ -358,9 +552,25 @@ def make_sqlite_client_with_missing_exclusions() -> ReadingClient:
                     id INTEGER PRIMARY KEY,
                     site_id INTEGER NOT NULL,
                     name TEXT NOT NULL,
+                    key TEXT,
                     type TEXT NOT NULL,
                     bbl_foot REAL,
-                    disable_reading INTEGER NOT NULL DEFAULT 0
+                    monitored INTEGER NOT NULL DEFAULT 0,
+                    disable_reading INTEGER NOT NULL DEFAULT 0,
+                    battery_id INTEGER,
+                    non_linear_volume_mapping_id INTEGER
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE batteries (
+                    id INTEGER PRIMARY KEY,
+                    site_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    key TEXT
                 )
                 """
             )
@@ -648,9 +858,25 @@ def make_mixed_tank_client() -> ReadingClient:
                     id INTEGER PRIMARY KEY,
                     site_id INTEGER NOT NULL,
                     name TEXT NOT NULL,
+                    key TEXT,
                     type TEXT NOT NULL,
                     bbl_foot REAL,
-                    disable_reading INTEGER NOT NULL DEFAULT 0
+                    monitored INTEGER NOT NULL DEFAULT 0,
+                    disable_reading INTEGER NOT NULL DEFAULT 0,
+                    battery_id INTEGER,
+                    non_linear_volume_mapping_id INTEGER
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE batteries (
+                    id INTEGER PRIMARY KEY,
+                    site_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    key TEXT
                 )
                 """
             )
@@ -712,9 +938,25 @@ def make_tank_volume_client() -> ReadingClient:
                     id INTEGER PRIMARY KEY,
                     site_id INTEGER NOT NULL,
                     name TEXT NOT NULL,
+                    key TEXT,
                     type TEXT NOT NULL,
                     bbl_foot REAL,
-                    disable_reading INTEGER NOT NULL DEFAULT 0
+                    monitored INTEGER NOT NULL DEFAULT 0,
+                    disable_reading INTEGER NOT NULL DEFAULT 0,
+                    battery_id INTEGER,
+                    non_linear_volume_mapping_id INTEGER
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE batteries (
+                    id INTEGER PRIMARY KEY,
+                    site_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    key TEXT
                 )
                 """
             )
@@ -772,13 +1014,46 @@ def make_tank_volume_client() -> ReadingClient:
         connection.execute(
             text(
                 """
-                INSERT INTO tanks (id, site_id, name, type, bbl_foot, disable_reading)
+                CREATE TABLE non_linear_tank_volume_mapping_details (
+                    id INTEGER PRIMARY KEY,
+                    tank_volume_mapping_id INTEGER NOT NULL,
+                    feet INTEGER NOT NULL,
+                    inches REAL NOT NULL,
+                    volume REAL NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO batteries (id, site_id, name, key)
+                VALUES (6, 1, 'Battery 6', 'battery_6')
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO tanks
+                    (id, site_id, name, key, type, bbl_foot, monitored, disable_reading, battery_id, non_linear_volume_mapping_id)
                 VALUES
-                    (1, 1, 'Linear A', 'linear-volume', 50.0, 0),
-                    (2, 1, 'Linear B', 'linear-volume', 40.0, 0),
-                    (3, 1, 'Mixed A', 'mixed-water-oil', 100.0, 0),
-                    (4, 1, 'Mixed Missing', 'mixed-water-oil', NULL, 0),
-                    (5, 1, 'Non Linear A', 'non-linear-volume', NULL, 0)
+                    (1, 1, 'Linear A', 'linear_a', 'linear-volume', 50.0, 1, 0, 6, NULL),
+                    (2, 1, 'Linear B', 'linear_b', 'linear-volume', 40.0, 0, 0, 6, NULL),
+                    (3, 1, 'Mixed A', 'mixed_a', 'mixed-water-oil', 100.0, 1, 0, 6, NULL),
+                    (4, 1, 'Mixed Missing', 'mixed_missing', 'mixed-water-oil', NULL, 0, 0, 6, NULL),
+                    (5, 1, 'Non Linear A', 'non_linear_a', 'non-linear-volume', NULL, 0, 0, 6, 50)
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO non_linear_tank_volume_mapping_details
+                    (id, tank_volume_mapping_id, feet, inches, volume)
+                VALUES
+                    (1, 50, 4, 0, 400.0),
+                    (2, 50, 5, 0, 500.0)
                 """
             )
         )
@@ -923,6 +1198,9 @@ def test_linear_tank_readings_include_calculated_volume():
             "comments": "level based",
             "bbl_foot": 50.0,
             "volume": 125.0,
+            "water_volume": 125.0,
+            "content_type": "water",
+            "content_assumption": "Assuming linear tanks contain water only.",
         },
         {
             "entity_display_name": "Tank - Linear B",
@@ -932,6 +1210,9 @@ def test_linear_tank_readings_include_calculated_volume():
             "comments": "feet inches based",
             "bbl_foot": 40.0,
             "volume": 140.0,
+            "water_volume": 140.0,
+            "content_type": "water",
+            "content_assumption": "Assuming linear tanks contain water only.",
         },
     ]
 
@@ -954,6 +1235,7 @@ def test_mixed_tank_readings_include_calculated_oil_water_volumes():
             "oil_volume": 300.0,
             "water_volume": 150.0,
             "total_volume": 450.0,
+            "content_type": "oil_and_water",
         },
         {
             "entity_display_name": "Tank - Mixed Missing",
@@ -979,7 +1261,62 @@ def test_all_tank_readings_include_volume_enriched_linear_and_mixed_groups():
     assert mixed_group["reading_type"] == "mixed_tank"
     assert mixed_group["readings"][0]["oil_volume"] == 300.0
     assert non_linear_group["reading_type"] == "non_linear_tank"
-    assert "volume" not in non_linear_group["readings"][0]
+    assert non_linear_group["readings"][0]["content_type"] == "water"
+
+
+def test_search_tank_readings_filters_by_battery_relation_and_contains_oil():
+    result = make_tank_volume_client().search_tank_readings(
+        1,
+        start_date="2026-06-10",
+        end_date="2026-06-10",
+        battery_name="Battery 6",
+        contains="oil",
+    )
+
+    assert result["count"] == 1
+    assert result["readings"][0]["tank_name"] == "Mixed A"
+    assert result["readings"][0]["battery_name"] == "Battery 6"
+    assert result["readings"][0]["oil_volume"] == 300.0
+
+
+def test_search_tank_readings_treats_linear_and_non_linear_as_water_only():
+    result = make_tank_volume_client().search_tank_readings(
+        1,
+        start_date="2026-06-10",
+        end_date="2026-06-10",
+        battery_name="6",
+        contains="water",
+    )
+
+    names = [row["tank_name"] for row in result["readings"]]
+    assert "Linear A" in names
+    assert "Linear B" in names
+    assert "Non Linear A" in names
+    linear = next(row for row in result["readings"] if row["tank_name"] == "Linear A")
+    non_linear = next(
+        row for row in result["readings"] if row["tank_name"] == "Non Linear A"
+    )
+    assert linear["water_volume"] == 125.0
+    assert linear["content_assumption"] == "Assuming linear tanks contain water only."
+    assert non_linear["water_volume"] == 400.0
+    assert non_linear["content_assumption"] == "Non-linear tanks are treated as water-only."
+
+
+def test_search_tank_readings_supports_computed_volume_filters():
+    result = make_tank_volume_client().search_tank_readings(
+        1,
+        start_date="2026-06-10",
+        end_date="2026-06-10",
+        battery_name="6",
+        contains="water",
+        filters=[{"field": "water_volume", "operator": ">", "value": 130}],
+    )
+
+    assert [row["tank_name"] for row in result["readings"]] == [
+        "Linear B",
+        "Mixed A",
+        "Non Linear A",
+    ]
 
 
 def test_compare_readings_between_dates_returns_entity_summary():
@@ -1180,6 +1517,92 @@ def test_search_readings_filters_lact_range_and_numeric_field():
             "comments": "next day",
         }
     ]
+
+
+def test_search_equipment_readings_filters_direct_battery_relation_and_fields():
+    result = make_equipment_relation_client().search_equipment_readings(
+        1,
+        "flow_meter",
+        start_date="2026-06-10",
+        end_date="2026-06-10",
+        battery_name="6",
+        equipment_filters=[{"field": "type", "operator": "=", "value": "gas"}],
+        reading_filters=[{"field": "total", "operator": ">", "value": 100}],
+    )
+
+    assert result["count"] == 1
+    row = result["readings"][0]
+    assert row["entity_name"] == "FM Battery 6 Gas"
+    assert row["battery_name"] == "Battery 6"
+    assert row["type"] == "gas"
+    assert row["total"] == 150.0
+
+
+def test_search_equipment_readings_numeric_battery_does_not_match_battery_16():
+    result = make_equipment_relation_client().search_equipment_readings(
+        1,
+        "flow_meter",
+        start_date="2026-06-10",
+        end_date="2026-06-10",
+        battery_name="6",
+        reading_filters=[{"field": "total", "operator": ">", "value": 80}],
+    )
+
+    assert result["count"] == 2
+    assert {row["battery_name"] for row in result["readings"]} == {"Battery 6"}
+    assert {row["entity_name"] for row in result["readings"]} == {
+        "FM Battery 6 Gas",
+        "FM Battery 6 Water",
+    }
+
+
+def test_search_equipment_readings_filters_pump_by_water_plant_battery_relation():
+    result = make_equipment_relation_client().search_equipment_readings(
+        1,
+        "pump",
+        start_date="2026-06-10",
+        end_date="2026-06-10",
+        battery_name="Battery 6",
+        equipment_filters=[{"field": "type", "operator": "=", "value": "water"}],
+        reading_filters=[
+            {"field": "discharge_pressure", "operator": ">=", "value": 100}
+        ],
+    )
+
+    assert result["count"] == 1
+    row = result["readings"][0]
+    assert row["entity_name"] == "Water Pump 6"
+    assert row["battery_name"] == "Battery 6"
+    assert row["type"] == "water"
+    assert row["discharge_pressure"] == 120.0
+
+
+def test_list_equipment_lists_tanks_by_battery_without_reading_date():
+    result = make_equipment_relation_client().list_equipment(
+        1,
+        "tank",
+        battery_name="6",
+    )
+
+    assert result["count"] == 2
+    assert {row["tank_name"] for row in result["entities"]} == {
+        "Tank 6-1 Oil",
+        "Tank 6-2 Water",
+    }
+    assert {row["battery_name"] for row in result["entities"]} == {"Battery 6"}
+
+
+def test_list_equipment_filters_pumps_by_indirect_battery_and_type():
+    result = make_equipment_relation_client().list_equipment(
+        1,
+        "pump",
+        battery_name="Battery 6",
+        equipment_filters=[{"field": "type", "operator": "=", "value": "water"}],
+    )
+
+    assert result["count"] == 1
+    assert result["entities"][0]["entity_name"] == "Water Pump 6"
+    assert result["entities"][0]["battery_name"] == "Battery 6"
 
 
 def test_resolve_reading_entity_finds_unique_partial_name():

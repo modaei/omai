@@ -130,6 +130,66 @@ class ReadingNumericFilter(BaseModel):
     value: float = Field(description="Numeric comparison value.")
 
 
+class TankComputedFilter(BaseModel):
+    field: str = Field(
+        description=(
+            "Computed tank field to filter: oil_volume, water_volume, total_volume, "
+            "volume, bbl_foot, initial_water_volume, or final_water_volume."
+        ),
+    )
+    operator: Literal[">", ">=", "<", "<=", "=", "=="] = Field(
+        description="Numeric comparison operator.",
+    )
+    value: float = Field(description="Numeric comparison value.")
+
+
+class EquipmentFilter(BaseModel):
+    field: str = Field(
+        description=(
+            "Equipment metadata field to filter, such as type, measurement_method, "
+            "monitored, disable_reading, bbl_foot, or water_plant_id."
+        ),
+    )
+    operator: Literal[">", ">=", "<", "<=", "=", "==", "!=", "contains"] = Field(
+        description="Comparison operator for the equipment metadata field.",
+    )
+    value: str | float | bool = Field(description="Comparison value.")
+
+
+class ListEquipmentInput(BaseModel):
+    equipment_type: Literal[
+        "lact",
+        "flare",
+        "tank",
+        "water_plant",
+        "flow_meter",
+        "treater",
+        "knock_out",
+        "pump",
+    ] = Field(description="Equipment type to list.")
+    battery_name: str | None = Field(
+        default=None,
+        description="Optional battery name or number, such as Battery 6 or 6.",
+    )
+    entity_name: str | None = Field(
+        default=None,
+        description="Optional equipment name or partial name.",
+    )
+    entity_key: str | None = Field(
+        default=None,
+        description="Optional equipment key or partial key.",
+    )
+    monitored: bool | None = Field(default=None)
+    disable_reading: bool | None = Field(default=None)
+    equipment_filters: list[EquipmentFilter] = Field(
+        default_factory=list,
+        description=(
+            "Optional filters on whitelisted equipment metadata fields. Examples: "
+            "type = gas for flow meters, type = water for pumps, type = mixed-water-oil for tanks."
+        ),
+    )
+
+
 class SearchReadingsInput(BaseModel):
     reading_type: ReadingType = Field(description="The type of reading to search.")
     start_date: str = Field(description="Start date in YYYY-MM-DD format.")
@@ -144,6 +204,89 @@ class SearchReadingsInput(BaseModel):
             "Optional numeric filters on fields supported by the selected reading type. "
             "Examples: oil > 20 for well_test, reading > 100 for lact, pressure > 50 for flare."
         ),
+    )
+
+
+class SearchTankReadingsInput(BaseModel):
+    start_date: str = Field(description="Start date in YYYY-MM-DD format.")
+    end_date: str = Field(description="End date in YYYY-MM-DD format.")
+    battery_name: str | None = Field(
+        default=None,
+        description="Optional battery name or number, such as Battery 6 or 6.",
+    )
+    tank_name: str | None = Field(
+        default=None,
+        description="Optional tank name or partial tank name.",
+    )
+    tank_key: str | None = Field(
+        default=None,
+        description="Optional tank key or partial tank key.",
+    )
+    tank_type: str | None = Field(
+        default=None,
+        description="Optional tank type: linear_tank, mixed_tank, or non_linear_tank.",
+    )
+    contains: Literal["oil", "water", "any"] | None = Field(
+        default=None,
+        description=(
+            "Optional content filter. Oil uses mixed-tank oil_volume. Water includes "
+            "mixed-tank water_volume plus linear/non-linear tanks treated as water-only."
+        ),
+    )
+    monitored: bool | None = Field(default=None)
+    disable_reading: bool | None = Field(default=None)
+    filters: list[TankComputedFilter] = Field(
+        default_factory=list,
+        description="Optional filters on computed tank volume fields.",
+    )
+
+
+class SearchEquipmentReadingsInput(BaseModel):
+    reading_type: ReadingType = Field(
+        description=(
+            "Equipment reading type. Use tank for all tank types, or a specific "
+            "type such as flow_meter, lact, flare, knock_out, treater, "
+            "water_plant, pump, linear_tank, mixed_tank, or non_linear_tank."
+        ),
+    )
+    start_date: str = Field(description="Start date in YYYY-MM-DD format.")
+    end_date: str = Field(description="End date in YYYY-MM-DD format.")
+    battery_name: str | None = Field(
+        default=None,
+        description="Optional battery name or number, such as Battery 6 or 6.",
+    )
+    entity_name: str | None = Field(
+        default=None,
+        description="Optional equipment name or partial name.",
+    )
+    entity_key: str | None = Field(
+        default=None,
+        description="Optional equipment key or partial key.",
+    )
+    monitored: bool | None = Field(default=None)
+    disable_reading: bool | None = Field(default=None)
+    equipment_filters: list[EquipmentFilter] = Field(
+        default_factory=list,
+        description=(
+            "Optional filters on whitelisted equipment metadata fields. Examples: "
+            "type = gas for flow meters, type = water for pumps, "
+            "measurement_method = total for flow meters."
+        ),
+    )
+    reading_filters: list[ReadingNumericFilter] = Field(
+        default_factory=list,
+        description=(
+            "Optional numeric filters on raw reading fields. Examples: total > 100, "
+            "pressure > 50, inlet > 0, suction_pressure >= 20."
+        ),
+    )
+    computed_filters: list[TankComputedFilter] = Field(
+        default_factory=list,
+        description="Optional filters on computed tank volume fields.",
+    )
+    contains: Literal["oil", "water", "any"] | None = Field(
+        default=None,
+        description="Optional tank content filter for tank reading types.",
     )
 
 
@@ -393,6 +536,161 @@ def build_reading_tools(
             logger.warning("Reading search failed: %s", exc)
             return _json_result({"ok": False, "error": str(exc)})
 
+    def list_equipment(
+        equipment_type: str,
+        battery_name: str | None = None,
+        entity_name: str | None = None,
+        entity_key: str | None = None,
+        monitored: bool | None = None,
+        disable_reading: bool | None = None,
+        equipment_filters: list[EquipmentFilter] | None = None,
+    ) -> str:
+        """List configured equipment without requiring a reading date."""
+        equipment_filter_values = [
+            filter_item.model_dump() if hasattr(filter_item, "model_dump") else filter_item
+            for filter_item in (equipment_filters or [])
+        ]
+        logger.info(
+            "Listing equipment site_id=%s type=%s battery=%s entity=%s filters=%s",
+            site_id,
+            equipment_type,
+            battery_name,
+            entity_name or entity_key,
+            equipment_filter_values,
+        )
+        try:
+            return _json_result(
+                {
+                    "ok": True,
+                    **client.list_equipment(
+                        site_id=site_id,
+                        equipment_type=equipment_type,
+                        battery_name=battery_name,
+                        entity_name=entity_name,
+                        entity_key=entity_key,
+                        monitored=monitored,
+                        disable_reading=disable_reading,
+                        equipment_filters=equipment_filter_values,
+                    ),
+                }
+            )
+        except ReadingClientError as exc:
+            logger.warning("Equipment listing failed: %s", exc)
+            return _json_result({"ok": False, "error": str(exc)})
+
+    def search_tank_readings(
+        start_date: str,
+        end_date: str,
+        battery_name: str | None = None,
+        tank_name: str | None = None,
+        tank_key: str | None = None,
+        tank_type: str | None = None,
+        contains: str | None = None,
+        monitored: bool | None = None,
+        disable_reading: bool | None = None,
+        filters: list[TankComputedFilter] | None = None,
+    ) -> str:
+        """Search tank readings by tank/battery metadata and computed volumes."""
+        filter_values = [
+            filter_item.model_dump() if hasattr(filter_item, "model_dump") else filter_item
+            for filter_item in (filters or [])
+        ]
+        logger.info(
+            "Searching tank readings site_id=%s start=%s end=%s battery=%s tank=%s contains=%s filters=%s",
+            site_id,
+            start_date,
+            end_date,
+            battery_name,
+            tank_name or tank_key,
+            contains,
+            filter_values,
+        )
+        try:
+            return _json_result(
+                {
+                    "ok": True,
+                    **client.search_tank_readings(
+                        site_id=site_id,
+                        start_date=start_date,
+                        end_date=end_date,
+                        battery_name=battery_name,
+                        tank_name=tank_name,
+                        tank_key=tank_key,
+                        tank_type=tank_type,
+                        contains=contains,
+                        monitored=monitored,
+                        disable_reading=disable_reading,
+                        filters=filter_values,
+                    ),
+                }
+            )
+        except ReadingClientError as exc:
+            logger.warning("Tank reading search failed: %s", exc)
+            return _json_result({"ok": False, "error": str(exc)})
+
+    def search_equipment_readings(
+        reading_type: str,
+        start_date: str,
+        end_date: str,
+        battery_name: str | None = None,
+        entity_name: str | None = None,
+        entity_key: str | None = None,
+        monitored: bool | None = None,
+        disable_reading: bool | None = None,
+        equipment_filters: list[EquipmentFilter] | None = None,
+        reading_filters: list[ReadingNumericFilter] | None = None,
+        computed_filters: list[TankComputedFilter] | None = None,
+        contains: str | None = None,
+    ) -> str:
+        """Search equipment readings by battery relation, metadata, and conditions."""
+        equipment_filter_values = [
+            filter_item.model_dump() if hasattr(filter_item, "model_dump") else filter_item
+            for filter_item in (equipment_filters or [])
+        ]
+        reading_filter_values = [
+            filter_item.model_dump() if hasattr(filter_item, "model_dump") else filter_item
+            for filter_item in (reading_filters or [])
+        ]
+        computed_filter_values = [
+            filter_item.model_dump() if hasattr(filter_item, "model_dump") else filter_item
+            for filter_item in (computed_filters or [])
+        ]
+        logger.info(
+            "Searching equipment readings site_id=%s type=%s start=%s end=%s battery=%s entity=%s equipment_filters=%s reading_filters=%s",
+            site_id,
+            reading_type,
+            start_date,
+            end_date,
+            battery_name,
+            entity_name or entity_key,
+            equipment_filter_values,
+            reading_filter_values,
+        )
+        try:
+            return _json_result(
+                {
+                    "ok": True,
+                    **client.search_equipment_readings(
+                        site_id=site_id,
+                        reading_type=reading_type,
+                        start_date=start_date,
+                        end_date=end_date,
+                        battery_name=battery_name,
+                        entity_name=entity_name,
+                        entity_key=entity_key,
+                        monitored=monitored,
+                        disable_reading=disable_reading,
+                        equipment_filters=equipment_filter_values,
+                        reading_filters=reading_filter_values,
+                        computed_filters=computed_filter_values,
+                        contains=contains,
+                    ),
+                }
+            )
+        except ReadingClientError as exc:
+            logger.warning("Equipment reading search failed: %s", exc)
+            return _json_result({"ok": False, "error": str(exc)})
+
     return [
         StructuredTool.from_function(
             func=list_reading_types,
@@ -465,6 +763,18 @@ def build_reading_tools(
             args_schema=AllMissingReadingsRangeInput,
         ),
         StructuredTool.from_function(
+            func=list_equipment,
+            name="list_equipment",
+            description=(
+                "List configured equipment entities without requiring readings or "
+                "a date. Use this for inventory questions such as what tanks are "
+                "in Battery 6, list flow meters for a battery, which pumps belong "
+                "to a battery, or equipment filtered by metadata. Do not use "
+                "reading search tools for simple equipment-list questions."
+            ),
+            args_schema=ListEquipmentInput,
+        ),
+        StructuredTool.from_function(
             func=search_readings,
             name="search_readings",
             description=(
@@ -474,6 +784,31 @@ def build_reading_tools(
                 "water draw, treater, knock-out, pump, and similar range queries."
             ),
             args_schema=SearchReadingsInput,
+        ),
+        StructuredTool.from_function(
+            func=search_equipment_readings,
+            name="search_equipment_readings",
+            description=(
+                "Search equipment readings using actual equipment-to-battery "
+                "relations, equipment metadata, raw reading filters, and tank "
+                "computed-volume filters. Use this for questions like Battery 6 "
+                "flow meters with total > 100, Battery 13 knock-outs with inlet > 0, "
+                "water pumps in a battery, or tanks in a battery containing oil/water. "
+                "Do not infer battery relation from equipment names."
+            ),
+            args_schema=SearchEquipmentReadingsInput,
+        ),
+        StructuredTool.from_function(
+            func=search_tank_readings,
+            name="search_tank_readings",
+            description=(
+                "Search tank readings using tank metadata, battery relation, and "
+                "computed volumes. Use this for tank oil/water stock, tanks in a "
+                "battery, tanks containing oil/water, bottom-feet volume questions, "
+                "or computed volume filters. Linear and non-linear tanks are treated "
+                "as water-only; mixed tanks provide oil_volume and water_volume."
+            ),
+            args_schema=SearchTankReadingsInput,
         ),
         StructuredTool.from_function(
             func=search_well_tests,
