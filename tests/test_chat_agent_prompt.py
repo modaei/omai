@@ -227,6 +227,8 @@ def test_system_prompt_rejects_unsupported_actions():
     assert "find_all_missing_readings_for_range" in system_prompt
     assert "do not call find_all_missing_readings separately for each date" in system_prompt
     assert "Use reading tools for tank volume questions" in system_prompt
+    assert "get_reading_for_entity" in system_prompt
+    assert "Do not guess between flow meter, flare, tank" in system_prompt
     assert "oil_volume" in system_prompt
     assert "do not say tank charts or" in system_prompt
     assert "The selected site is HARTZOG DRAW" in system_prompt

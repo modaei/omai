@@ -45,6 +45,20 @@ class GetReadingsInput(BaseModel):
     reading_date: str = Field(description="Date in YYYY-MM-DD format.")
 
 
+class GetReadingForEntityInput(BaseModel):
+    entity_name: str = Field(
+        description="Object name or partial object name, such as Battery 2 Vent.",
+    )
+    reading_date: str = Field(description="Date in YYYY-MM-DD format.")
+    reading_type: ReadingType | None = Field(
+        default=None,
+        description=(
+            "Optional reading type when the user explicitly named it. Leave empty "
+            "when the user gave only the object name."
+        ),
+    )
+
+
 class CompareReadingsInput(BaseModel):
     reading_type: ReadingType = Field(description="The type of reading to compare.")
     first_date: str = Field(description="First date in YYYY-MM-DD format.")
@@ -176,6 +190,30 @@ def build_reading_tools(
             return _json_result(enriched)
         except ReadingClientError as exc:
             logger.warning("Reading lookup failed: %s", exc)
+            return _json_result({"ok": False, "error": str(exc)})
+
+    def get_reading_for_entity(
+        entity_name: str, reading_date: str, reading_type: str | None = None
+    ) -> str:
+        """Resolve a reading entity by name, then retrieve its reading for one date."""
+        logger.info(
+            "Getting reading for entity site_id=%s entity=%s type=%s date=%s",
+            site_id,
+            entity_name,
+            reading_type,
+            reading_date,
+        )
+        try:
+            return _json_result(
+                {
+                    "ok": True,
+                    **client.get_reading_for_entity(
+                        site_id, entity_name, reading_date, reading_type
+                    ),
+                }
+            )
+        except ReadingClientError as exc:
+            logger.warning("Entity reading lookup failed: %s", exc)
             return _json_result({"ok": False, "error": str(exc)})
 
     def compare_readings_between_dates(
@@ -371,6 +409,19 @@ def build_reading_tools(
                 "or flow meter readings for one date."
             ),
             args_schema=GetReadingsInput,
+        ),
+        StructuredTool.from_function(
+            func=get_reading_for_entity,
+            name="get_reading_for_entity",
+            description=(
+                "Resolve an object name to the correct reading entity and get its "
+                "reading for one date. Use this when the user asks whether an "
+                "object has a reading but does not clearly name the reading type, "
+                "or when names may overlap across flow meters, flares, tanks, "
+                "LACTs, pumps, treaters, water plants, knock-outs, or wells. "
+                "Returns clarification candidates when the object name is ambiguous."
+            ),
+            args_schema=GetReadingForEntityInput,
         ),
         StructuredTool.from_function(
             func=compare_readings_between_dates,

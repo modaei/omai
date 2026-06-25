@@ -47,6 +47,24 @@ class FakeReadingClient:
             "rows": [{"entity_name": entity_name, "reading": 42}],
         }
 
+    def get_reading_for_entity(
+        self,
+        site_id,
+        entity_name,
+        reading_date,
+        reading_type=None,
+    ):
+        return {
+            "reading_type": reading_type or "flow_meter",
+            "date": reading_date,
+            "entity": {
+                "reading_type": reading_type or "flow_meter",
+                "entity_display_name": f"Flow Meter - {entity_name}",
+            },
+            "count": 1,
+            "readings": [{"entity_display_name": f"Flow Meter - {entity_name}", "total": 0}],
+        }
+
 
 class FakeOperationalContextStore:
     def __init__(self):
@@ -121,3 +139,19 @@ def test_search_readings_tool_does_not_add_operational_context():
     assert result["ok"] is True
     assert "operational_context" not in result
     assert store.calls == []
+
+
+def test_get_reading_for_entity_tool_uses_resolver_client_call():
+    tools = build_reading_tools(FakeReadingClient(), 4)
+    result = json.loads(
+        tool_by_name(tools, "get_reading_for_entity").invoke(
+            {
+                "entity_name": "Battery 2 Vent",
+                "reading_date": "2026-06-01",
+            }
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["reading_type"] == "flow_meter"
+    assert result["entity"]["entity_display_name"] == "Flow Meter - Battery 2 Vent"

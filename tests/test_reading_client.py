@@ -112,6 +112,177 @@ def make_sqlite_client() -> ReadingClient:
     return ReadingClient(engine)
 
 
+def make_entity_resolution_client() -> ReadingClient:
+    engine = create_engine("sqlite:///:memory:")
+    with engine.begin() as connection:
+        for table in (
+            "lacts",
+            "flares",
+            "water_plants",
+            "flow_meters",
+            "treaters",
+            "knock_outs",
+            "pumps",
+            "wells",
+        ):
+            connection.execute(
+                text(
+                    f"""
+                    CREATE TABLE {table} (
+                        id INTEGER PRIMARY KEY,
+                        site_id INTEGER NOT NULL,
+                        name TEXT NOT NULL,
+                        key TEXT
+                    )
+                    """
+                )
+            )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE tanks (
+                    id INTEGER PRIMARY KEY,
+                    site_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    key TEXT,
+                    type TEXT NOT NULL,
+                    bbl_foot REAL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE flow_meter_readings (
+                    id INTEGER PRIMARY KEY,
+                    flow_meter_id INTEGER NOT NULL,
+                    total REAL,
+                    flow REAL,
+                    odometer REAL,
+                    comments TEXT,
+                    time TEXT NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE flare_readings (
+                    id INTEGER PRIMARY KEY,
+                    flare_id INTEGER NOT NULL,
+                    pressure REAL,
+                    volume REAL,
+                    comments TEXT,
+                    time TEXT NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE linear_tank_readings (
+                    id INTEGER PRIMARY KEY,
+                    tank_id INTEGER NOT NULL,
+                    level REAL,
+                    feet INTEGER,
+                    inches REAL,
+                    percentage REAL,
+                    pressure REAL,
+                    temperature REAL,
+                    comments TEXT,
+                    time TEXT NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE mixed_tank_readings (
+                    id INTEGER PRIMARY KEY,
+                    tank_id INTEGER NOT NULL,
+                    top_level_feet INTEGER,
+                    top_level_inches REAL,
+                    water_level_feet INTEGER,
+                    water_level_inches REAL,
+                    comments TEXT,
+                    time TEXT NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE non_linear_tank_readings (
+                    id INTEGER PRIMARY KEY,
+                    tank_id INTEGER NOT NULL,
+                    initial_feet INTEGER,
+                    initial_inches REAL,
+                    final_feet INTEGER,
+                    final_inches REAL,
+                    comments TEXT,
+                    time TEXT NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO flow_meters (id, site_id, name, key)
+                VALUES
+                    (1, 1, 'Battery 2 Vent', 'Battery2Vent'),
+                    (2, 1, 'TRACT 5 Vent', 'TRACT5Vent'),
+                    (3, 2, 'Battery 2 Vent', 'OtherSiteBattery2Vent')
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO flares (id, site_id, name, key)
+                VALUES (1, 1, 'Battery 2 Vent', 'Battery2VentFlare')
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO tanks (id, site_id, name, key, type, bbl_foot)
+                VALUES
+                    (1, 1, '11-1-1 Oil', '111Oil', 'mixed-water-oil', 100.0),
+                    (2, 1, '10-1 Oil', '101Oil', 'linear-volume', 50.0)
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO flow_meter_readings
+                    (id, flow_meter_id, total, flow, odometer, comments, time)
+                VALUES
+                    (10, 1, 0.0, 1.5, 100.0, 'normal', '2026-06-01 07:00:00'),
+                    (11, 2, 5.0, 2.0, 200.0, 'normal', '2026-06-01 07:00:00'),
+                    (12, 3, 999.0, 9.0, 999.0, 'other site', '2026-06-01 07:00:00')
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO mixed_tank_readings
+                    (id, tank_id, top_level_feet, top_level_inches, water_level_feet, water_level_inches, comments, time)
+                VALUES (20, 1, 8, 0, 1, 0, 'normal', '2026-06-01 07:00:00')
+                """
+            )
+        )
+    return ReadingClient(engine)
+
+
 def make_sqlite_client_with_missing_exclusions() -> ReadingClient:
     engine = create_engine("sqlite:///:memory:")
     with engine.begin() as connection:
@@ -1009,6 +1180,79 @@ def test_search_readings_filters_lact_range_and_numeric_field():
             "comments": "next day",
         }
     ]
+
+
+def test_resolve_reading_entity_finds_unique_partial_name():
+    result = make_entity_resolution_client().resolve_reading_entity(
+        1, "Tract 5 vent", "2026-06-01"
+    )
+
+    assert result["count"] == 1
+    assert result["candidates"][0]["reading_type"] == "flow_meter"
+    assert result["candidates"][0]["entity_display_name"] == "Flow Meter - TRACT 5 Vent"
+    assert result["candidates"][0]["has_reading"] is True
+
+
+def test_resolve_reading_entity_reports_ambiguous_object_name():
+    result = make_entity_resolution_client().resolve_reading_entity(
+        1, "Battery 2 Vent", "2026-06-01"
+    )
+
+    assert result["count"] == 2
+    assert {
+        candidate["entity_display_name"] for candidate in result["candidates"]
+    } == {"Flow Meter - Battery 2 Vent", "Flare - Battery 2 Vent"}
+
+
+def test_get_reading_for_entity_uses_type_constraint_for_ambiguous_name():
+    result = make_entity_resolution_client().get_reading_for_entity(
+        1, "Battery 2 Vent", "2026-06-01", "flow_meter"
+    )
+
+    assert result["reading_type"] == "flow_meter"
+    assert result["count"] == 1
+    assert result["readings"] == [
+        {
+            "entity_display_name": "Flow Meter - Battery 2 Vent",
+            "entity_type": "Flow Meter",
+            "total": 0.0,
+            "flow": 1.5,
+            "odometer": 100.0,
+            "comments": "normal",
+        }
+    ]
+
+
+def test_get_reading_for_entity_returns_clarification_candidates():
+    result = make_entity_resolution_client().get_reading_for_entity(
+        1, "Battery 2 Vent", "2026-06-01"
+    )
+
+    assert result["needs_clarification"] is True
+    assert result["readings"] == []
+    assert {
+        candidate["entity_display_name"] for candidate in result["candidates"]
+    } == {"Flow Meter - Battery 2 Vent", "Flare - Battery 2 Vent"}
+
+
+def test_resolve_reading_entity_maps_tank_type_to_specific_reading_type():
+    result = make_entity_resolution_client().resolve_reading_entity(
+        1, "11-1-1", "2026-06-01", "tank"
+    )
+
+    assert result["count"] == 1
+    assert result["candidates"][0]["reading_type"] == "mixed_tank"
+    assert result["candidates"][0]["entity_display_name"] == "Tank - 11-1-1 Oil"
+    assert result["candidates"][0]["has_reading"] is True
+
+
+def test_resolve_reading_entity_is_scoped_to_site():
+    result = make_entity_resolution_client().get_reading_for_entity(
+        1, "OtherSiteBattery2Vent", "2026-06-01", "flow_meter"
+    )
+
+    assert result["count"] == 0
+    assert result["readings"] == []
 
 
 def test_search_readings_rejects_unsupported_filter_field():

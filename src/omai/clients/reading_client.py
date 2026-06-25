@@ -6,7 +6,7 @@ from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import bindparam, create_engine, text
+from sqlalchemy import bindparam, create_engine, inspect, text
 from sqlalchemy.engine import Engine, URL
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -251,6 +251,7 @@ class ReadingClient:
         self.engine = engine
         self.max_rows = max_rows
         self._missing_reading_exclusion_cache: dict[int, dict[str, tuple[int, ...]]] = {}
+        self._table_columns_cache: dict[str, set[str]] = {}
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "ReadingClient":
@@ -644,6 +645,116 @@ class ReadingClient:
             ),
         }
 
+    def resolve_reading_entity(
+        self,
+        site_id: int,
+        entity_name: str,
+        reading_date: str | None = None,
+        reading_type: str | None = None,
+    ) -> dict[str, Any]:
+        """Find reading-capable entities matching a user-supplied object name.
+
+        This method exists because an object name alone is not always enough to
+        select the correct reading table. For example, a phrase such as
+        "Battery 2 Vent" may be guessed as a flare by the model even when the
+        actual reading is stored on a flow meter. The resolver searches the
+        configured reading base tables first and reports ambiguity explicitly.
+        """
+        normalized_name = entity_name.strip()
+        if not normalized_name:
+            raise ReadingClientError("entity_name is required.")
+
+        day = self._parse_date(reading_date) if reading_date else None
+        reading_types = self._resolution_reading_types(reading_type)
+        candidates: list[dict[str, Any]] = []
+        for candidate_reading_type in reading_types:
+            definition = self._definition(candidate_reading_type)
+            for row in self._matching_entities(
+                site_id, definition, normalized_name
+            ):
+                candidate = self._entity_candidate(
+                    candidate_reading_type, definition, row
+                )
+                if day is not None:
+                    candidate["has_reading"] = self._entity_has_reading(
+                        site_id, definition, int(row["entity_id"]), day
+                    )
+                candidates.append(candidate)
+
+        candidates = self._deduplicate_candidates(candidates)
+        candidates.sort(
+            key=lambda candidate: (
+                candidate["match_rank"],
+                candidate["reading_type"],
+                candidate["entity_display_name"],
+            )
+        )
+        return {
+            "entity_name": normalized_name,
+            "reading_type": reading_type,
+            "site_id": site_id,
+            "date": day.isoformat() if day else None,
+            "count": len(candidates),
+            "candidates": candidates[: self.max_rows],
+        }
+
+    def get_reading_for_entity(
+        self,
+        site_id: int,
+        entity_name: str,
+        reading_date: str,
+        reading_type: str | None = None,
+    ) -> dict[str, Any]:
+        """Resolve an entity name, then return that entity's reading for one day."""
+        day = self._parse_date(reading_date)
+        resolution = self.resolve_reading_entity(
+            site_id, entity_name, day.isoformat(), reading_type
+        )
+        candidates = resolution["candidates"]
+        if len(candidates) != 1:
+            return {
+                "reading_type": reading_type,
+                "label": "Resolved entity reading",
+                "site_id": site_id,
+                "date": day.isoformat(),
+                "entity_name": entity_name,
+                "needs_clarification": len(candidates) > 1,
+                "count": 0,
+                "candidates": [
+                    {
+                        "reading_type": candidate["reading_type"],
+                        "entity_type": candidate["entity_type"],
+                        "entity_display_name": candidate["entity_display_name"],
+                        **(
+                            {"has_reading": candidate["has_reading"]}
+                            if "has_reading" in candidate
+                            else {}
+                        ),
+                    }
+                    for candidate in candidates
+                ],
+                "readings": [],
+            }
+
+        candidate = candidates[0]
+        definition = self._definition(candidate["reading_type"])
+        rows = self._readings_for_day_entity(
+            site_id, definition, int(candidate["entity_id"]), day
+        )
+        return {
+            "reading_type": candidate["reading_type"],
+            "label": definition.label,
+            "site_id": site_id,
+            "date": day.isoformat(),
+            "entity": {
+                "reading_type": candidate["reading_type"],
+                "entity_type": candidate["entity_type"],
+                "entity_display_name": candidate["entity_display_name"],
+            },
+            "count": len(rows),
+            "readings": self._compact_reading_rows(definition, rows),
+        }
+
     def _readings_for_day(
         self, site_id: int, definition: ReadingDefinition, day: date
     ) -> list[dict[str, Any]]:
@@ -671,6 +782,156 @@ class ReadingClient:
             definition,
             self._with_tank_volumes(_reading_type_for_definition(definition), rows),
         )
+
+    def _readings_for_day_entity(
+        self,
+        site_id: int,
+        definition: ReadingDefinition,
+        entity_id: int,
+        day: date,
+    ) -> list[dict[str, Any]]:
+        start, end = self._day_bounds(day)
+        field_sql = _reading_select_fields(definition)
+        query = text(
+            f"""
+            SELECT r.id AS reading_id,
+                r.time,
+                b.name AS entity_name,
+                {field_sql}
+            FROM {definition.table} r
+            JOIN {definition.base_table} b
+                ON r.{definition.foreign_key} = b.{definition.base_key}
+            WHERE b.site_id = :site_id
+                AND b.{definition.base_key} = :entity_id
+                AND r.time >= :start_time
+                AND r.time < :end_time
+                {definition.base_filter}
+            ORDER BY r.time, b.name
+            LIMIT :limit
+            """
+        )
+        rows = self._execute(
+            query,
+            site_id=site_id,
+            entity_id=entity_id,
+            start_time=start,
+            end_time=end,
+        )
+        return self._with_entity_display(
+            definition,
+            self._with_tank_volumes(_reading_type_for_definition(definition), rows),
+        )
+
+    def _matching_entities(
+        self, site_id: int, definition: ReadingDefinition, entity_name: str
+    ) -> list[dict[str, Any]]:
+        has_key = self._table_has_column(definition.base_table, "key")
+        key_select = ", b.`key` AS entity_key" if has_key else ""
+        key_condition = " OR LOWER(b.`key`) LIKE LOWER(:entity_name)" if has_key else ""
+        query = text(
+            f"""
+            SELECT b.{definition.base_key} AS entity_id,
+                b.name AS entity_name
+                {key_select}
+            FROM {definition.base_table} b
+            WHERE b.site_id = :site_id
+                AND (
+                    LOWER(b.name) LIKE LOWER(:entity_name)
+                    {key_condition}
+                )
+                {definition.base_filter}
+            ORDER BY b.name
+            LIMIT :limit
+            """
+        )
+        rows = self._execute(
+            query,
+            site_id=site_id,
+            entity_name=f"%{entity_name}%",
+        )
+        normalized_query = _normalize_entity_match_value(entity_name)
+        for row in rows:
+            row["match_rank"] = _entity_match_rank(row, normalized_query)
+        return rows
+
+    def _entity_has_reading(
+        self, site_id: int, definition: ReadingDefinition, entity_id: int, day: date
+    ) -> bool:
+        start, end = self._day_bounds(day)
+        query = text(
+            f"""
+            SELECT 1
+            FROM {definition.table} r
+            JOIN {definition.base_table} b
+                ON r.{definition.foreign_key} = b.{definition.base_key}
+            WHERE b.site_id = :site_id
+                AND b.{definition.base_key} = :entity_id
+                AND r.time >= :start_time
+                AND r.time < :end_time
+                {definition.base_filter}
+            LIMIT 1
+            """
+        )
+        return bool(
+            self._execute(
+                query,
+                site_id=site_id,
+                entity_id=entity_id,
+                start_time=start,
+                end_time=end,
+            )
+        )
+
+    @staticmethod
+    def _entity_candidate(
+        reading_type: str, definition: ReadingDefinition, row: dict[str, Any]
+    ) -> dict[str, Any]:
+        entity_type = BASE_ENTITY_LABELS.get(definition.base_table, "Entity")
+        return {
+            "reading_type": reading_type,
+            "entity_id": row["entity_id"],
+            "entity_type": entity_type,
+            "entity_name": row["entity_name"],
+            "entity_display_name": f"{entity_type} - {row['entity_name']}",
+            "match_rank": row["match_rank"],
+        }
+
+    @staticmethod
+    def _deduplicate_candidates(
+        candidates: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        deduplicated: dict[tuple[str, str, str], dict[str, Any]] = {}
+        for candidate in candidates:
+            key = (
+                candidate["reading_type"],
+                candidate["entity_type"],
+                str(candidate["entity_id"]),
+            )
+            existing = deduplicated.get(key)
+            if existing is None or candidate["match_rank"] < existing["match_rank"]:
+                deduplicated[key] = candidate
+        return list(deduplicated.values())
+
+    def _resolution_reading_types(self, reading_type: str | None) -> list[str]:
+        if reading_type is None:
+            return list(READING_DEFINITIONS)
+        if reading_type == "tank":
+            return ["linear_tank", "mixed_tank", "non_linear_tank"]
+        self._definition(reading_type)
+        return [reading_type]
+
+    def _table_has_column(self, table_name: str, column_name: str) -> bool:
+        columns = self._table_columns_cache.get(table_name)
+        if columns is None:
+            try:
+                columns = {
+                    str(column["name"])
+                    for column in inspect(self.engine).get_columns(table_name)
+                }
+            except SQLAlchemyError:
+                columns = set()
+            self._table_columns_cache[table_name] = columns
+        return column_name in columns
 
     def _get_all_tank_readings(self, site_id: int, day: date) -> dict[str, Any]:
         groups = [
@@ -1095,6 +1356,23 @@ def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float, Decimal)) and not isinstance(value, bool)
 
 
+def _normalize_entity_match_value(value: Any) -> str:
+    return " ".join(str(value or "").lower().split())
+
+
+def _entity_match_rank(row: dict[str, Any], normalized_query: str) -> int:
+    """Rank exact entity-name/key matches ahead of broader partial matches."""
+    values = [
+        _normalize_entity_match_value(row.get("entity_name")),
+        _normalize_entity_match_value(row.get("entity_key")),
+    ]
+    if normalized_query in values:
+        return 0
+    if any(value.endswith(normalized_query) for value in values if value):
+        return 1
+    return 2
+
+
 def _reading_select_fields(definition: ReadingDefinition) -> str:
     fields = [f"r.{field}" for field in definition.fields]
     if definition.base_table == "tanks" and definition.table in {
@@ -1274,5 +1552,23 @@ class UnavailableReadingClient:
         end_date: str,
         entity_name: str | None = None,
         filters: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        raise ReadingClientError(self.reason)
+
+    def resolve_reading_entity(
+        self,
+        site_id: int,
+        entity_name: str,
+        reading_date: str | None = None,
+        reading_type: str | None = None,
+    ) -> dict[str, Any]:
+        raise ReadingClientError(self.reason)
+
+    def get_reading_for_entity(
+        self,
+        site_id: int,
+        entity_name: str,
+        reading_date: str,
+        reading_type: str | None = None,
     ) -> dict[str, Any]:
         raise ReadingClientError(self.reason)
