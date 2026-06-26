@@ -41,8 +41,15 @@ COMMON_AGGREGATE_HINTS = [
     "Well-test aggregates: join well_tests wt to wells w, filter w.site_id = :site_id, use wt.time and aggregate wt.oil, wt.water, wt.gas, or wt.runtime only for explicit well-test questions.",
     "Well-test battery aggregates: left join batteries b on b.id = w.battery_id and group by COALESCE(b.name, 'No Battery').",
     "Mixed-tank oil volume: join mixed_tank_readings m to tanks t, filter t.site_id = :site_id, compute oil height from top level minus water level, multiply by t.bbl_foot.",
+    "Tank volume SQL: oil_volume, water_volume, and total_volume are computed tool-result fields, not database columns. Do not use tank_readings; use mixed_tank_readings with level fields and tanks.bbl_foot for oil.",
     "Flow meter aggregates: join flow_meter_readings r to flow_meters fm, filter fm.site_id = :site_id, use r.time, r.total, r.flow, r.odometer, and fm.type.",
 ]
+
+MIXED_TANK_OIL_VOLUME_SQL = (
+    "((COALESCE(m.top_level_feet, 0) + COALESCE(m.top_level_inches, 0) / 12.0) "
+    "- (COALESCE(m.water_level_feet, 0) + COALESCE(m.water_level_inches, 0) / 12.0)) "
+    "* t.bbl_foot"
+)
 
 
 class OperationalSqlInput(BaseModel):
@@ -67,6 +74,14 @@ class OperationalSqlInput(BaseModel):
     )
 
 
+class OperationalSqlGuidanceInput(BaseModel):
+    """Arguments for retrieving targeted SQL guidance before drafting a query."""
+
+    question: str = Field(
+        description="The user's operational question that may need SQL."
+    )
+
+
 def _json_result(value: Any) -> str:
     """Serialize tool output compactly for the model."""
     return json.dumps(value, default=str, separators=(",", ":"))
@@ -87,6 +102,230 @@ def _available_columns(
         for table in table_names
         if table in column_metadata
     }
+
+
+SQL_RELATIONSHIP_GUIDANCE = {
+    "equipment_by_battery": {
+        "triggers": (
+            "battery",
+            "equipment",
+            "tank",
+            "flow meter",
+            "lact",
+            "flare",
+            "knock",
+            "treater",
+            "water plant",
+            "pump",
+        ),
+        "tables": [
+            "batteries",
+            "tanks",
+            "flow_meters",
+            "lacts",
+            "flares",
+            "knock_outs",
+            "treaters",
+            "water_plants",
+            "pumps",
+        ],
+        "joins": [
+            "Most equipment joins directly to batteries with <equipment>.battery_id = batteries.id.",
+            "Pumps join to batteries through water_plants: pumps.water_plant_id = water_plants.id and water_plants.battery_id = batteries.id.",
+        ],
+        "pitfalls": [
+            "Do not use batteries.number; batteries are identified by batteries.name or batteries.key.",
+            "For simple inventory questions, prefer list_equipment instead of SQL.",
+        ],
+        "example_sql": (
+            "SELECT t.name AS tank_name, t.key AS tank_key, t.type AS tank_type "
+            "FROM tanks t JOIN batteries b ON b.id = t.battery_id "
+            "WHERE t.site_id = :site_id "
+            "AND LOWER(REPLACE(b.name, ' ', '')) = 'battery6' "
+            "LIMIT 100"
+        ),
+    },
+    "reading_aggregates": {
+        "triggers": (
+            "reading",
+            "readings",
+            "average",
+            "avg",
+            "sum",
+            "total",
+            "pressure",
+            "flow",
+            "odometer",
+            "inlet",
+            "oil off",
+            "oil in tanks",
+            "tank oil",
+            "daily oil",
+        ),
+        "tables": [
+            "mixed_tank_readings",
+            "tanks",
+            "flow_meter_readings",
+            "flow_meters",
+            "lact_readings",
+            "lacts",
+            "flare_readings",
+            "flares",
+            "knock_out_readings",
+            "knock_outs",
+            "pump_readings",
+            "pumps",
+            "treater_readings",
+            "treaters",
+            "water_plant_readings",
+            "water_plants",
+        ],
+        "joins": [
+            "mixed_tank_readings.tank_id = tanks.id",
+            "flow_meter_readings.flow_meter_id = flow_meters.id",
+            "lact_readings.lact_id = lacts.id",
+            "flare_readings.flare_id = flares.id",
+            "knock_out_readings.knock_out_id = knock_outs.id",
+            "pump_readings.pump_id = pumps.id",
+            "treater_readings.treater_id = treaters.id",
+            "water_plant_readings.water_plant_id = water_plants.id",
+        ],
+        "pitfalls": [
+            "Use the parent equipment table for site filtering.",
+            "Use reading time columns for date ranges.",
+            "There is no unified tank_readings table.",
+            "oil_volume, water_volume, and total_volume are computed tool-result fields, not database columns.",
+            "For mixed tank oil SQL, calculate oil volume as oil height multiplied by tanks.bbl_foot.",
+        ],
+        "example_sql": (
+            "SELECT ROUND(AVG(d.daily_oil_bbl), 2) AS average_daily_oil_bbl "
+            "FROM ("
+            "SELECT DATE(m.time) AS reading_date, "
+            f"SUM({MIXED_TANK_OIL_VOLUME_SQL}) AS daily_oil_bbl "
+            "FROM mixed_tank_readings m "
+            "JOIN tanks t ON t.id = m.tank_id "
+            "WHERE t.site_id = :site_id "
+            "AND m.time >= '2026-06-01' "
+            "AND m.time < '2026-06-21' "
+            "AND t.type = 'mixed-water-oil' "
+            "GROUP BY DATE(m.time)"
+            ") d LIMIT 100"
+        ),
+    },
+    "shutdowns": {
+        "triggers": ("shutdown", "downtime", "down", "cause", "reason"),
+        "tables": ["well_shutdowns", "wells"],
+        "joins": ["well_shutdowns.well_id = wells.id"],
+        "pitfalls": [
+            "Use well_shutdowns.date for normal shutdown dates.",
+            "Use well_shutdowns.hours for total downtime hours.",
+            "Use well_shutdowns.downtime_code for cause/reason grouping.",
+        ],
+    },
+    "alarms": {
+        "triggers": ("alarm", "alarms", "data point", "notification"),
+        "tables": ["alarm_logs", "alarm_events", "data_points"],
+        "joins": [
+            "alarm_logs.data_point_id = data_points.id",
+            "alarm_events.data_point_id = data_points.id",
+        ],
+        "pitfalls": [
+            "Alarm logs commonly use alarm_logs.created_at for date filtering.",
+            "Do not guess alarm_date or alarm_time columns.",
+            "For battery-like alarm grouping, use data_points.facility_name when it contains battery names.",
+        ],
+    },
+    "well_status": {
+        "triggers": ("active", "producing", "producer", "injection", "onrr", "ta"),
+        "tables": ["wells", "onrr_codes", "well_histories"],
+        "joins": [
+            "wells.onrr_code_id = onrr_codes.id",
+            "Historical ONRR status may require well_histories where property = 'onrr_code_id'.",
+        ],
+        "pitfalls": [
+            "Prefer get_active_wells/get_producing_wells for active/producing counts.",
+            "Producing wells require onrr_codes.active_well = 1 and onrr_codes.injection_well = 0.",
+        ],
+    },
+    "work_orders": {
+        "triggers": ("work order", "work orders", "cost", "estimate", "repair"),
+        "tables": ["work_orders", "work_order_notes"],
+        "joins": ["work_order_notes.work_order_id = work_orders.id"],
+        "pitfalls": [
+            "Use work_orders.site_id = :site_id for site filtering.",
+            "Use work_order_notes for note/comment details.",
+            "Prefer summarize_work_order_costs for numeric cost totals.",
+        ],
+    },
+}
+
+
+def _sql_guidance_for_question(
+    question: str,
+    column_metadata: dict[str, set[str]] | None = None,
+) -> dict[str, Any]:
+    """Return compact schema/recipe guidance relevant to a user question."""
+    normalized = question.lower()
+    matched = []
+    for name, guidance in SQL_RELATIONSHIP_GUIDANCE.items():
+        if any(trigger in normalized for trigger in guidance["triggers"]):
+            matched.append({"name": name, **guidance})
+    if not matched:
+        matched = [
+            {
+                "name": "general",
+                "tables": [],
+                "joins": [],
+                "pitfalls": [
+                    "Use the most specific domain tool first.",
+                    "If SQL is needed, use only allowlisted tables, known columns, :site_id, and LIMIT.",
+                ],
+            }
+        ]
+
+    tables = sorted(
+        {
+            table
+            for guidance in matched
+            for table in guidance.get("tables", [])
+        }
+    )
+    return {
+        "question": question,
+        "matched_recipes": matched,
+        "relevant_tables": tables,
+        "available_columns": _available_columns(tables, column_metadata or {}),
+        "sql_dialect": MYSQL_SQL_DIALECT_GUIDANCE,
+        "aggregate_hints": [
+            hint
+            for hint in COMMON_AGGREGATE_HINTS
+            if any(word in hint.lower() for word in normalized.split())
+        ][:6],
+    }
+
+
+def _repair_hints_for_error(question: str, sql: str, error: str) -> list[str]:
+    """Return targeted repair hints for common LLM SQL mistakes."""
+    text = f"{question}\n{sql}\n{error}".lower()
+    hints = []
+    if "b.number" in text or "batteries.number" in text:
+        hints.append("There is no batteries.number column. Match batteries by batteries.name or batteries.key.")
+    if "tank_type" in text:
+        hints.append("Tanks use tanks.type for tank type; do not use tanks.tank_type.")
+    if "tank_readings" in text:
+        hints.append("There is no unified tank_readings table. Use mixed_tank_readings, linear_tank_readings, or non_linear_tank_readings.")
+    if any(field in text for field in ("oil_volume", "water_volume", "total_volume")) and "tank" in text:
+        hints.append("For SQL, oil_volume, water_volume, and total_volume are computed tool-result fields, not database columns.")
+        hints.append(f"For mixed tank oil volume SQL, calculate: {MIXED_TANK_OIL_VOLUME_SQL}.")
+    if "well_name" in text:
+        hints.append("Wells use wells.name for display name; do not use wells.well_name.")
+    if "production_allocation" in text:
+        hints.append("Production allocation is a report output, not an allowlisted SQL table. Use allocation report tools.")
+    if "alarm_date" in text or "alarm_time" in text:
+        hints.append("Alarm logs commonly use alarm_logs.created_at for date filtering.")
+    if "not safely scoped" in error.lower():
+        hints.append("Join child tables through their site-scoped parent and filter that parent with <alias>.site_id = :site_id.")
+    return hints
 
 
 def build_database_schema_tools(
@@ -113,6 +352,27 @@ def build_database_schema_tools(
                 f"SQL LIMIT cannot be greater than {max_rows}."
             )
         return validation, column_metadata
+
+    def get_operational_sql_guidance(question: str) -> str:
+        """Return targeted SQL recipes, joins, and pitfalls for a question."""
+        logger.info("Getting operational SQL guidance site_id=%s", site_id)
+        try:
+            column_metadata = client.load_column_metadata()
+        except DatabaseSchemaClientError:
+            column_metadata = {}
+        return _json_result(
+            {
+                "ok": True,
+                "executed": False,
+                "site_id": site_id,
+                **_sql_guidance_for_question(question, column_metadata),
+                "warning": (
+                    "This guidance was not executed. Use a specific domain tool "
+                    "if one fits; otherwise draft or execute one SQL query using "
+                    "these joins and columns."
+                ),
+            }
+        )
 
     def draft_operational_sql(
         question: str,
@@ -150,6 +410,10 @@ def build_database_schema_tools(
                     ),
                     "sql_dialect": MYSQL_SQL_DIALECT_GUIDANCE,
                     "aggregate_hints": COMMON_AGGREGATE_HINTS,
+                    "targeted_guidance": _sql_guidance_for_question(
+                        question,
+                        column_metadata,
+                    ),
                     "schema": schema,
                     "warning": (
                         "This SQL was not executed. Use execute_operational_sql "
@@ -169,7 +433,10 @@ def build_database_schema_tools(
                 table_names = validator.referenced_tables(sql)
                 available_columns = _available_columns(table_names, column_metadata)
             except DatabaseSchemaClientError:
+                column_metadata = {}
                 available_columns = {}
+                table_names = []
+            error = str(exc)
             return _json_result(
                 {
                     "ok": False,
@@ -179,11 +446,16 @@ def build_database_schema_tools(
                     "sql": sql,
                     "validation": {
                         "valid": False,
-                        "error": str(exc),
+                        "error": error,
                     },
                     "available_columns": available_columns,
                     "sql_dialect": MYSQL_SQL_DIALECT_GUIDANCE,
                     "aggregate_hints": COMMON_AGGREGATE_HINTS,
+                    "repair_hints": _repair_hints_for_error(question, sql, error),
+                    "targeted_guidance": _sql_guidance_for_question(
+                        question,
+                        column_metadata,
+                    ),
                 }
             )
         except DatabaseSchemaClientError as exc:
@@ -227,6 +499,10 @@ def build_database_schema_tools(
                     ),
                     "sql_dialect": MYSQL_SQL_DIALECT_GUIDANCE,
                     "aggregate_hints": COMMON_AGGREGATE_HINTS,
+                    "targeted_guidance": _sql_guidance_for_question(
+                        question,
+                        column_metadata,
+                    ),
                     "validation": {
                         "valid": True,
                         "tables": validation.tables,
@@ -245,7 +521,10 @@ def build_database_schema_tools(
                 table_names = validator.referenced_tables(sql)
                 available_columns = _available_columns(table_names, column_metadata)
             except DatabaseSchemaClientError:
+                column_metadata = {}
                 available_columns = {}
+                table_names = []
+            error = str(exc)
             return _json_result(
                 {
                     "ok": False,
@@ -255,11 +534,16 @@ def build_database_schema_tools(
                     "sql": sql,
                     "validation": {
                         "valid": False,
-                        "error": str(exc),
+                        "error": error,
                     },
                     "available_columns": available_columns,
                     "sql_dialect": MYSQL_SQL_DIALECT_GUIDANCE,
                     "aggregate_hints": COMMON_AGGREGATE_HINTS,
+                    "repair_hints": _repair_hints_for_error(question, sql, error),
+                    "targeted_guidance": _sql_guidance_for_question(
+                        question,
+                        column_metadata,
+                    ),
                 }
             )
         except (DatabaseSchemaClientError, OperationalSqlExecutionError):
@@ -278,6 +562,17 @@ def build_database_schema_tools(
             )
 
     return [
+        StructuredTool.from_function(
+            func=get_operational_sql_guidance,
+            name="get_operational_sql_guidance",
+            description=(
+                "Return targeted MySQL/MariaDB SQL guidance, relevant tables, "
+                "known joins, available columns, examples, and pitfalls for an "
+                "Ometrics operational question. Use this before drafting SQL "
+                "when no specific domain tool fits."
+            ),
+            args_schema=OperationalSqlGuidanceInput,
+        ),
         StructuredTool.from_function(
             func=draft_operational_sql,
             name="draft_operational_sql",

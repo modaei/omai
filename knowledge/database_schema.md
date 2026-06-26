@@ -387,6 +387,12 @@ LIMIT 100
 For mixed tank oil volume, calculate oil height as top level minus water level
 and multiply by `tanks.bbl_foot`. Use `mixed_tank_readings.time` for dates.
 
+Computed fields returned by Omai reading tools are not database columns. Do not
+write SQL against `oil_volume`, `water_volume`, or `total_volume`, and do not
+use a unified `tank_readings` table. For SQL, use the specific reading tables
+such as `mixed_tank_readings`, `linear_tank_readings`, and
+`non_linear_tank_readings`.
+
 Monthly average mixed-tank oil volume:
 
 ```sql
@@ -405,6 +411,29 @@ WHERE t.site_id = :site_id
 GROUP BY DATE_FORMAT(m.time, '%Y-%m')
 ORDER BY month
 LIMIT 12
+```
+
+Average daily mixed-tank oil volume for a date range:
+
+```sql
+SELECT ROUND(AVG(d.daily_oil_bbl), 2) AS average_daily_oil_bbl
+FROM (
+  SELECT DATE(m.time) AS reading_date,
+         SUM(
+           (
+             (COALESCE(m.top_level_feet, 0) + COALESCE(m.top_level_inches, 0) / 12.0)
+             - (COALESCE(m.water_level_feet, 0) + COALESCE(m.water_level_inches, 0) / 12.0)
+           ) * t.bbl_foot
+         ) AS daily_oil_bbl
+  FROM mixed_tank_readings m
+  JOIN tanks t ON t.id = m.tank_id
+  WHERE t.site_id = :site_id
+    AND m.time >= '2026-06-01'
+    AND m.time < '2026-06-21'
+    AND t.type = 'mixed-water-oil'
+  GROUP BY DATE(m.time)
+) d
+LIMIT 100
 ```
 
 ### Work Orders

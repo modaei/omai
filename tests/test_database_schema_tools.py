@@ -83,6 +83,83 @@ def test_draft_operational_sql_returns_non_executed_draft(tmp_path):
     assert any("Shutdown totals" in hint for hint in result["aggregate_hints"])
     assert "Allowed Tables" in result["schema"]
     assert "not executed" in result["warning"].lower()
+    assert result["targeted_guidance"]["question"] == "Which wells had high oil tests?"
+
+
+def test_operational_sql_guidance_returns_relevant_joins_and_columns(tmp_path):
+    schema_path = tmp_path / "database_schema.md"
+    schema_path.write_text("Allowed Tables\n- `tanks`\n- `batteries`\n", encoding="utf-8")
+    tools = build_database_schema_tools(
+        FakeSchemaClient(
+            schema_path,
+            {
+                "tanks": {"id", "site_id", "name", "key", "battery_id", "type"},
+                "batteries": {"id", "site_id", "name", "key"},
+            },
+        ),
+        site_id=4,
+    )
+
+    result = json.loads(
+        tool_by_name(tools, "get_operational_sql_guidance").invoke(
+            {"question": "What are the tanks in Battery 6?"}
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["executed"] is False
+    assert "equipment_by_battery" in [
+        recipe["name"] for recipe in result["matched_recipes"]
+    ]
+    assert "tanks" in result["available_columns"]
+    assert any(
+        "batteries.name or batteries.key" in pitfall
+        for recipe in result["matched_recipes"]
+        for pitfall in recipe["pitfalls"]
+    )
+
+
+def test_operational_sql_guidance_for_tank_oil_includes_formula(tmp_path):
+    schema_path = tmp_path / "database_schema.md"
+    schema_path.write_text(
+        "Allowed Tables\n- `mixed_tank_readings`\n- `tanks`\n",
+        encoding="utf-8",
+    )
+    tools = build_database_schema_tools(
+        FakeSchemaClient(
+            schema_path,
+            {
+                "mixed_tank_readings": {
+                    "tank_id",
+                    "time",
+                    "top_level_feet",
+                    "top_level_inches",
+                    "water_level_feet",
+                    "water_level_inches",
+                },
+                "tanks": {"id", "site_id", "type", "bbl_foot"},
+            },
+        ),
+        site_id=4,
+    )
+
+    result = json.loads(
+        tool_by_name(tools, "get_operational_sql_guidance").invoke(
+            {
+                "question": (
+                    "Average daily oil in tanks from June 1 through June 20, 2026"
+                )
+            }
+        )
+    )
+
+    guidance = json.dumps(result)
+    assert result["ok"] is True
+    assert "mixed_tank_readings" in result["relevant_tables"]
+    assert "top_level_feet" in guidance
+    assert "water_level_feet" in guidance
+    assert "t.bbl_foot" in guidance
+    assert "oil_volume, water_volume, and total_volume are computed" in guidance
 
 
 def test_execute_operational_sql_returns_bounded_rows(tmp_path):
@@ -219,6 +296,126 @@ def test_draft_operational_sql_returns_validation_error(tmp_path):
     assert "Unknown column reference" in result["validation"]["error"]
     assert result["available_columns"] == {"wells": ["id", "name", "site_id"]}
     assert result["sql_dialect"]["dialect"] == "mysql_mariadb"
+    assert result["targeted_guidance"]["question"] == "Find wells."
+
+
+def test_draft_operational_sql_returns_repair_hints_for_common_bad_columns(tmp_path):
+    schema_path = tmp_path / "database_schema.md"
+    schema_path.write_text("Allowed Tables\n- `batteries`\n- `tanks`\n", encoding="utf-8")
+    tools = build_database_schema_tools(
+        FakeSchemaClient(
+            schema_path,
+            {
+                "batteries": {"id", "site_id", "name", "key"},
+                "tanks": {"id", "site_id", "name", "key", "battery_id", "type"},
+            },
+        ),
+        site_id=4,
+    )
+
+    result = json.loads(
+        tool_by_name(tools, "draft_operational_sql").invoke(
+            {
+                "question": "What are the tanks in Battery 6?",
+                "sql": (
+                    "SELECT t.name, t.tank_type FROM tanks t "
+                    "JOIN batteries b ON b.id = t.battery_id "
+                    "WHERE t.site_id = :site_id AND b.number = 6 LIMIT 100"
+                ),
+            }
+        )
+    )
+
+    assert result["ok"] is False
+    assert any("batteries.number" in hint for hint in result["repair_hints"])
+    assert any("tanks.type" in hint for hint in result["repair_hints"])
+
+
+def test_draft_operational_sql_warns_about_tank_readings_and_computed_columns(tmp_path):
+    schema_path = tmp_path / "database_schema.md"
+    schema_path.write_text(
+        "Allowed Tables\n- `mixed_tank_readings`\n- `tanks`\n",
+        encoding="utf-8",
+    )
+    tools = build_database_schema_tools(
+        FakeSchemaClient(
+            schema_path,
+            {
+                "mixed_tank_readings": {
+                    "tank_id",
+                    "time",
+                    "top_level_feet",
+                    "top_level_inches",
+                    "water_level_feet",
+                    "water_level_inches",
+                },
+                "tanks": {"id", "site_id", "type", "bbl_foot"},
+            },
+        ),
+        site_id=4,
+    )
+
+    result = json.loads(
+        tool_by_name(tools, "draft_operational_sql").invoke(
+            {
+                "question": "Average daily oil in tanks from June 1 through June 20",
+                "sql": (
+                    "SELECT AVG(tr.oil_volume) "
+                    "FROM tank_readings tr "
+                    "JOIN tanks t ON t.id = tr.tank_id "
+                    "WHERE t.site_id = :site_id LIMIT 100"
+                ),
+            }
+        )
+    )
+
+    assert result["ok"] is False
+    assert any("no unified tank_readings" in hint for hint in result["repair_hints"])
+    assert any("computed tool-result fields" in hint for hint in result["repair_hints"])
+    assert any("top_level_feet" in hint for hint in result["repair_hints"])
+
+
+def test_draft_operational_sql_warns_about_mixed_tank_oil_volume_column(tmp_path):
+    schema_path = tmp_path / "database_schema.md"
+    schema_path.write_text(
+        "Allowed Tables\n- `mixed_tank_readings`\n- `tanks`\n",
+        encoding="utf-8",
+    )
+    tools = build_database_schema_tools(
+        FakeSchemaClient(
+            schema_path,
+            {
+                "mixed_tank_readings": {
+                    "tank_id",
+                    "time",
+                    "top_level_feet",
+                    "top_level_inches",
+                    "water_level_feet",
+                    "water_level_inches",
+                },
+                "tanks": {"id", "site_id", "type", "bbl_foot"},
+            },
+        ),
+        site_id=4,
+    )
+
+    result = json.loads(
+        tool_by_name(tools, "draft_operational_sql").invoke(
+            {
+                "question": "Average daily oil in tanks from June 1 through June 20",
+                "sql": (
+                    "SELECT AVG(m.oil_volume) "
+                    "FROM mixed_tank_readings m "
+                    "JOIN tanks t ON t.id = m.tank_id "
+                    "WHERE t.site_id = :site_id LIMIT 100"
+                ),
+            }
+        )
+    )
+
+    assert result["ok"] is False
+    assert any("computed tool-result fields" in hint for hint in result["repair_hints"])
+    assert any("t.bbl_foot" in hint for hint in result["repair_hints"])
 
 
 def test_operational_sql_validator_rejects_write_statement():

@@ -26,6 +26,12 @@ def build_model(
     base_url: str,
     reasoning_effort: str | None = None,
 ) -> ChatOpenAI:
+    """Create the deterministic chat model used by the Omai agent.
+
+    The caller owns provider-specific configuration and passes an OpenAI-compatible
+    base URL. `reasoning_effort` is optional because not every OpenRouter model
+    supports the same reasoning controls.
+    """
     return ChatOpenAI(
         api_key=api_key,
         model=model,
@@ -38,6 +44,7 @@ def build_model(
 
 
 def reasoning_effort_for_response_mode(response_mode: str) -> str:
+    """Translate the public response-mode value into a model reasoning setting."""
     return REASONING_EFFORT_BY_RESPONSE_MODE.get(response_mode, "medium")
 
 
@@ -49,6 +56,16 @@ def answer_chat_question(
     question: str,
     site_name: str | None = None,
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+    """Answer one user question with tool calling and bounded agent control flow.
+
+    The function builds the complete system prompt, appends recent conversation
+    history, lets the model call tools for at most `MAX_TOOL_ROUNDS`, and returns
+    the final answer plus local traces and timing statistics. It also enforces a
+    few agent-level invariants that are too important to leave only to prompting:
+    SQL drafts are de-duplicated, valid SQL drafts are executed once
+    automatically, and successful SQL execution forces a final natural-language
+    answer instead of allowing more tool calls.
+    """
     started_at = perf_counter()
     tool_map = {tool.name: tool for tool in tools}
     model_with_tools = model.bind_tools(tools, parallel_tool_calls=False)
@@ -165,13 +182,19 @@ def answer_chat_question(
                 "For operational data questions, first prefer the most specific "
                 "domain tool: report, reading, shutdown, timeline, or work-order "
                 "tools. If no specific domain tool fits or a direct database query "
-                "is the clearer way to answer, use execute_operational_sql as the "
+                "is the clearer way to answer, use get_operational_sql_guidance "
+                "before drafting SQL, then use execute_operational_sql as the "
                 "second priority. Use capability tools only as the lowest-priority "
                 "path for explicit software-help questions, not for data retrieval. "
                 "Use "
                 "draft_operational_sql only when you need schema or validation "
                 "feedback before execution. SQL queries must be SELECT-only, scoped "
                 "with the `:site_id` bind parameter, and limited with a numeric LIMIT. "
+                "When writing SQL, do not reuse computed tool-result fields as "
+                "database columns. For example, tank reading tool fields such as "
+                "oil_volume, water_volume, and total_volume are not SQL columns; "
+                "mixed tank oil volume must be calculated from mixed_tank_readings "
+                "level fields and tanks.bbl_foot. "
                 "Operational SQL runs on MySQL/MariaDB, not PostgreSQL: use "
                 "LOWER(column) LIKE '%text%' instead of ILIKE, use DATE_FORMAT "
                 "or YEAR/MONTH for monthly grouping instead of DATE_TRUNC, do not "
@@ -286,6 +309,8 @@ def answer_chat_question(
         "tool_calls": [],
     }
     force_final_response = False
+    seen_sql_drafts: set[str] = set()
+    failed_sql_attempts = 0
 
     for _ in range(MAX_TOOL_ROUNDS):
         model_started_at = perf_counter()
@@ -307,6 +332,21 @@ def answer_chat_question(
             tool = tool_map.get(tool_name)
             if tool is None:
                 result = f"Unknown tool: {tool_name}"
+            elif _is_repeated_sql_draft(tool_name, arguments, seen_sql_drafts):
+                # Repeated SQL drafts were a common source of tool-limit failures.
+                # Return a structured failure so the model can stop or use prior
+                # results instead of consuming another tool round.
+                result = json.dumps(
+                    {
+                        "ok": False,
+                        "executed": False,
+                        "validation": {
+                            "valid": False,
+                            "error": "Repeated SQL draft. Execute the previous valid draft or answer from prior tool results.",
+                        },
+                    },
+                    separators=(",", ":"),
+                )
             else:
                 try:
                     result = tool.invoke(arguments)
@@ -327,16 +367,62 @@ def answer_chat_question(
                 ToolMessage(content=str(result), tool_call_id=call["id"])
             )
             if _is_valid_operational_sql_draft(tool_name, result):
-                messages.append(
-                    SystemMessage(
-                        content=(
-                            "The operational SQL draft is valid. If this SQL answers "
-                            "the user's question, call execute_operational_sql next "
-                            "with the same SQL. Do not draft another SQL variant "
-                            "unless there is a specific validation error to repair."
+                # A valid draft is already safe to run. Execute it here so the
+                # model cannot spend additional rounds drafting equivalent SQL.
+                execution_result = _execute_valid_sql_draft(
+                    result,
+                    tool_map,
+                    stats,
+                    traces,
+                )
+                if execution_result is not None:
+                    messages.append(
+                        SystemMessage(
+                            content=(
+                                "The valid SQL draft was automatically executed. "
+                                f"Use this execution result for the final answer: {execution_result}"
+                            ),
                         )
                     )
+                    if _is_successful_operational_sql_result(
+                        "execute_operational_sql",
+                        execution_result,
+                    ):
+                        messages.append(
+                            SystemMessage(
+                                content=(
+                                    "The operational SQL execution succeeded. Produce the "
+                                    "final answer now using the returned rows. Do not call "
+                                    "additional tools. If row_count is 0, say that no "
+                                    "matching records were found."
+                                )
+                            )
+                        )
+                        force_final_response = True
+                else:
+                    messages.append(
+                        SystemMessage(
+                            content=(
+                                "The operational SQL draft is valid. If this SQL answers "
+                                "the user's question, call execute_operational_sql next "
+                                "with the same SQL. Do not draft another SQL variant "
+                                "unless there is a specific validation error to repair."
+                            )
+                        )
                 )
+            if _is_failed_operational_sql_result(tool_name, result):
+                failed_sql_attempts += 1
+                if failed_sql_attempts >= 2:
+                    messages.append(
+                        SystemMessage(
+                            content=(
+                                "The SQL fallback failed twice. Do not call more SQL tools. "
+                                "Answer with what is known from successful tools, or say the "
+                                "database query could not be completed."
+                            )
+                        )
+                    )
+                    force_final_response = True
             if _is_successful_operational_sql_result(tool_name, result):
                 messages.append(
                     SystemMessage(
@@ -367,6 +453,7 @@ def answer_chat_question(
 
 
 def _message_text(content: Any) -> str:
+    """Extract plain text from LangChain/OpenAI message content variants."""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -381,6 +468,7 @@ def _message_text(content: Any) -> str:
 
 
 def _is_successful_operational_sql_result(tool_name: str, result: Any) -> bool:
+    """Return whether a tool result is a successful executed SQL payload."""
     if tool_name != "execute_operational_sql" or not isinstance(result, str):
         return False
     try:
@@ -390,7 +478,21 @@ def _is_successful_operational_sql_result(tool_name: str, result: Any) -> bool:
     return payload.get("ok") is True and payload.get("executed") is True
 
 
+def _is_failed_operational_sql_result(tool_name: str, result: Any) -> bool:
+    """Return whether a SQL draft or execution tool returned structured failure."""
+    if tool_name not in {"draft_operational_sql", "execute_operational_sql"}:
+        return False
+    if not isinstance(result, str):
+        return False
+    try:
+        payload = json.loads(result)
+    except (TypeError, ValueError):
+        return False
+    return payload.get("ok") is False
+
+
 def _is_valid_operational_sql_draft(tool_name: str, result: Any) -> bool:
+    """Return whether a draft SQL tool call validated but did not execute SQL."""
     if tool_name != "draft_operational_sql" or not isinstance(result, str):
         return False
     try:
@@ -400,7 +502,82 @@ def _is_valid_operational_sql_draft(tool_name: str, result: Any) -> bool:
     return payload.get("ok") is True and payload.get("executed") is False
 
 
+def _is_repeated_sql_draft(
+    tool_name: str,
+    arguments: dict[str, Any],
+    seen_sql_drafts: set[str],
+) -> bool:
+    """Track SQL drafts and reject exact repeats within one agent turn."""
+    if tool_name != "draft_operational_sql":
+        return False
+    normalized = _normalize_sql_for_loop_guard(str(arguments.get("sql", "")))
+    if not normalized:
+        return False
+    if normalized in seen_sql_drafts:
+        return True
+    seen_sql_drafts.add(normalized)
+    return False
+
+
+def _execute_valid_sql_draft(
+    draft_result: str,
+    tool_map: dict[str, BaseTool],
+    stats: dict[str, Any],
+    traces: list[dict[str, Any]],
+) -> str | None:
+    """Execute a validated SQL draft through the normal SQL execution tool.
+
+    This keeps SQL execution in the existing tool boundary, so validation,
+    database permissions, tracing, and timing behave the same as a model-requested
+    `execute_operational_sql` call. `None` means the execution tool is unavailable
+    or the draft payload is malformed.
+    """
+    execute_tool = tool_map.get("execute_operational_sql")
+    if execute_tool is None:
+        return None
+    try:
+        payload = json.loads(draft_result)
+    except (TypeError, ValueError):
+        return None
+    arguments = {
+        "question": payload.get("question") or "",
+        "sql": payload.get("sql") or "",
+        "notes": payload.get("notes"),
+    }
+    if not arguments["sql"]:
+        return None
+
+    started_at = perf_counter()
+    try:
+        result = execute_tool.invoke(arguments)
+    except Exception as exc:  # Keep parity with normal tool invocation handling.
+        result = f"Tool validation failed: {exc}"
+    elapsed = perf_counter() - started_at
+    stats["tool_seconds"] += elapsed
+    stats["tool_calls"].append(
+        {
+            "tool": "execute_operational_sql",
+            "seconds": elapsed,
+        }
+    )
+    traces.append(
+        {
+            "tool": "execute_operational_sql",
+            "arguments": arguments,
+            "result": str(result),
+            "auto_executed": True,
+        }
+    )
+    return str(result)
+
+
+def _normalize_sql_for_loop_guard(sql: str) -> str:
+    """Normalize SQL enough to detect exact repeated drafts in one turn."""
+    return " ".join(sql.strip().rstrip(";").split()).lower()
+
+
 def _clean_answer(answer: str) -> str:
+    """Apply final text cleanup for recurring model phrasing problems."""
     answer = re.sub(
         r"(?im)^\s*the report did not specify units\.?\s*$\n?",
         "",
@@ -415,6 +592,7 @@ def _clean_answer(answer: str) -> str:
 
 
 def _rounded_stats(stats: dict[str, Any]) -> dict[str, Any]:
+    """Round timing statistics while preserving tool-call structure."""
     return {
         "total_seconds": round(stats["total_seconds"], 3),
         "model_seconds": round(stats["model_seconds"], 3),

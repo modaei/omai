@@ -80,6 +80,42 @@ class FakeSqlStopModel:
         return AIMessage(content="Final answer from SQL rows.")
 
 
+class FakeToolBoundSqlDraftModel:
+    def __init__(self):
+        self.calls = 0
+
+    def invoke(self, messages):
+        self.calls += 1
+        if self.calls > 1:
+            raise AssertionError("tool-bound model should not be used after valid SQL draft")
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_draft_sql",
+                    "name": "draft_operational_sql",
+                    "args": {
+                        "question": "Average downtime by code",
+                        "sql": "SELECT ws.downtime_code FROM well_shutdowns ws JOIN wells w ON w.id = ws.well_id WHERE w.site_id = :site_id LIMIT 10",
+                    },
+                }
+            ],
+        )
+
+
+class FakeSqlDraftAutoExecuteModel:
+    def __init__(self):
+        self.bound_model = FakeToolBoundSqlDraftModel()
+        self.final_messages = None
+
+    def bind_tools(self, tools, parallel_tool_calls=False):
+        return self.bound_model
+
+    def invoke(self, messages):
+        self.final_messages = messages
+        return AIMessage(content="Final answer from auto-executed SQL rows.")
+
+
 class FakeLastRoundSqlBoundModel:
     def __init__(self):
         self.calls = 0
@@ -151,6 +187,18 @@ def execute_operational_sql(question: str, sql: str) -> str:
     return '{"ok":true,"executed":true,"row_count":0,"rows":[]}'
 
 
+@tool
+def draft_operational_sql(question: str, sql: str) -> str:
+    """Return a successful SQL draft payload."""
+    return (
+        '{"ok":true,"executed":false,"question":"'
+        + question
+        + '","sql":"'
+        + sql.replace('"', '\\"')
+        + '","notes":null}'
+    )
+
+
 def test_system_prompt_rejects_unsupported_actions():
     model = FakeModel()
 
@@ -197,8 +245,11 @@ def test_system_prompt_rejects_unsupported_actions():
     assert "first prefer the most specific domain tool" in system_prompt
     assert "capability tools only as the lowest-priority path" in system_prompt
     assert "not for data retrieval" in system_prompt
+    assert "get_operational_sql_guidance" in system_prompt
     assert "execute_operational_sql as the second priority" in system_prompt
     assert "Use draft_operational_sql only when you need schema" in system_prompt
+    assert "computed tool-result fields" in system_prompt
+    assert "oil_volume, water_volume, and total_volume are not SQL columns" in system_prompt
     assert "Operational SQL runs on MySQL/MariaDB" in system_prompt
     assert "LOWER(column) LIKE" in system_prompt
     assert "DATE_FORMAT" in system_prompt
@@ -231,7 +282,9 @@ def test_system_prompt_rejects_unsupported_actions():
     assert "find_all_missing_readings" in system_prompt
     assert "find_all_missing_readings_for_range" in system_prompt
     assert "do not call find_all_missing_readings separately for each date" in system_prompt
-    assert "Use reading tools for tank volume questions" in system_prompt
+    assert "Use search_tank_readings for tank volume" in system_prompt
+    assert "list_equipment for inventory questions" in system_prompt
+    assert "search_equipment_readings" in system_prompt
     assert "get_reading_for_entity" in system_prompt
     assert "Do not guess between flow meter, flare, tank" in system_prompt
     assert "oil_volume" in system_prompt
@@ -270,6 +323,28 @@ def test_successful_sql_execution_forces_final_answer_without_more_tools():
     assert answer == "Final answer from SQL rows."
     assert len(traces) == 1
     assert traces[0]["tool"] == "execute_operational_sql"
+    assert stats["model_calls"] == 2
+    assert model.bound_model.calls == 1
+    assert model.final_messages is not None
+
+
+def test_valid_sql_draft_is_auto_executed_without_more_tool_rounds():
+    model = FakeSqlDraftAutoExecuteModel()
+
+    answer, traces, stats = answer_chat_question(
+        model=model,
+        tools=[draft_operational_sql, execute_operational_sql],
+        site_id=1,
+        site_name="HARTZOG DRAW",
+        history=[],
+        question="Average downtime by code",
+    )
+
+    assert answer == "Final answer from auto-executed SQL rows."
+    assert len(traces) == 2
+    assert traces[0]["tool"] == "draft_operational_sql"
+    assert traces[1]["tool"] == "execute_operational_sql"
+    assert traces[1]["auto_executed"] is True
     assert stats["model_calls"] == 2
     assert model.bound_model.calls == 1
     assert model.final_messages is not None
