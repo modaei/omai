@@ -41,6 +41,7 @@ COMMON_AGGREGATE_HINTS = [
     "Well-test aggregates: join well_tests wt to wells w, filter w.site_id = :site_id, use wt.time and aggregate wt.oil, wt.water, wt.gas, or wt.runtime only for explicit well-test questions.",
     "Well-test battery aggregates: left join batteries b on b.id = w.battery_id and group by COALESCE(b.name, 'No Battery').",
     "Mixed-tank oil volume: join mixed_tank_readings m to tanks t, filter t.site_id = :site_id, compute oil height from top level minus water level, multiply by t.bbl_foot.",
+    "Mixed-tank recoverable oil: compute top level minus the greater of water level and tanks.unusable_height, clamp at zero, then multiply by tanks.bbl_foot.",
     "Tank volume SQL: oil_volume, water_volume, and total_volume are computed tool-result fields, not database columns. Do not use tank_readings; use mixed_tank_readings with level fields and tanks.bbl_foot for oil.",
     "Flow meter aggregates: join flow_meter_readings r to flow_meters fm, filter fm.site_id = :site_id, use r.time, r.total, r.flow, r.odometer, and fm.type.",
 ]
@@ -49,6 +50,12 @@ MIXED_TANK_OIL_VOLUME_SQL = (
     "((COALESCE(m.top_level_feet, 0) + COALESCE(m.top_level_inches, 0) / 12.0) "
     "- (COALESCE(m.water_level_feet, 0) + COALESCE(m.water_level_inches, 0) / 12.0)) "
     "* t.bbl_foot"
+)
+
+MIXED_TANK_RECOVERABLE_OIL_VOLUME_SQL = (
+    "GREATEST((COALESCE(m.top_level_feet, 0) + COALESCE(m.top_level_inches, 0) / 12.0) "
+    "- GREATEST((COALESCE(m.water_level_feet, 0) + COALESCE(m.water_level_inches, 0) / 12.0), "
+    "COALESCE(t.unusable_height, 0)), 0) * t.bbl_foot"
 )
 
 
@@ -160,6 +167,9 @@ SQL_RELATIONSHIP_GUIDANCE = {
             "oil off",
             "oil in tanks",
             "tank oil",
+            "recoverable oil",
+            "usable oil",
+            "available oil",
             "daily oil",
         ),
         "tables": [
@@ -196,6 +206,7 @@ SQL_RELATIONSHIP_GUIDANCE = {
             "There is no unified tank_readings table.",
             "oil_volume, water_volume, and total_volume are computed tool-result fields, not database columns.",
             "For mixed tank oil SQL, calculate oil volume as oil height multiplied by tanks.bbl_foot.",
+            "For recoverable mixed-tank oil, subtract the greater of water level and tanks.unusable_height from top level, clamp at zero, and multiply by tanks.bbl_foot.",
         ],
         "example_sql": (
             "SELECT ROUND(AVG(d.daily_oil_bbl), 2) AS average_daily_oil_bbl "
@@ -314,9 +325,11 @@ def _repair_hints_for_error(question: str, sql: str, error: str) -> list[str]:
         hints.append("Tanks use tanks.type for tank type; do not use tanks.tank_type.")
     if "tank_readings" in text:
         hints.append("There is no unified tank_readings table. Use mixed_tank_readings, linear_tank_readings, or non_linear_tank_readings.")
-    if any(field in text for field in ("oil_volume", "water_volume", "total_volume")) and "tank" in text:
-        hints.append("For SQL, oil_volume, water_volume, and total_volume are computed tool-result fields, not database columns.")
+    if any(field in text for field in ("oil_volume", "water_volume", "total_volume", "recoverable_oil_volume")) and "tank" in text:
+        hints.append("For SQL, oil_volume, water_volume, total_volume, and recoverable_oil_volume are computed tool-result fields, not database columns.")
         hints.append(f"For mixed tank oil volume SQL, calculate: {MIXED_TANK_OIL_VOLUME_SQL}.")
+        if "recoverable" in text:
+            hints.append(f"For mixed tank recoverable oil SQL, calculate: {MIXED_TANK_RECOVERABLE_OIL_VOLUME_SQL}.")
     if "well_name" in text:
         hints.append("Wells use wells.name for display name; do not use wells.well_name.")
     if "production_allocation" in text:

@@ -236,6 +236,10 @@ TANK_VOLUME_FIELDS = (
     "final_water_volume",
     "initial_oil_volume",
     "final_oil_volume",
+    "recoverable_oil_volume",
+    "initial_recoverable_oil_volume",
+    "final_recoverable_oil_volume",
+    "recoverable_oil_difference",
     "volume_status",
     "content_type",
 )
@@ -248,6 +252,7 @@ EQUIPMENT_METADATA_FIELDS: dict[str, tuple[str, ...]] = {
         "disable_reading",
         "type",
         "contents",
+        "unusable_height",
         "bbl_foot",
         "non_linear_volume_mapping_id",
     ),
@@ -256,6 +261,7 @@ EQUIPMENT_METADATA_FIELDS: dict[str, tuple[str, ...]] = {
         "disable_reading",
         "type",
         "contents",
+        "unusable_height",
         "bbl_foot",
         "non_linear_volume_mapping_id",
     ),
@@ -264,6 +270,7 @@ EQUIPMENT_METADATA_FIELDS: dict[str, tuple[str, ...]] = {
         "disable_reading",
         "type",
         "contents",
+        "unusable_height",
         "bbl_foot",
         "non_linear_volume_mapping_id",
     ),
@@ -2111,6 +2118,7 @@ def _reading_select_fields(
     }:
         fields.append(f"{base_alias}.bbl_foot")
         fields.append(f"{base_alias}.contents AS equipment_contents")
+        fields.append(f"{base_alias}.unusable_height AS equipment_unusable_height")
     return ",\n                ".join(fields)
 
 
@@ -2142,8 +2150,14 @@ def _linear_tank_volume(row: dict[str, Any]) -> dict[str, Any]:
     }
     if contents == "oil":
         result["oil_volume"] = volume
+        result["recoverable_oil_volume"] = round(
+            max(level - float(row.get("equipment_unusable_height") or 0), 0)
+            * float(bbl_foot),
+            2,
+        )
     elif contents == "water":
         result["water_volume"] = volume
+        result["recoverable_oil_volume"] = 0.0
     return result
 
 
@@ -2157,10 +2171,21 @@ def _non_linear_tank_volumes(row: dict[str, Any]) -> dict[str, Any]:
     contents = row.get("equipment_contents") or row.get("contents")
     volume_prefix = "oil" if contents == "oil" else "water"
     result: dict[str, Any] = {"content_type": contents}
+    unusable_volume = _non_linear_unusable_volume(row)
     if initial_volume is not None:
         result[f"initial_{volume_prefix}_volume"] = round(initial_volume, 2)
+        result["initial_recoverable_oil_volume"] = (
+            round(max(initial_volume - unusable_volume, 0), 2)
+            if contents == "oil" and unusable_volume is not None
+            else 0.0
+        )
     if final_volume is not None:
         result[f"final_{volume_prefix}_volume"] = round(final_volume, 2)
+        result["final_recoverable_oil_volume"] = (
+            round(max(final_volume - unusable_volume, 0), 2)
+            if contents == "oil" and unusable_volume is not None
+            else 0.0
+        )
         result[f"{volume_prefix}_volume"] = round(final_volume, 2)
         result["volume"] = round(final_volume, 2)
     elif initial_volume is not None:
@@ -2168,6 +2193,11 @@ def _non_linear_tank_volumes(row: dict[str, Any]) -> dict[str, Any]:
         result["volume"] = round(initial_volume, 2)
     if initial_volume is not None and final_volume is not None:
         result["total_volume"] = round(initial_volume - final_volume, 2)
+        result["recoverable_oil_difference"] = round(
+            result["initial_recoverable_oil_volume"]
+            - result["final_recoverable_oil_volume"],
+            2,
+        )
     if "volume" not in result:
         result["volume_status"] = "missing_non_linear_mapping"
     return result
@@ -2193,11 +2223,14 @@ def _mixed_tank_volumes(row: dict[str, Any]) -> dict[str, Any]:
     total_volume = top_level * float(bbl_foot)
     water_volume = water_level * float(bbl_foot)
     oil_volume = total_volume - water_volume
+    unusable_height = float(row.get("equipment_unusable_height") or 0)
+    recoverable_oil_height = max(top_level - max(water_level, unusable_height), 0)
     return {
         "bbl_foot": float(bbl_foot),
         "oil_volume": round(oil_volume, 2),
         "water_volume": round(water_volume, 2),
         "total_volume": round(total_volume, 2),
+        "recoverable_oil_volume": round(recoverable_oil_height * float(bbl_foot), 2),
         "content_type": contents,
     }
 
@@ -2323,6 +2356,10 @@ def _matches_computed_filters(
             "bbl_foot",
             "initial_water_volume",
             "final_water_volume",
+            "recoverable_oil_volume",
+            "initial_recoverable_oil_volume",
+            "final_recoverable_oil_volume",
+            "recoverable_oil_difference",
         }:
             raise ReadingClientError(f"Unsupported tank computed filter field: {field}.")
         if operator not in {">", ">=", "<", "<=", "=", "=="}:
@@ -2547,6 +2584,15 @@ def _non_linear_volume_from_mapping(
         return None
     nearest = min(candidates, key=lambda item: abs(float(item[0]) - float(inches)))
     return float(nearest[1])
+
+
+def _non_linear_unusable_volume(row: dict[str, Any]) -> float | None:
+    height = float(row.get("equipment_unusable_height") or 0)
+    if height <= 0:
+        return 0.0
+    feet = int(height)
+    inches = (height - feet) * 12
+    return _non_linear_volume_from_mapping(row, feet, inches)
 
 
 def _direction(delta: float) -> str:

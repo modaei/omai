@@ -230,6 +230,8 @@ WHERE pumps.site_id = :site_id
 `tanks.contents` is the authoritative fluid classification. Its values are `oil`,
 `water`, and `water-oil`. Mixed Water/Oil tank types always use `water-oil`;
 linear and non-linear tank types use either `oil` or `water`.
+`tanks.unusable_height` stores the unusable bottom height in decimal feet.
+Recoverable oil excludes oil below this height, while water below it has no effect.
 
 - `linear_tank_readings.tank_id -> tanks.id`
 - `mixed_tank_readings.tank_id -> tanks.id`
@@ -390,9 +392,13 @@ LIMIT 100
 
 For mixed tank oil volume, calculate oil height as top level minus water level
 and multiply by `tanks.bbl_foot`. Use `mixed_tank_readings.time` for dates.
+For recoverable mixed-tank oil, calculate top level minus the greater of water
+level and `tanks.unusable_height`, clamp the height at zero, and multiply by
+`tanks.bbl_foot`.
 
 Computed fields returned by Omai reading tools are not database columns. Do not
-write SQL against `oil_volume`, `water_volume`, or `total_volume`, and do not
+write SQL against `oil_volume`, `water_volume`, `total_volume`, or
+`recoverable_oil_volume`, and do not
 use a unified `tank_readings` table. For SQL, use the specific reading tables
 such as `mixed_tank_readings`, `linear_tank_readings`, and
 `non_linear_tank_readings`.

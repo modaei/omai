@@ -288,6 +288,13 @@ def test_system_prompt_rejects_unsupported_actions():
     assert "get_reading_for_entity" in system_prompt
     assert "Do not guess between flow meter, flare, tank" in system_prompt
     assert "oil_volume" in system_prompt
+    assert "report both oil_volume (gross oil) and recoverable_oil_volume" in system_prompt
+    assert "report both totals" in system_prompt
+    assert "ask whether to use gross oil volume or recoverable oil volume" in system_prompt
+    assert "contents is oil or water-oil" in system_prompt
+    assert "never classify a water tank as containing oil" in system_prompt
+    assert "recoverable_oil_volume > 0" in system_prompt
+    assert "Use Use" not in system_prompt
     assert "do not say tank charts or" in system_prompt
     assert "The selected site is HARTZOG DRAW" in system_prompt
     assert "never mention it in answers" in system_prompt

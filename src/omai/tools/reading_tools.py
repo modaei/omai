@@ -134,7 +134,9 @@ class TankComputedFilter(BaseModel):
     field: str = Field(
         description=(
             "Computed tank field to filter: oil_volume, water_volume, total_volume, "
-            "volume, bbl_foot, initial_water_volume, or final_water_volume."
+            "volume, recoverable_oil_volume, initial_recoverable_oil_volume, "
+            "final_recoverable_oil_volume, recoverable_oil_difference, bbl_foot, "
+            "initial_water_volume, or final_water_volume."
         ),
     )
     operator: Literal[">", ">=", "<", "<=", "=", "=="] = Field(
@@ -229,8 +231,11 @@ class SearchTankReadingsInput(BaseModel):
     contains: Literal["oil", "water", "any"] | None = Field(
         default=None,
         description=(
-            "Optional content filter. Oil uses mixed-tank oil_volume. Water includes "
-            "tank volumes classified using the persisted tanks.contents value."
+            "Optional content filter based on persisted tanks.contents and positive "
+            "computed volume. Oil includes only oil or water-oil tanks with positive "
+            "gross oil_volume. Water includes water or water-oil tanks with positive "
+            "water volume. For recoverable oil qualification, also filter "
+            "recoverable_oil_volume > 0."
         ),
     )
     monitored: bool | None = Field(default=None)
@@ -806,7 +811,10 @@ def build_reading_tools(
                 "computed volumes. Use this for tank oil/water stock, tanks in a "
                 "battery, tanks containing oil/water, bottom-feet volume questions, "
                 "or computed volume filters. Tank contents come from tanks.contents; "
-                "mixed tanks provide oil_volume and water_volume."
+                "only oil and water-oil contents are oil-capable. Mixed tanks provide "
+                "oil_volume, recoverable_oil_volume, and water_volume. Use contains=oil "
+                "for gross oil qualification; combine it with recoverable_oil_volume > 0 "
+                "for recoverable oil qualification."
             ),
             args_schema=SearchTankReadingsInput,
         ),

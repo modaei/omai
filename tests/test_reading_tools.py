@@ -260,6 +260,18 @@ def test_search_tank_readings_tool_uses_battery_and_computed_filters():
     assert result["readings"][0]["oil_volume"] == 10
 
 
+def test_search_tank_readings_tool_describes_content_aware_oil_filters():
+    tool = tool_by_name(build_reading_tools(FakeReadingClient(), 4), "search_tank_readings")
+
+    assert "only oil and water-oil contents are oil-capable" in tool.description
+    assert "contains=oil" in tool.description
+    assert "recoverable_oil_volume > 0" in tool.description
+
+    contains_description = tool.args_schema.model_fields["contains"].description
+    assert "persisted tanks.contents" in contains_description
+    assert "positive gross oil_volume" in contains_description
+
+
 def test_search_equipment_readings_tool_uses_relation_and_filters():
     tools = build_reading_tools(FakeReadingClient(), 4)
     result = json.loads(
