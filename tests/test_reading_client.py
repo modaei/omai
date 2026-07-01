@@ -137,6 +137,7 @@ def make_equipment_relation_client() -> ReadingClient:
                     key TEXT,
                     battery_id INTEGER,
                     type TEXT,
+                    contents TEXT,
                     bbl_foot REAL,
                     monitored INTEGER NOT NULL DEFAULT 0,
                     disable_reading INTEGER NOT NULL DEFAULT 0,
@@ -340,6 +341,7 @@ def make_entity_resolution_client() -> ReadingClient:
                     name TEXT NOT NULL,
                     key TEXT,
                     type TEXT NOT NULL,
+                    contents TEXT,
                     bbl_foot REAL
                 )
                 """
@@ -383,8 +385,6 @@ def make_entity_resolution_client() -> ReadingClient:
                     level REAL,
                     feet INTEGER,
                     inches REAL,
-                    percentage REAL,
-                    pressure REAL,
                     temperature REAL,
                     comments TEXT,
                     time TEXT NOT NULL
@@ -554,6 +554,7 @@ def make_sqlite_client_with_missing_exclusions() -> ReadingClient:
                     name TEXT NOT NULL,
                     key TEXT,
                     type TEXT NOT NULL,
+                    contents TEXT,
                     bbl_foot REAL,
                     monitored INTEGER NOT NULL DEFAULT 0,
                     disable_reading INTEGER NOT NULL DEFAULT 0,
@@ -860,6 +861,7 @@ def make_mixed_tank_client() -> ReadingClient:
                     name TEXT NOT NULL,
                     key TEXT,
                     type TEXT NOT NULL,
+                    contents TEXT,
                     bbl_foot REAL,
                     monitored INTEGER NOT NULL DEFAULT 0,
                     disable_reading INTEGER NOT NULL DEFAULT 0,
@@ -940,6 +942,7 @@ def make_tank_volume_client() -> ReadingClient:
                     name TEXT NOT NULL,
                     key TEXT,
                     type TEXT NOT NULL,
+                    contents TEXT NOT NULL,
                     bbl_foot REAL,
                     monitored INTEGER NOT NULL DEFAULT 0,
                     disable_reading INTEGER NOT NULL DEFAULT 0,
@@ -1036,13 +1039,13 @@ def make_tank_volume_client() -> ReadingClient:
             text(
                 """
                 INSERT INTO tanks
-                    (id, site_id, name, key, type, bbl_foot, monitored, disable_reading, battery_id, non_linear_volume_mapping_id)
+                    (id, site_id, name, key, type, contents, bbl_foot, monitored, disable_reading, battery_id, non_linear_volume_mapping_id)
                 VALUES
-                    (1, 1, 'Linear A', 'linear_a', 'linear-volume', 50.0, 1, 0, 6, NULL),
-                    (2, 1, 'Linear B', 'linear_b', 'linear-volume', 40.0, 0, 0, 6, NULL),
-                    (3, 1, 'Mixed A', 'mixed_a', 'mixed-water-oil', 100.0, 1, 0, 6, NULL),
-                    (4, 1, 'Mixed Missing', 'mixed_missing', 'mixed-water-oil', NULL, 0, 0, 6, NULL),
-                    (5, 1, 'Non Linear A', 'non_linear_a', 'non-linear-volume', NULL, 0, 0, 6, 50)
+                    (1, 1, 'Linear A', 'linear_a', 'linear-volume', 'water', 50.0, 1, 0, 6, NULL),
+                    (2, 1, 'Linear B', 'linear_b', 'linear-volume', 'oil', 40.0, 0, 0, 6, NULL),
+                    (3, 1, 'Mixed A', 'mixed_a', 'mixed-water-oil', 'water-oil', 100.0, 1, 0, 6, NULL),
+                    (4, 1, 'Mixed Missing', 'mixed_missing', 'mixed-water-oil', 'water-oil', NULL, 0, 0, 6, NULL),
+                    (5, 1, 'Non Linear A', 'non_linear_a', 'non-linear-volume', 'water', NULL, 0, 0, 6, 50)
                 """
             )
         )
@@ -1061,10 +1064,10 @@ def make_tank_volume_client() -> ReadingClient:
             text(
                 """
                 INSERT INTO linear_tank_readings
-                    (id, tank_id, level, feet, inches, percentage, pressure, temperature, comments, time)
+                    (id, tank_id, level, feet, inches, temperature, comments, time)
                 VALUES
-                    (10, 1, 2.5, NULL, NULL, NULL, NULL, NULL, 'level based', '2026-06-10 08:00:00'),
-                    (11, 2, NULL, 3, 6, NULL, NULL, NULL, 'feet inches based', '2026-06-10 08:00:00')
+                    (10, 1, 2.5, NULL, NULL, NULL, 'level based', '2026-06-10 08:00:00'),
+                    (11, 2, NULL, 3, 6, NULL, 'feet inches based', '2026-06-10 08:00:00')
                 """
             )
         )
@@ -1200,7 +1203,6 @@ def test_linear_tank_readings_include_calculated_volume():
             "volume": 125.0,
             "water_volume": 125.0,
             "content_type": "water",
-            "content_assumption": "Assuming linear tanks contain water only.",
         },
         {
             "entity_display_name": "Tank - Linear B",
@@ -1210,9 +1212,8 @@ def test_linear_tank_readings_include_calculated_volume():
             "comments": "feet inches based",
             "bbl_foot": 40.0,
             "volume": 140.0,
-            "water_volume": 140.0,
-            "content_type": "water",
-            "content_assumption": "Assuming linear tanks contain water only.",
+                "oil_volume": 140.0,
+                "content_type": "oil",
         },
     ]
 
@@ -1235,7 +1236,7 @@ def test_mixed_tank_readings_include_calculated_oil_water_volumes():
             "oil_volume": 300.0,
             "water_volume": 150.0,
             "total_volume": 450.0,
-            "content_type": "oil_and_water",
+                "content_type": "water-oil",
         },
         {
             "entity_display_name": "Tank - Mixed Missing",
@@ -1246,6 +1247,7 @@ def test_mixed_tank_readings_include_calculated_oil_water_volumes():
             "water_level_inches": 6.0,
             "comments": "missing bbl foot",
             "volume_status": "missing_bbl_foot",
+            "content_type": "water-oil",
         },
     ]
 
@@ -1273,13 +1275,12 @@ def test_search_tank_readings_filters_by_battery_relation_and_contains_oil():
         contains="oil",
     )
 
-    assert result["count"] == 1
-    assert result["readings"][0]["tank_name"] == "Mixed A"
+    assert [row["tank_name"] for row in result["readings"]] == ["Linear B", "Mixed A"]
     assert result["readings"][0]["battery_name"] == "Battery 6"
-    assert result["readings"][0]["oil_volume"] == 300.0
+    assert result["readings"][0]["oil_volume"] == 140.0
 
 
-def test_search_tank_readings_treats_linear_and_non_linear_as_water_only():
+def test_search_tank_readings_uses_persisted_tank_contents():
     result = make_tank_volume_client().search_tank_readings(
         1,
         start_date="2026-06-10",
@@ -1290,16 +1291,16 @@ def test_search_tank_readings_treats_linear_and_non_linear_as_water_only():
 
     names = [row["tank_name"] for row in result["readings"]]
     assert "Linear A" in names
-    assert "Linear B" in names
+    assert "Linear B" not in names
     assert "Non Linear A" in names
     linear = next(row for row in result["readings"] if row["tank_name"] == "Linear A")
     non_linear = next(
         row for row in result["readings"] if row["tank_name"] == "Non Linear A"
     )
     assert linear["water_volume"] == 125.0
-    assert linear["content_assumption"] == "Assuming linear tanks contain water only."
+    assert linear["contents"] == "water"
     assert non_linear["water_volume"] == 400.0
-    assert non_linear["content_assumption"] == "Non-linear tanks are treated as water-only."
+    assert non_linear["contents"] == "water"
 
 
 def test_search_tank_readings_supports_computed_volume_filters():
@@ -1313,7 +1314,6 @@ def test_search_tank_readings_supports_computed_volume_filters():
     )
 
     assert [row["tank_name"] for row in result["readings"]] == [
-        "Linear B",
         "Mixed A",
         "Non Linear A",
     ]

@@ -60,7 +60,7 @@ READING_DEFINITIONS: dict[str, ReadingDefinition] = {
         "tanks",
         "tank_id",
         "id",
-        ("level", "feet", "inches", "percentage", "pressure", "temperature", "comments"),
+        ("level", "feet", "inches", "temperature", "comments"),
         "AND b.type = 'linear-volume'",
     ),
     "mixed_tank": ReadingDefinition(
@@ -234,9 +234,10 @@ TANK_VOLUME_FIELDS = (
     "total_volume",
     "initial_water_volume",
     "final_water_volume",
+    "initial_oil_volume",
+    "final_oil_volume",
     "volume_status",
     "content_type",
-    "content_assumption",
 )
 
 EQUIPMENT_METADATA_FIELDS: dict[str, tuple[str, ...]] = {
@@ -246,6 +247,7 @@ EQUIPMENT_METADATA_FIELDS: dict[str, tuple[str, ...]] = {
         "monitored",
         "disable_reading",
         "type",
+        "contents",
         "bbl_foot",
         "non_linear_volume_mapping_id",
     ),
@@ -253,6 +255,7 @@ EQUIPMENT_METADATA_FIELDS: dict[str, tuple[str, ...]] = {
         "monitored",
         "disable_reading",
         "type",
+        "contents",
         "bbl_foot",
         "non_linear_volume_mapping_id",
     ),
@@ -260,6 +263,7 @@ EQUIPMENT_METADATA_FIELDS: dict[str, tuple[str, ...]] = {
         "monitored",
         "disable_reading",
         "type",
+        "contents",
         "bbl_foot",
         "non_linear_volume_mapping_id",
     ),
@@ -2103,8 +2107,10 @@ def _reading_select_fields(
     if definition.base_table == "tanks" and definition.table in {
         "linear_tank_readings",
         "mixed_tank_readings",
+        "non_linear_tank_readings",
     }:
         fields.append(f"{base_alias}.bbl_foot")
+        fields.append(f"{base_alias}.contents AS equipment_contents")
     return ",\n                ".join(fields)
 
 
@@ -2117,8 +2123,9 @@ def _reading_type_for_definition(definition: ReadingDefinition) -> str:
 
 def _linear_tank_volume(row: dict[str, Any]) -> dict[str, Any]:
     bbl_foot = row.get("bbl_foot")
+    contents = row.get("equipment_contents") or row.get("contents")
     if not _is_number(bbl_foot):
-        return {"volume_status": "missing_bbl_foot"}
+        return {"volume_status": "missing_bbl_foot", "content_type": contents}
 
     if _is_number(row.get("level")):
         level = float(row["level"])
@@ -2127,13 +2134,17 @@ def _linear_tank_volume(row: dict[str, Any]) -> dict[str, Any]:
     else:
         return {"bbl_foot": float(bbl_foot), "volume_status": "missing_level"}
 
-    return {
+    volume = round(level * float(bbl_foot), 2)
+    result = {
         "bbl_foot": float(bbl_foot),
-        "volume": round(level * float(bbl_foot), 2),
-        "water_volume": round(level * float(bbl_foot), 2),
-        "content_type": "water",
-        "content_assumption": "Assuming linear tanks contain water only.",
+        "volume": volume,
+        "content_type": contents,
     }
+    if contents == "oil":
+        result["oil_volume"] = volume
+    elif contents == "water":
+        result["water_volume"] = volume
+    return result
 
 
 def _non_linear_tank_volumes(row: dict[str, Any]) -> dict[str, Any]:
@@ -2143,18 +2154,17 @@ def _non_linear_tank_volumes(row: dict[str, Any]) -> dict[str, Any]:
     final_volume = _non_linear_volume_from_mapping(
         row, row.get("final_feet"), row.get("final_inches")
     )
-    result: dict[str, Any] = {
-        "content_type": "water",
-        "content_assumption": "Non-linear tanks are treated as water-only.",
-    }
+    contents = row.get("equipment_contents") or row.get("contents")
+    volume_prefix = "oil" if contents == "oil" else "water"
+    result: dict[str, Any] = {"content_type": contents}
     if initial_volume is not None:
-        result["initial_water_volume"] = round(initial_volume, 2)
+        result[f"initial_{volume_prefix}_volume"] = round(initial_volume, 2)
     if final_volume is not None:
-        result["final_water_volume"] = round(final_volume, 2)
-        result["water_volume"] = round(final_volume, 2)
+        result[f"final_{volume_prefix}_volume"] = round(final_volume, 2)
+        result[f"{volume_prefix}_volume"] = round(final_volume, 2)
         result["volume"] = round(final_volume, 2)
     elif initial_volume is not None:
-        result["water_volume"] = round(initial_volume, 2)
+        result[f"{volume_prefix}_volume"] = round(initial_volume, 2)
         result["volume"] = round(initial_volume, 2)
     if initial_volume is not None and final_volume is not None:
         result["total_volume"] = round(initial_volume - final_volume, 2)
@@ -2165,8 +2175,9 @@ def _non_linear_tank_volumes(row: dict[str, Any]) -> dict[str, Any]:
 
 def _mixed_tank_volumes(row: dict[str, Any]) -> dict[str, Any]:
     bbl_foot = row.get("bbl_foot")
+    contents = row.get("equipment_contents") or row.get("contents") or "water-oil"
     if not _is_number(bbl_foot):
-        return {"volume_status": "missing_bbl_foot"}
+        return {"volume_status": "missing_bbl_foot", "content_type": contents}
 
     required = (
         row.get("top_level_feet"),
@@ -2187,7 +2198,7 @@ def _mixed_tank_volumes(row: dict[str, Any]) -> dict[str, Any]:
         "oil_volume": round(oil_volume, 2),
         "water_volume": round(water_volume, 2),
         "total_volume": round(total_volume, 2),
-        "content_type": "oil_and_water",
+        "content_type": contents,
     }
 
 
@@ -2284,10 +2295,12 @@ def _matches_contains(row: dict[str, Any], contains: str | None) -> bool:
     if contains is None:
         return True
     if contains == "oil":
-        return _positive(row.get("oil_volume"))
+        return row.get("content_type") in {"oil", "water-oil"} and _positive(
+            row.get("oil_volume") or row.get("volume")
+        )
     if contains == "water":
         return _positive(row.get("water_volume")) or (
-            row.get("content_type") == "water" and _positive(row.get("volume"))
+            row.get("content_type") in {"water", "water-oil"} and _positive(row.get("volume"))
         )
     return any(
         _positive(row.get(field))
@@ -2425,6 +2438,7 @@ def _compact_tank_reading_row(
         "tank_name": row.get("tank_name"),
         "tank_key": row.get("tank_key"),
         "tank_type": row.get("tank_type"),
+        "contents": row.get("equipment_contents"),
         "entity_display_name": f"Tank - {row.get('tank_name')}",
         "battery_id": row.get("battery_id"),
         "battery_name": row.get("battery_name"),

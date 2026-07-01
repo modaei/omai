@@ -230,7 +230,7 @@ class SearchTankReadingsInput(BaseModel):
         default=None,
         description=(
             "Optional content filter. Oil uses mixed-tank oil_volume. Water includes "
-            "mixed-tank water_volume plus linear/non-linear tanks treated as water-only."
+            "tank volumes classified using the persisted tanks.contents value."
         ),
     )
     monitored: bool | None = Field(default=None)
@@ -805,8 +805,8 @@ def build_reading_tools(
                 "Search tank readings using tank metadata, battery relation, and "
                 "computed volumes. Use this for tank oil/water stock, tanks in a "
                 "battery, tanks containing oil/water, bottom-feet volume questions, "
-                "or computed volume filters. Linear and non-linear tanks are treated "
-                "as water-only; mixed tanks provide oil_volume and water_volume."
+                "or computed volume filters. Tank contents come from tanks.contents; "
+                "mixed tanks provide oil_volume and water_volume."
             ),
             args_schema=SearchTankReadingsInput,
         ),

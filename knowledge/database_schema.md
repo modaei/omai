@@ -227,6 +227,10 @@ WHERE pumps.site_id = :site_id
 
 ### Tanks
 
+`tanks.contents` is the authoritative fluid classification. Its values are `oil`,
+`water`, and `water-oil`. Mixed Water/Oil tank types always use `water-oil`;
+linear and non-linear tank types use either `oil` or `water`.
+
 - `linear_tank_readings.tank_id -> tanks.id`
 - `mixed_tank_readings.tank_id -> tanks.id`
 - `non_linear_tank_readings.tank_id -> tanks.id`
