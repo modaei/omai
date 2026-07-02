@@ -5,7 +5,7 @@ import logging
 from typing import Any, Literal
 
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from omai.clients.shutdown_client import ShutdownClient, ShutdownClientError
 from omai.tools.rag_enrichment import (
@@ -40,7 +40,30 @@ class ActiveWellsInput(BaseModel):
 
 
 class ProducingWellsInput(BaseModel):
-    producing_date: str = Field(description="Date in YYYY-MM-DD format.")
+    producing_date: str | None = Field(
+        default=None, description="Single date in YYYY-MM-DD format."
+    )
+    start_date: str | None = Field(
+        default=None, description="Range start date in YYYY-MM-DD format."
+    )
+    end_date: str | None = Field(
+        default=None, description="Range end date in YYYY-MM-DD format."
+    )
+    range_mode: Literal["any_day"] = Field(
+        default="any_day",
+        description="For ranges, include wells producing on any day in the range.",
+    )
+
+    @model_validator(mode="after")
+    def validate_date_mode(self) -> "ProducingWellsInput":
+        """Require either a single date or a complete date range, never both."""
+        has_single = self.producing_date is not None
+        has_range = self.start_date is not None or self.end_date is not None
+        if has_single == has_range:
+            raise ValueError("Provide producing_date or start_date and end_date.")
+        if has_range and (self.start_date is None or self.end_date is None):
+            raise ValueError("Both start_date and end_date are required.")
+        return self
 
 
 class ShutdownCauseSummaryInput(BaseModel):
@@ -138,16 +161,32 @@ def build_shutdown_tools(
             logger.warning("Active well lookup failed: %s", exc)
             return _json_result({"ok": False, "error": str(exc)})
 
-    def get_producing_wells(producing_date: str) -> str:
-        """Count producing wells on one day, excluding ONRR injection wells."""
+    def get_producing_wells(
+        producing_date: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        range_mode: str = "any_day",
+    ) -> str:
+        """List producing wells for one day or any day in a date range."""
         logger.info(
-            "Getting producing wells site_id=%s date=%s", site_id, producing_date
+            "Getting producing wells site_id=%s date=%s start=%s end=%s",
+            site_id,
+            producing_date,
+            start_date,
+            end_date,
         )
         try:
+            result = (
+                client.get_producing_wells(site_id, producing_date)
+                if producing_date is not None
+                else client.get_producing_wells_for_range(
+                    site_id, str(start_date), str(end_date), range_mode
+                )
+            )
             return _json_result(
                 {
                     "ok": True,
-                    **client.get_producing_wells(site_id, producing_date),
+                    **result,
                 }
             )
         except ShutdownClientError as exc:
@@ -233,8 +272,9 @@ def build_shutdown_tools(
             func=get_producing_wells,
             name="get_producing_wells",
             description=(
-                "Count and list producing wells for one date. Use this for "
-                "questions asking how many wells are producing or producing now. "
+                "Count and list producing wells for one date or date range. For "
+                "ranges, any_day includes wells producing on at least one day. "
+                "Use this for questions asking how many wells are producing. "
                 "A well is producing only when its ONRR code is active_well=true "
                 "and injection_well=false as of that day, and it is not shut down "
                 "for the full day. ONRR code name and description are returned "

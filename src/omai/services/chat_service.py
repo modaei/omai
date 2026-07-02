@@ -10,6 +10,10 @@ from omai.agents.chat_agent import (
     build_model,
     reasoning_effort_for_response_mode,
 )
+from omai.agents.producing_wells_graph import (
+    prepare_well_population_dependency,
+    try_answer_producing_well_question,
+)
 from omai.clients.capability_client import CapabilityClient, UnavailableCapabilityClient
 from omai.clients.database_schema_client import (
     DatabaseSchemaClient,
@@ -135,20 +139,57 @@ def answer_chat(
             site_id,
         ),
     ]
+    deterministic_answer = try_answer_producing_well_question(
+        tools=tools,
+        question=question,
+    )
+    if deterministic_answer is not None:
+        return deterministic_answer
+    population_dependency = prepare_well_population_dependency(
+        tools=tools,
+        question=question,
+    )
+    agent_tools = tools
+    authoritative_context = None
+    if population_dependency is not None:
+        authoritative_context = population_dependency["context"]
+        population_tool_name = population_dependency["tool_name"]
+        agent_tools = [tool for tool in tools if tool.name != population_tool_name]
     model = build_model(
         api_key=settings.llm_api_key,
         model=settings.llm_model,
         base_url=settings.llm_base_url,
         reasoning_effort=reasoning_effort_for_response_mode(response_mode),
     )
-    return answer_chat_question(
+    answer, traces, stats = answer_chat_question(
         model=model,
-        tools=tools,
+        tools=agent_tools,
         site_id=site_id,
         site_name=resolved_site_name,
         history=history,
         question=question,
+        authoritative_context=authoritative_context,
     )
+    if population_dependency is None:
+        return answer, traces, stats
+    return (
+        answer,
+        [*population_dependency["traces"], *traces],
+        _merge_chat_stats(population_dependency["stats"], stats),
+    )
+
+
+def _merge_chat_stats(
+    first: dict[str, Any], second: dict[str, Any]
+) -> dict[str, Any]:
+    """Combine prefetch and agent timings into the public statistics shape."""
+    return {
+        "total_seconds": round(first["total_seconds"] + second["total_seconds"], 3),
+        "model_seconds": round(first["model_seconds"] + second["model_seconds"], 3),
+        "tool_seconds": round(first["tool_seconds"] + second["tool_seconds"], 3),
+        "model_calls": first["model_calls"] + second["model_calls"],
+        "tool_calls": [*first["tool_calls"], *second["tool_calls"]],
+    }
 
 
 def _site_name_from_db(settings: Settings, site_id: int) -> str | None:

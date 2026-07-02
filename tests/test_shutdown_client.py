@@ -1,3 +1,5 @@
+from datetime import date, datetime
+
 from sqlalchemy import create_engine, text
 
 from omai.clients.shutdown_client import (
@@ -236,6 +238,20 @@ def test_get_producing_wells_excludes_onrr_injection_wells():
     assert injection_well["onrr_code"] == "INJ"
     assert injection_well["onrr_code_description"] == "Active injection well"
     assert injection_well["onrr_injection_well"] is True
+
+
+def test_serialize_row_handles_date_and_datetime_values():
+    result = ShutdownClient._serialize_row(
+        {
+            "shutdown_date": date(2026, 6, 1),
+            "created_at": datetime(2026, 6, 1, 7, 30),
+        }
+    )
+
+    assert result == {
+        "shutdown_date": "2026-06-01",
+        "created_at": "2026-06-01 07:30:00",
+    }
 
 
 def test_shutdown_date_order_is_validated():

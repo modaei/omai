@@ -66,6 +66,21 @@ class FakeShutdownClient:
             "partial_shutdown_summary": None,
         }
 
+    def get_producing_wells_for_range(
+        self, site_id, start_date, end_date, range_mode="any_day"
+    ):
+        return {
+            "site_id": site_id,
+            "start_date": start_date,
+            "end_date": end_date,
+            "range_mode": range_mode,
+            "producing_count": 2,
+            "producing_wells": [
+                {"well": "Well - 11-1-1 Oil"},
+                {"well": "Well - 13-1-1 Oil"},
+            ],
+        }
+
     def list_downtime_codes(self):
         return {"downtime_codes": {}}
 
@@ -138,3 +153,21 @@ def test_get_producing_wells_tool_returns_counts():
     assert result["ok"] is True
     assert result["producing_count"] == 1
     assert result["non_producing_wells"][0]["status"] == "onrr_injection_well"
+
+
+def test_get_producing_wells_tool_supports_any_day_range():
+    tools = build_shutdown_tools(FakeShutdownClient(), site_id=4)
+
+    result = json.loads(
+        tool_by_name(tools, "get_producing_wells").invoke(
+            {
+                "start_date": "2026-06-01",
+                "end_date": "2026-06-30",
+                "range_mode": "any_day",
+            }
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["producing_count"] == 2
+    assert result["range_mode"] == "any_day"

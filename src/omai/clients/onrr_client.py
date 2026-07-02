@@ -188,8 +188,10 @@ class OnrrClient:
     def _serialize_row(row: dict[str, Any]) -> dict[str, Any]:
         serialized = {}
         for key, value in row.items():
-            if isinstance(value, (datetime, date)):
+            if isinstance(value, datetime):
                 serialized[key] = value.isoformat(sep=" ")
+            elif isinstance(value, date):
+                serialized[key] = value.isoformat()
             else:
                 serialized[key] = value
         return serialized

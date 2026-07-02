@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, time, timedelta
 from typing import Any
 
@@ -242,6 +243,66 @@ class ShutdownClient:
         result["producing_wells"] = result.pop("active_wells")
         result["non_producing_wells"] = result.pop("inactive_wells")
         return result
+
+    def get_producing_wells_for_range(
+        self,
+        site_id: int,
+        start_date: str,
+        end_date: str,
+        range_mode: str = "any_day",
+    ) -> dict[str, Any]:
+        """Return wells producing on at least one day in a bounded date range.
+
+        Daily classification remains authoritative for historical ONRR codes and
+        shutdown semantics. Independent days are evaluated in a small worker pool
+        to avoid serial database latency without duplicating those business rules.
+        """
+        start_day = self._parse_date(start_date)
+        end_day = self._parse_date(end_date)
+        if end_day < start_day:
+            raise ShutdownClientError("end_date must be on or after start_date.")
+        if range_mode != "any_day":
+            raise ShutdownClientError("Only range_mode='any_day' is supported.")
+        day_count = (end_day - start_day).days + 1
+        if day_count > 366:
+            raise ShutdownClientError("Producing-well ranges are limited to 366 days.")
+
+        date_values = [
+            (start_day + timedelta(days=offset)).isoformat()
+            for offset in range(day_count)
+        ]
+        with ThreadPoolExecutor(max_workers=min(4, day_count)) as executor:
+            daily_results = list(
+                executor.map(
+                    lambda value: self.get_producing_wells(site_id, value),
+                    date_values,
+                )
+            )
+
+        producing_by_name: dict[str, dict[str, Any]] = {}
+        qualifying_dates: dict[str, list[str]] = {}
+        for daily_result in daily_results:
+            result_date = str(daily_result["date"])
+            for well in daily_result["producing_wells"]:
+                name = str(well["well"])
+                producing_by_name.setdefault(name, well)
+                qualifying_dates.setdefault(name, []).append(result_date)
+
+        producing_wells = [producing_by_name[name] for name in sorted(producing_by_name)]
+        return {
+            "site_id": site_id,
+            "start_date": start_day.isoformat(),
+            "end_date": end_day.isoformat(),
+            "range_mode": range_mode,
+            "day_count": day_count,
+            "producing_count": len(producing_wells),
+            "producing_wells": producing_wells,
+            "qualifying_dates_by_well": qualifying_dates,
+            "rule": (
+                "A well is included when it satisfies the producing-well rules "
+                "on at least one day in the range."
+            ),
+        }
 
     def _classify_wells_by_onrr_and_shutdown(
         self,
@@ -534,8 +595,10 @@ class ShutdownClient:
     def _serialize_row(row: dict[str, Any]) -> dict[str, Any]:
         serialized = {}
         for key, value in row.items():
-            if isinstance(value, (datetime, date)):
+            if isinstance(value, datetime):
                 serialized[key] = value.isoformat(sep=" ")
+            elif isinstance(value, date):
+                serialized[key] = value.isoformat()
             else:
                 serialized[key] = value
         return serialized

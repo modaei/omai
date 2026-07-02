@@ -55,6 +55,7 @@ def answer_chat_question(
     history: list[dict[str, str]],
     question: str,
     site_name: str | None = None,
+    authoritative_context: str | None = None,
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     """Answer one user question with tool calling and bounded agent control flow.
 
@@ -187,6 +188,9 @@ def answer_chat_question(
                 "those well names in the answer and say they are excluded from the "
                 "returned counts. If partial_shutdown_count is 0, do not mention "
                 "partial shutdowns at all. "
+                "Never recreate active-well or producing-well membership with "
+                "operational SQL. Those classifications require historical ONRR "
+                "state and shutdown rules that exist only in the dedicated tools. "
                 "Use summarize_shutdown_causes when the user asks for the main, "
                 "top, most common, or biggest cause/reason for shutdowns or downtime. "
                 "For operational data questions, first prefer the most specific "
@@ -302,6 +306,20 @@ def answer_chat_question(
             )
         )
     ]
+
+    if authoritative_context:
+        messages.append(
+            SystemMessage(
+                content=(
+                    "Authoritative domain data was fetched before this agent run. "
+                    "Use it as the required well population for the user's question. "
+                    "Do not recreate, broaden, or replace that population with SQL, "
+                    "well-test activity, current well fields, or inference. Do not call "
+                    "the population tool again.\n\n"
+                    f"{authoritative_context}"
+                )
+            )
+        )
 
     for item in history[-10:]:
         if item["role"] == "user":
