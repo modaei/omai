@@ -38,7 +38,7 @@ The future SQL tool may only use these tables:
 - `batteries`
 - `chart_notes`
 - `data_points`
-- `data_points_data`
+- `data_point_data`
 - `flares`
 - `flare_readings`
 - `flow_meters`
@@ -111,7 +111,7 @@ through their parent equipment table. Use these joins to enforce site scope.
 
 - `alarm_events.data_point_id -> data_points.id`
 - `alarm_logs.data_point_id -> data_points.id`
-- `data_points_data.data_point_id -> data_points.id`
+- `data_point_data.data_point_id -> data_points.id`
 
 Site filter:
 
@@ -467,7 +467,8 @@ execution, but the current operational conventions are:
 - Alarm events often use `happened_on`.
 - Alarm logs commonly use `created_at`; they do not normally have
   `alarm_date`, `alarm_time`, or `happened_on` columns.
-- Data point time-series rows often use timestamp/time columns on `data_points_data`.
+- Current data-point values are stored in `data_point_data.data` as JSON, with
+  `data_point_data.last_update` as an epoch timestamp.
 - Long shutdowns use `long_shutdown_start` and `long_shutdown_end`.
 - Well history uses `changed_at`.
 - Standard Laravel tables may have `created_at` and `updated_at`.

@@ -29,7 +29,7 @@ ALLOWED_TABLES = {
     "batteries",
     "chart_notes",
     "data_points",
-    "data_points_data",
+    "data_point_data",
     "flares",
     "flare_readings",
     "flow_meters",
@@ -96,7 +96,7 @@ SITE_SCOPED_TABLES = {
 SITE_PARENT_BY_CHILD = {
     "alarm_events": "data_points",
     "alarm_logs": "data_points",
-    "data_points_data": "data_points",
+    "data_point_data": "data_points",
     "flare_readings": "flares",
     "flow_meter_readings": "flow_meters",
     "knock_out_readings": "knock_outs",

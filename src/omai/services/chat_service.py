@@ -10,6 +10,7 @@ from omai.agents.chat_agent import (
     build_model,
     reasoning_effort_for_response_mode,
 )
+from omai.agents.data_point_graph import try_answer_data_point_value_question
 from omai.agents.producing_wells_graph import (
     prepare_well_population_dependency,
     try_answer_producing_well_question,
@@ -23,6 +24,7 @@ from omai.clients.database_schema_client import (
     DatabaseSchemaClient,
     UnavailableDatabaseSchemaClient,
 )
+from omai.clients.data_point_client import DataPointClient, UnavailableDataPointClient
 from omai.clients.onrr_client import OnrrClient, UnavailableOnrrClient
 from omai.clients.reading_client import ReadingClient, UnavailableReadingClient
 from omai.clients.report_client import ReportClient
@@ -44,6 +46,7 @@ from omai.rag.vector_store import (
 )
 from omai.tools.capability_tools import build_capability_tools
 from omai.tools.database_schema_tools import build_database_schema_tools
+from omai.tools.data_point_tools import build_data_point_tools
 from omai.tools.onrr_tools import build_onrr_tools
 from omai.tools.operational_context_tools import build_operational_context_tools
 from omai.tools.reading_tools import build_reading_tools
@@ -76,6 +79,10 @@ def answer_chat(
         reading_client = ReadingClient.from_settings(settings)
     except ValueError as exc:
         reading_client = UnavailableReadingClient(str(exc))
+    try:
+        data_point_client = DataPointClient.from_settings(settings)
+    except (ValueError, RuntimeError) as exc:
+        data_point_client = UnavailableDataPointClient(str(exc))
     try:
         shutdown_client = ShutdownClient.from_settings(settings)
     except ValueError as exc:
@@ -119,6 +126,7 @@ def answer_chat(
         # This tool searches the vector DB derived index for notes/comments,
         # work-order context, shutdown explanations, alarms, and history.
         *build_operational_context_tools(operational_context_store, site_id),
+        *build_data_point_tools(data_point_client, site_id),
         *build_report_tools(
             report_client,
             site_id,
@@ -149,6 +157,12 @@ def answer_chat(
     )
     if deterministic_answer is not None:
         return deterministic_answer
+    data_point_answer = try_answer_data_point_value_question(
+        tools=tools,
+        question=question,
+    )
+    if data_point_answer is not None:
+        return data_point_answer
     well_test_answer = try_answer_well_test_analysis(
         tools=tools,
         question=question,

@@ -459,6 +459,24 @@ def test_operational_sql_validator_rejects_missing_site_scope():
         raise AssertionError("query without site scope was accepted")
 
 
+def test_operational_sql_validator_accepts_singular_data_point_data_table():
+    validator = OperationalSqlValidator(
+        {
+            "data_points": {"id", "site_id", "data_point_name"},
+            "data_point_data": {"data_point_id", "data"},
+        }
+    )
+
+    result = validator.validate(
+        "SELECT dp.data_point_name, d.data "
+        "FROM data_point_data d "
+        "JOIN data_points dp ON d.data_point_id = dp.id "
+        "WHERE dp.site_id = :site_id LIMIT 10"
+    )
+
+    assert result.tables == ["data_point_data", "data_points"]
+
+
 def test_operational_sql_validator_allows_qualified_aggregate_functions():
     validator = OperationalSqlValidator(
         {
