@@ -120,6 +120,38 @@ class SearchWellTestsInput(BaseModel):
     )
 
 
+class AnalyzeWellTestsInput(BaseModel):
+    analysis_mode: Literal["latest_previous", "range_summary"] = Field(
+        description=(
+            "latest_previous compares each well's latest test with its immediately "
+            "previous test; range_summary aggregates tests in a date range."
+        )
+    )
+    group_by: Literal["well", "battery", "site"] = Field(
+        description="Return analysis per well, per battery, or for the selected site."
+    )
+    start_date: str | None = Field(
+        default=None,
+        description=(
+            "Optional YYYY-MM-DD lower bound for latest_previous; required for "
+            "range_summary."
+        ),
+    )
+    end_date: str | None = Field(
+        default=None,
+        description=(
+            "Optional YYYY-MM-DD upper bound for latest_previous; required for "
+            "range_summary."
+        ),
+    )
+    well_name: str | None = Field(
+        default=None, description="Optional case-insensitive partial well name."
+    )
+    battery_name: str | None = Field(
+        default=None, description="Optional case-insensitive partial battery name."
+    )
+
+
 class ReadingNumericFilter(BaseModel):
     field: str = Field(
         description="Reading field to filter, such as oil, water, gas, reading, pressure, level, or total.",
@@ -502,6 +534,42 @@ def build_reading_tools(
             logger.warning("Well test search failed: %s", exc)
             return _json_result({"ok": False, "error": str(exc)})
 
+    def analyze_well_tests(
+        analysis_mode: str,
+        group_by: str,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        well_name: str | None = None,
+        battery_name: str | None = None,
+    ) -> str:
+        """Compare or summarize well tests by well, battery, or selected site."""
+        logger.info(
+            "Analyzing well tests site_id=%s mode=%s group_by=%s start=%s end=%s",
+            site_id,
+            analysis_mode,
+            group_by,
+            start_date,
+            end_date,
+        )
+        try:
+            return _json_result(
+                {
+                    "ok": True,
+                    **client.analyze_well_tests(
+                        site_id=site_id,
+                        analysis_mode=analysis_mode,
+                        group_by=group_by,
+                        start_date=start_date,
+                        end_date=end_date,
+                        well_name=well_name,
+                        battery_name=battery_name,
+                    ),
+                }
+            )
+        except ReadingClientError as exc:
+            logger.warning("Well-test analysis failed: %s", exc)
+            return _json_result({"ok": False, "error": str(exc)})
+
     def search_readings(
         reading_type: str,
         start_date: str,
@@ -827,5 +895,17 @@ def build_reading_tools(
                 "for questions like 'show all well tests between two dates with oil > 20'."
             ),
             args_schema=SearchWellTestsInput,
+        ),
+        StructuredTool.from_function(
+            func=analyze_well_tests,
+            name="analyze_well_tests",
+            description=(
+                "Analyze and compare well tests by well, battery, or selected site. "
+                "Use latest_previous for each well's latest test versus its prior "
+                "test, optionally rolled up by battery/site. Use range_summary for "
+                "grouped test counts, sums, averages, minima, and maxima over a date "
+                "range. Prefer this tool over operational SQL for well-test analysis."
+            ),
+            args_schema=AnalyzeWellTestsInput,
         ),
     ]

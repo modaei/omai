@@ -656,6 +656,225 @@ class ReadingClient:
             ),
         }
 
+    def analyze_well_tests(
+        self,
+        site_id: int,
+        analysis_mode: str,
+        group_by: str,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        well_name: str | None = None,
+        battery_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Analyze well tests deterministically by well, battery, or selected site."""
+        if analysis_mode not in {"latest_previous", "range_summary"}:
+            raise ReadingClientError("Unsupported well-test analysis mode.")
+        if group_by not in {"well", "battery", "site"}:
+            raise ReadingClientError("group_by must be well, battery, or site.")
+        if (start_date is None) != (end_date is None):
+            raise ReadingClientError("start_date and end_date must be provided together.")
+        start_day = self._parse_date(start_date) if start_date else None
+        end_day = self._parse_date(end_date) if end_date else None
+        if start_day and end_day and end_day < start_day:
+            raise ReadingClientError("end_date must be on or after start_date.")
+        if analysis_mode == "range_summary" and start_day is None:
+            raise ReadingClientError("range_summary requires start_date and end_date.")
+
+        conditions = ["w.site_id = :site_id"]
+        params: dict[str, Any] = {"site_id": site_id}
+        if start_day is not None and end_day is not None:
+            conditions.extend(["wt.time >= :start_time", "wt.time < :end_time"])
+            params["start_time"] = datetime.combine(start_day, time.min)
+            params["end_time"] = datetime.combine(end_day + timedelta(days=1), time.min)
+        if well_name:
+            conditions.append("LOWER(w.name) LIKE LOWER(:well_name)")
+            params["well_name"] = f"%{well_name}%"
+        if battery_name:
+            conditions.append("LOWER(b.name) LIKE LOWER(:battery_name)")
+            params["battery_name"] = f"%{battery_name}%"
+        where_sql = " AND ".join(conditions)
+
+        if analysis_mode == "range_summary":
+            return self._summarize_well_tests_by_group(
+                site_id=site_id,
+                group_by=group_by,
+                where_sql=where_sql,
+                params=params,
+                start_day=start_day,
+                end_day=end_day,
+            )
+
+        query = text(
+            f"""
+            SELECT ranked.well_name,
+                ranked.battery_name,
+                ranked.test_time,
+                ranked.oil,
+                ranked.water,
+                ranked.gas,
+                ranked.runtime,
+                ranked.rn
+            FROM (
+                SELECT w.name AS well_name,
+                    COALESCE(b.name, 'No Battery') AS battery_name,
+                    wt.time AS test_time,
+                    wt.oil,
+                    wt.water,
+                    wt.gas,
+                    wt.runtime,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY w.id ORDER BY wt.time DESC, wt.id DESC
+                    ) AS rn
+                FROM well_tests wt
+                JOIN wells w ON w.id = wt.well_id
+                LEFT JOIN batteries b ON b.id = w.battery_id
+                WHERE {where_sql}
+            ) ranked
+            WHERE ranked.rn <= 2
+            ORDER BY ranked.well_name, ranked.rn
+            LIMIT :limit
+            """
+        )
+        rows = self._execute(query, **params)
+        comparisons = self._well_test_comparisons(rows)
+        groups = self._roll_up_well_test_comparisons(comparisons, group_by)
+        return {
+            "analysis_mode": analysis_mode,
+            "group_by": group_by,
+            "site_id": site_id,
+            "start_date": start_day.isoformat() if start_day else None,
+            "end_date": end_day.isoformat() if end_day else None,
+            "filters": {
+                **({"well_name": well_name} if well_name else {}),
+                **({"battery_name": battery_name} if battery_name else {}),
+            },
+            "well_count": len(comparisons),
+            "group_count": len(groups),
+            "groups": groups,
+        }
+
+    def _summarize_well_tests_by_group(
+        self,
+        *,
+        site_id: int,
+        group_by: str,
+        where_sql: str,
+        params: dict[str, Any],
+        start_day: date,
+        end_day: date,
+    ) -> dict[str, Any]:
+        """Aggregate a bounded well-test range using fixed, trusted SQL."""
+        group_expression = {
+            "well": "w.name",
+            "battery": "COALESCE(b.name, 'No Battery')",
+            "site": "'Selected site'",
+        }[group_by]
+        query = text(
+            f"""
+            SELECT {group_expression} AS group_name,
+                COUNT(*) AS test_count,
+                COUNT(DISTINCT w.id) AS well_count,
+                SUM(wt.oil) AS oil_sum,
+                AVG(wt.oil) AS oil_average,
+                MIN(wt.oil) AS oil_minimum,
+                MAX(wt.oil) AS oil_maximum,
+                SUM(wt.water) AS water_sum,
+                AVG(wt.water) AS water_average,
+                MIN(wt.water) AS water_minimum,
+                MAX(wt.water) AS water_maximum,
+                SUM(wt.gas) AS gas_sum,
+                AVG(wt.gas) AS gas_average,
+                MIN(wt.gas) AS gas_minimum,
+                MAX(wt.gas) AS gas_maximum,
+                AVG(wt.runtime) AS runtime_average
+            FROM well_tests wt
+            JOIN wells w ON w.id = wt.well_id
+            LEFT JOIN batteries b ON b.id = w.battery_id
+            WHERE {where_sql}
+            GROUP BY {group_expression}
+            ORDER BY group_name
+            LIMIT :limit
+            """
+        )
+        groups = [self._round_numeric_values(row) for row in self._execute(query, **params)]
+        return {
+            "analysis_mode": "range_summary",
+            "group_by": group_by,
+            "site_id": site_id,
+            "start_date": start_day.isoformat(),
+            "end_date": end_day.isoformat(),
+            "group_count": len(groups),
+            "groups": groups,
+        }
+
+    @classmethod
+    def _well_test_comparisons(cls, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Pair each well's latest test with its immediately previous test."""
+        by_well: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            by_well.setdefault(str(row["well_name"]), []).append(row)
+        comparisons = []
+        for well_name, tests in sorted(by_well.items()):
+            ordered = sorted(tests, key=lambda item: int(item["rn"]))
+            if len(ordered) < 2:
+                continue
+            latest, previous = ordered[0], ordered[1]
+            item: dict[str, Any] = {
+                "group_name": well_name,
+                "well_name": well_name,
+                "battery_name": latest["battery_name"],
+                "latest_date": str(latest["test_time"])[:10],
+                "previous_date": str(previous["test_time"])[:10],
+            }
+            for metric in ("oil", "water", "gas", "runtime"):
+                latest_value = latest.get(metric)
+                previous_value = previous.get(metric)
+                item[f"latest_{metric}"] = latest_value
+                item[f"previous_{metric}"] = previous_value
+                item[f"{metric}_change"] = (
+                    round(float(latest_value) - float(previous_value), 3)
+                    if latest_value is not None and previous_value is not None
+                    else None
+                )
+            comparisons.append(cls._round_numeric_values(item))
+        return comparisons
+
+    @classmethod
+    def _roll_up_well_test_comparisons(
+        cls, comparisons: list[dict[str, Any]], group_by: str
+    ) -> list[dict[str, Any]]:
+        """Return per-well rows or aggregate paired tests by battery/site."""
+        if group_by == "well":
+            return comparisons
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for item in comparisons:
+            key = item["battery_name"] if group_by == "battery" else "Selected site"
+            grouped.setdefault(str(key), []).append(item)
+        results = []
+        for group_name, items in sorted(grouped.items()):
+            result: dict[str, Any] = {
+                "group_name": group_name,
+                "well_count": len(items),
+            }
+            for metric in ("oil", "water", "gas", "runtime"):
+                latest_values = [item[f"latest_{metric}"] for item in items if item[f"latest_{metric}"] is not None]
+                previous_values = [item[f"previous_{metric}"] for item in items if item[f"previous_{metric}"] is not None]
+                result[f"latest_{metric}_sum"] = sum(latest_values)
+                result[f"previous_{metric}_sum"] = sum(previous_values)
+                result[f"{metric}_sum_change"] = sum(latest_values) - sum(previous_values)
+                result[f"latest_{metric}_average"] = sum(latest_values) / len(latest_values) if latest_values else None
+                result[f"previous_{metric}_average"] = sum(previous_values) / len(previous_values) if previous_values else None
+            results.append(cls._round_numeric_values(result))
+        return results
+
+    @staticmethod
+    def _round_numeric_values(row: dict[str, Any]) -> dict[str, Any]:
+        """Normalize database numeric types for compact JSON tool output."""
+        return {
+            key: round(float(value), 3) if isinstance(value, (float, Decimal)) else value
+            for key, value in row.items()
+        }
+
     def search_readings(
         self,
         site_id: int,
@@ -2703,6 +2922,18 @@ class UnavailableReadingClient:
         max_gas: float | None = None,
         min_runtime: float | None = None,
         max_runtime: float | None = None,
+    ) -> dict[str, Any]:
+        raise ReadingClientError(self.reason)
+
+    def analyze_well_tests(
+        self,
+        site_id: int,
+        analysis_mode: str,
+        group_by: str,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        well_name: str | None = None,
+        battery_name: str | None = None,
     ) -> dict[str, Any]:
         raise ReadingClientError(self.reason)
 

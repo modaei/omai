@@ -168,7 +168,12 @@ def answer_chat_question(
                 "or equipment metadata condition is involved. "
                 "Use search_well_tests for well-test questions that ask for a "
                 "date range, all wells, or numeric filters such as oil greater "
-                "than a threshold. "
+                "than a threshold. Use analyze_well_tests, not operational SQL, "
+                "when the user asks to analyze, aggregate, or compare well tests "
+                "per well, per battery, or for the selected site. Use "
+                "analysis_mode='latest_previous' for latest-versus-prior-test "
+                "comparisons and analysis_mode='range_summary' for grouped counts, "
+                "sums, averages, minima, and maxima over a date range. "
                 "Use ONRR tools for questions asking what an ONRR code means, "
                 "whether a well is active/producing/injection by ONRR code, or "
                 "for ONRR-only well counts. ONRR code status must be resolved as "
@@ -312,10 +317,10 @@ def answer_chat_question(
             SystemMessage(
                 content=(
                     "Authoritative domain data was fetched before this agent run. "
-                    "Use it as the required well population for the user's question. "
-                    "Do not recreate, broaden, or replace that population with SQL, "
-                    "well-test activity, current well fields, or inference. Do not call "
-                    "the population tool again.\n\n"
+                    "Use it as the required factual input for the user's question. "
+                    "Do not recreate, broaden, or replace it with SQL, current fields, "
+                    "or inference. The tools that produced this context have already "
+                    "run and are unavailable for this agent turn.\n\n"
                     f"{authoritative_context}"
                 )
             )

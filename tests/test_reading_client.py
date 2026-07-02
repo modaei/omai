@@ -1106,10 +1106,22 @@ def make_well_test_client() -> ReadingClient:
         connection.execute(
             text(
                 """
-                CREATE TABLE wells (
+                CREATE TABLE batteries (
                     id INTEGER PRIMARY KEY,
                     site_id INTEGER NOT NULL,
                     name TEXT NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE wells (
+                    id INTEGER PRIMARY KEY,
+                    site_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    battery_id INTEGER
                 )
                 """
             )
@@ -1138,11 +1150,22 @@ def make_well_test_client() -> ReadingClient:
         connection.execute(
             text(
                 """
-                INSERT INTO wells (id, site_id, name)
+                INSERT INTO batteries (id, site_id, name)
                 VALUES
-                    (1, 1, 'HARTZOG DRAW UNIT 4048'),
-                    (2, 1, 'HARTZOG DRAW UNIT 4050'),
-                    (3, 2, 'OTHER SITE WELL')
+                    (10, 1, 'Battery 6'),
+                    (20, 1, 'Battery 13'),
+                    (30, 2, 'Other Site Battery')
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO wells (id, site_id, name, battery_id)
+                VALUES
+                    (1, 1, 'HARTZOG DRAW UNIT 4048', 10),
+                    (2, 1, 'HARTZOG DRAW UNIT 4050', 20),
+                    (3, 2, 'OTHER SITE WELL', 30)
                 """
             )
         )
@@ -1511,6 +1534,67 @@ def test_search_well_tests_filters_date_range_site_and_oil_threshold():
             "comments": "strong",
         },
     ]
+
+
+def test_analyze_well_tests_compares_latest_and_previous_per_well():
+    result = make_well_test_client().analyze_well_tests(
+        site_id=1,
+        analysis_mode="latest_previous",
+        group_by="well",
+    )
+
+    assert result["well_count"] == 1
+    assert result["groups"] == [
+        {
+            "group_name": "HARTZOG DRAW UNIT 4048",
+            "well_name": "HARTZOG DRAW UNIT 4048",
+            "battery_name": "Battery 6",
+            "latest_date": "2026-06-06",
+            "previous_date": "2026-06-05",
+            "latest_oil": 50.0,
+            "previous_oil": 40.0,
+            "oil_change": 10.0,
+            "latest_water": 20.0,
+            "previous_water": 15.0,
+            "water_change": 5.0,
+            "latest_gas": 45.0,
+            "previous_gas": 35.0,
+            "gas_change": 10.0,
+            "latest_runtime": 20.0,
+            "previous_runtime": 20.0,
+            "runtime_change": 0.0,
+        }
+    ]
+
+
+def test_analyze_well_tests_rolls_comparisons_up_by_battery_and_site():
+    client = make_well_test_client()
+
+    battery = client.analyze_well_tests(1, "latest_previous", "battery")
+    site = client.analyze_well_tests(1, "latest_previous", "site")
+
+    assert battery["groups"][0]["group_name"] == "Battery 6"
+    assert battery["groups"][0]["oil_sum_change"] == 10.0
+    assert site["groups"][0]["group_name"] == "Selected site"
+    assert site["groups"][0]["well_count"] == 1
+    assert site["groups"][0]["latest_oil_sum"] == 50.0
+
+
+def test_analyze_well_tests_summarizes_range_by_battery_and_scopes_site():
+    result = make_well_test_client().analyze_well_tests(
+        site_id=1,
+        analysis_mode="range_summary",
+        group_by="battery",
+        start_date="2026-05-01",
+        end_date="2026-06-05",
+    )
+
+    groups = {item["group_name"]: item for item in result["groups"]}
+    assert groups["Battery 6"]["test_count"] == 2
+    assert groups["Battery 6"]["oil_sum"] == 65.5
+    assert groups["Battery 6"]["oil_average"] == 32.75
+    assert groups["Battery 13"]["test_count"] == 1
+    assert "Other Site Battery" not in groups
 
 
 def test_search_readings_filters_lact_range_and_numeric_field():

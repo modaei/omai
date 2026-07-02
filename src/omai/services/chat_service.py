@@ -14,6 +14,10 @@ from omai.agents.producing_wells_graph import (
     prepare_well_population_dependency,
     try_answer_producing_well_question,
 )
+from omai.agents.well_test_graph import (
+    prepare_well_test_analysis_dependency,
+    try_answer_well_test_analysis,
+)
 from omai.clients.capability_client import CapabilityClient, UnavailableCapabilityClient
 from omai.clients.database_schema_client import (
     DatabaseSchemaClient,
@@ -145,16 +149,33 @@ def answer_chat(
     )
     if deterministic_answer is not None:
         return deterministic_answer
+    well_test_answer = try_answer_well_test_analysis(
+        tools=tools,
+        question=question,
+        history=history,
+    )
+    if well_test_answer is not None:
+        return well_test_answer
+    dependencies = []
     population_dependency = prepare_well_population_dependency(
         tools=tools,
         question=question,
     )
+    if population_dependency is not None:
+        dependencies.append(population_dependency)
+    well_test_dependency = prepare_well_test_analysis_dependency(
+        tools=tools,
+        question=question,
+        history=history,
+    )
+    if well_test_dependency is not None:
+        dependencies.append(well_test_dependency)
     agent_tools = tools
     authoritative_context = None
-    if population_dependency is not None:
-        authoritative_context = population_dependency["context"]
-        population_tool_name = population_dependency["tool_name"]
-        agent_tools = [tool for tool in tools if tool.name != population_tool_name]
+    if dependencies:
+        authoritative_context = "\n".join(item["context"] for item in dependencies)
+        used_tool_names = {item["tool_name"] for item in dependencies}
+        agent_tools = [tool for tool in tools if tool.name not in used_tool_names]
     model = build_model(
         api_key=settings.llm_api_key,
         model=settings.llm_model,
@@ -170,12 +191,18 @@ def answer_chat(
         question=question,
         authoritative_context=authoritative_context,
     )
-    if population_dependency is None:
+    if not dependencies:
         return answer, traces, stats
+    dependency_traces = [
+        trace for dependency in dependencies for trace in dependency["traces"]
+    ]
+    combined_stats = stats
+    for dependency in reversed(dependencies):
+        combined_stats = _merge_chat_stats(dependency["stats"], combined_stats)
     return (
         answer,
-        [*population_dependency["traces"], *traces],
-        _merge_chat_stats(population_dependency["stats"], stats),
+        [*dependency_traces, *traces],
+        combined_stats,
     )
 
 
