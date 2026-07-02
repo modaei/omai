@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+
+from langchain_core.tools import BaseTool
+from langchain_openai import ChatOpenAI
 
 from omai.agents.chat_agent import (
     answer_chat_question,
@@ -48,6 +52,15 @@ from omai.tools.work_order_tools import build_work_order_tools
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class ChatRuntime:
+    """Resolved model, tools, and display context shared by chat workflows."""
+
+    model: ChatOpenAI
+    tools: list[BaseTool]
+    site_name: str | None
+
+
 def answer_chat(
     settings: Settings,
     site_id: int,
@@ -56,6 +69,24 @@ def answer_chat(
     question: str,
     response_mode: str = "fast",
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+    runtime = build_chat_runtime(settings, site_id, site_name, response_mode)
+    return answer_chat_question(
+        model=runtime.model,
+        tools=runtime.tools,
+        site_id=site_id,
+        site_name=runtime.site_name,
+        history=history,
+        question=question,
+    )
+
+
+def build_chat_runtime(
+    settings: Settings,
+    site_id: int,
+    site_name: str | None = None,
+    response_mode: str = "fast",
+) -> ChatRuntime:
+    """Build the common model and domain tools for chat and investigations."""
     settings.validate()
     resolved_site_name = site_name or _site_name_from_db(settings, site_id)
 
@@ -141,13 +172,10 @@ def answer_chat(
         base_url=settings.llm_base_url,
         reasoning_effort=reasoning_effort_for_response_mode(response_mode),
     )
-    return answer_chat_question(
+    return ChatRuntime(
         model=model,
         tools=tools,
-        site_id=site_id,
         site_name=resolved_site_name,
-        history=history,
-        question=question,
     )
 
 

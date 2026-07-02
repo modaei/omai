@@ -7,9 +7,11 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine, text
 
 from omai.api.app import create_app, is_allowed_client_host
-from omai.api.schemas import ChatRequest
+from omai.api.schemas import ChatRequest, InvestigationIdentity
 from omai.config.settings import Settings
+from omai.investigations.service import InvestigationResult
 from omai.repositories.conversation_repository import ConversationRepository
+from omai.repositories.investigation_repository import InvestigationRepository
 from omai.services.domain_guard import OUT_OF_DOMAIN_RESPONSE
 
 
@@ -127,6 +129,19 @@ def failing_chat_handler(settings, site_id, site_name, history, question, respon
     raise AssertionError("chat handler should not be called")
 
 
+def fake_investigation_handler(
+    settings,
+    job,
+    conversation,
+    investigations,
+    conversations,
+):
+    answer = "Battery 6 production decreased because affected wells were shut down."
+    message_id = conversations.append_message(conversation, "assistant", answer)
+    investigations.complete(job.id, message_id)
+    return InvestigationResult(answer=answer, assistant_message_id=message_id)
+
+
 def make_conversation_repository() -> ConversationRepository:
     engine = create_engine("sqlite:///:memory:")
     with engine.begin() as connection:
@@ -140,6 +155,32 @@ def make_conversation_repository() -> ConversationRepository:
                     site_id INTEGER NOT NULL,
                     title VARCHAR(255),
                     expires_at DATETIME,
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE ai_investigations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    uuid CHAR(36) NOT NULL UNIQUE,
+                    ai_conversation_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    site_id INTEGER NOT NULL,
+                    user_message_id INTEGER NOT NULL,
+                    assistant_message_id INTEGER,
+                    status VARCHAR(20) NOT NULL,
+                    stage VARCHAR(100) NOT NULL,
+                    progress_percent INTEGER NOT NULL,
+                    response_mode VARCHAR(32) NOT NULL,
+                    normalized_request TEXT,
+                    error TEXT,
+                    started_at DATETIME,
+                    completed_at DATETIME,
+                    cancel_requested_at DATETIME,
                     created_at DATETIME,
                     updated_at DATETIME
                 )
@@ -399,6 +440,136 @@ def test_chat_endpoint_continues_existing_conversation():
     assert "What about June?" in second.answer
     conversation = repository.get(second.conversation_id, user_id=9, site_id=4)
     assert len(repository.load_history(conversation)) == 4
+
+
+def test_causal_question_runs_synchronous_site_scoped_investigation():
+    repository = make_conversation_repository()
+    investigations = InvestigationRepository(repository.engine)
+    app = create_app(
+        settings=make_settings(),
+        chat_handler=failing_chat_handler,
+        conversation_repository=repository,
+        investigation_repository=investigations,
+        investigation_handler=fake_investigation_handler,
+    )
+    chat = route_endpoint(app, "/chat", "POST")
+    investigation_id = "77777777-7777-4777-8777-777777777777"
+
+    response = chat(
+        ChatRequest.model_validate(
+            {
+                "message": "Why did Battery 6 production decrease last week?",
+                "user_id": 9,
+                "site_id": 4,
+                "investigation_id": investigation_id,
+            }
+        )
+    )
+
+    assert response.answer == (
+        "Battery 6 production decreased because affected wells were shut down."
+    )
+    assert response.assistant_message_id is not None
+    assert response.investigation_id == investigation_id
+    assert response.status == "completed"
+    conversation = repository.get(response.conversation_id, 9, 4)
+    assert repository.load_history(conversation) == [
+        {
+            "role": "user",
+            "content": "Why did Battery 6 production decrease last week?",
+        },
+        {"role": "assistant", "content": response.answer},
+    ]
+
+    show = route_endpoint(app, "/investigations/{investigation_id}", "GET")
+    status = show(response.investigation_id, user_id=9, site_id=4)
+    assert status.investigation_id == response.investigation_id
+    assert status.conversation_id == response.conversation_id
+    assert status.status == "completed"
+
+    with pytest.raises(HTTPException) as exc:
+        show(response.investigation_id, user_id=9, site_id=5)
+    assert exc.value.status_code == 404
+
+
+
+def test_investigation_repository_tracks_synchronous_progress_and_result():
+    conversations = make_conversation_repository()
+    investigations = InvestigationRepository(conversations.engine)
+    conversation = conversations.create(user_id=9, site_id=4)
+    user_message_id = conversations.append_message(
+        conversation,
+        "user",
+        "Why did water injection decrease?",
+    )
+    running = investigations.create(
+        conversation_id=conversation.id,
+        user_id=9,
+        site_id=4,
+        user_message_id=user_message_id,
+        question="Why did water injection decrease?",
+        response_mode="intelligent",
+    )
+
+    assert running.status == "running"
+    investigations.update_progress(
+        running.id,
+        "checking_reports_and_allocation",
+        40,
+        {"metric": "water injection"},
+    )
+    refreshed = investigations.get(running.uuid, 9, 4)
+    assert refreshed.stage == "checking_reports_and_allocation"
+    assert refreshed.progress_percent == 40
+
+    assistant_message_id = conversations.append_message(
+        conversation,
+        "assistant",
+        "Water injection decreased because two injection wells were offline.",
+    )
+    investigations.complete(running.id, assistant_message_id)
+    completed = investigations.get(running.uuid, 9, 4)
+    assert completed.status == "completed"
+    assert completed.answer == (
+        "Water injection decreased because two injection wells were offline."
+    )
+
+
+def test_running_investigation_can_be_cancelled_by_its_owner():
+    conversations = make_conversation_repository()
+    investigations = InvestigationRepository(conversations.engine)
+    conversation = conversations.create(user_id=9, site_id=4)
+    user_message_id = conversations.append_message(
+        conversation,
+        "user",
+        "Investigate Battery 6.",
+    )
+    job = investigations.create(
+        conversation_id=conversation.id,
+        user_id=9,
+        site_id=4,
+        user_message_id=user_message_id,
+        question="Investigate Battery 6.",
+        response_mode="fast",
+    )
+    app = create_app(
+        settings=make_settings(),
+        conversation_repository=conversations,
+        investigation_repository=investigations,
+    )
+    cancel = route_endpoint(
+        app,
+        "/investigations/{investigation_id}/cancel",
+        "POST",
+    )
+
+    response = cancel(
+        job.uuid,
+        InvestigationIdentity(user_id=9, site_id=4),
+    )
+
+    assert response.status == "cancelled"
+    assert investigations.cancel_requested(job.id)
 
 
 def test_chat_endpoint_forwards_response_mode_to_handler():

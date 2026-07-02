@@ -9,8 +9,17 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from omai.api.schemas import ChatRequest, ChatResponse
+from omai.api.schemas import (
+    ChatRequest,
+    ChatResponse,
+    InvestigationIdentity,
+    InvestigationStatusResponse,
+)
+from omai.investigations.router import is_investigation_request
+from omai.investigations.service import InvestigationResult, run_investigation
+from omai.investigations.workflow import InvestigationCancelled
 from omai.repositories.conversation_repository import (
+    Conversation,
     ConversationNotFoundError,
     ConversationRepository,
 )
@@ -18,6 +27,11 @@ from omai.agents.chat_agent import reasoning_effort_for_response_mode
 from omai.repositories.daily_usage_repository import (
     DailyUsageLimitExceeded,
     DailyUsageRepository,
+)
+from omai.repositories.investigation_repository import (
+    Investigation,
+    InvestigationNotFoundError,
+    InvestigationRepository,
 )
 from omai.config.logging import configure_logging
 from omai.config.settings import Settings
@@ -34,6 +48,16 @@ ChatHandler = Callable[
     [Settings, int, str | None, list[dict[str, str]], str, str],
     tuple[str, list[dict[str, Any]], dict[str, Any]],
 ]
+InvestigationHandler = Callable[
+    [
+        Settings,
+        Investigation,
+        Conversation,
+        InvestigationRepository,
+        ConversationRepository,
+    ],
+    InvestigationResult,
+]
 
 
 def create_app(
@@ -41,6 +65,8 @@ def create_app(
     chat_handler: ChatHandler = answer_chat,
     conversation_repository: ConversationRepository | None = None,
     daily_usage_repository: DailyUsageRepository | None = None,
+    investigation_repository: InvestigationRepository | None = None,
+    investigation_handler: InvestigationHandler = run_investigation,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
     configure_logging(settings.log_level)
@@ -49,7 +75,20 @@ def create_app(
     app.state.chat_handler = chat_handler
     app.state.conversation_repository = conversation_repository
     app.state.daily_usage_repository = daily_usage_repository
+    app.state.investigation_repository = investigation_repository
+    app.state.investigation_handler = investigation_handler
     app.state.chat_slots = BoundedSemaphore(settings.omai_max_concurrent)
+
+    def investigations_for(engine=None) -> InvestigationRepository:
+        repository = app.state.investigation_repository
+        if repository is None:
+            repository = (
+                InvestigationRepository(engine)
+                if engine is not None
+                else InvestigationRepository.from_settings(settings)
+            )
+            app.state.investigation_repository = repository
+        return repository
 
     @app.middleware("http")
     async def allow_only_localhost(request: Request, call_next):
@@ -116,6 +155,48 @@ def create_app(
                     answer=OUT_OF_DOMAIN_RESPONSE,
                     assistant_message_id=assistant_message_id,
                 )
+            if is_investigation_request(payload.message) and is_in_domain(
+                payload.message, history
+            ):
+                user_message_id = repository.append_message(
+                    conversation, "user", payload.message
+                )
+                investigations = investigations_for(repository.engine)
+                investigation = investigations.create(
+                    conversation_id=conversation.id,
+                    user_id=payload.user_id,
+                    site_id=payload.site_id,
+                    user_message_id=user_message_id,
+                    question=payload.message,
+                    response_mode=payload.response_mode,
+                    investigation_id=payload.investigation_id_text(),
+                )
+                try:
+                    result = app.state.investigation_handler(
+                        settings,
+                        investigation,
+                        conversation,
+                        investigations,
+                        repository,
+                    )
+                except InvestigationCancelled:
+                    return ChatResponse(
+                        conversation_id=conversation.uuid,
+                        answer="Investigation cancelled.",
+                        investigation_id=investigation.uuid,
+                        status="cancelled",
+                        stage="cancelled",
+                        progress_percent=100,
+                    )
+                return ChatResponse(
+                    conversation_id=conversation.uuid,
+                    answer=result.answer,
+                    assistant_message_id=result.assistant_message_id,
+                    investigation_id=investigation.uuid,
+                    status="completed",
+                    stage="completed",
+                    progress_percent=100,
+                )
             answer, tool_calls, stats = app.state.chat_handler(
                 settings,
                 payload.site_id,
@@ -157,6 +238,42 @@ def create_app(
             raise HTTPException(status_code=503, detail="Chat request failed") from exc
         finally:
             app.state.chat_slots.release()
+
+    @app.get(
+        "/investigations/{investigation_id}",
+        response_model=InvestigationStatusResponse,
+    )
+    def investigation_status(
+        investigation_id: str,
+        user_id: int,
+        site_id: int,
+    ) -> InvestigationStatusResponse:
+        try:
+            repository = investigations_for()
+            return _investigation_response(
+                repository.get(investigation_id, user_id, site_id)
+            )
+        except InvestigationNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post(
+        "/investigations/{investigation_id}/cancel",
+        response_model=InvestigationStatusResponse,
+    )
+    def cancel_investigation(
+        investigation_id: str,
+        payload: InvestigationIdentity,
+    ) -> InvestigationStatusResponse:
+        try:
+            repository = investigations_for()
+            job = repository.request_cancel(
+                investigation_id,
+                payload.user_id,
+                payload.site_id,
+            )
+            return _investigation_response(job)
+        except InvestigationNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     return app
 
@@ -216,6 +333,23 @@ def _sql_query_audit(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
             }
         )
     return audit_records
+
+
+def _investigation_response(job: Investigation) -> InvestigationStatusResponse:
+    return InvestigationStatusResponse(
+        investigation_id=job.uuid,
+        conversation_id=job.conversation_uuid,
+        status=job.status,
+        stage=job.stage,
+        progress_percent=job.progress_percent,
+        answer=job.answer,
+        assistant_message_id=job.assistant_message_id,
+        error=(
+            "The operational investigation could not be completed."
+            if job.status == "failed"
+            else None
+        ),
+    )
 
 
 app = create_app()

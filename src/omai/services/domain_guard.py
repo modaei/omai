@@ -98,6 +98,7 @@ FOLLOW_UP_TERMS = {
     "for",
     "from",
     "graph",
+    "investigate",
     "june",
     "last",
     "may",
@@ -115,6 +116,7 @@ FOLLOW_UP_TERMS = {
     "tomorrow",
     "trend",
     "week",
+    "why",
     "yesterday",
 }
 

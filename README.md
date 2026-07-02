@@ -29,6 +29,9 @@ Omai is responsible for:
 - Running tightly validated read-only SQL against allowlisted operational
   tables when the specific report, reading, shutdown, timeline, work-order, or
   capability tools are not the best fit for the question.
+- Running comprehensive synchronous investigations for causal questions by
+  correlating reports, allocation, readings, shutdowns, alarms, work orders,
+  missing data, and operational-text context through LangGraph.
 - Answering questions about Ometrics capabilities using curated capability
   documents in `knowledge/capabilities`.
 - Searching operational text with RAG. Source records are read from MySQL during
@@ -60,20 +63,29 @@ domain tools will be unavailable or return errors.
 - `FastAPI` serves `/health` and `/chat` for Ometrics. The API accepts only
   localhost clients.
 - `LangChain` handles model calls and tool calling.
+- `LangGraph` orchestrates staged multi-source operational investigations.
+- Investigations use one structured planning model call, execute relevant domain
+  tools concurrently, and use one final model call to correlate the evidence.
 - `omreports` remains the source for calculated report results.
 - Ometrics MySQL remains the source of operational records.
 - Postgres + pgvector stores the derived operational-text vector index.
 - Conversation messages are stored in the Ometrics database through Omai's
   conversation repository.
 
-The public `/chat` response contains only:
+Normal `/chat` responses contain:
 
 ```json
 {
   "conversation_id": "uuid",
-  "answer": "assistant response"
+  "answer": "assistant response",
+  "assistant_message_id": 123
 }
 ```
+
+For a causal question, `/chat` executes the investigation synchronously and also
+returns its ID and final status. While that request is running, Ometrics polls
+the localhost-only investigation status endpoint to display the current graph
+stage and progress percentage.
 
 Tool calls and timing statistics are internal and are not returned by the API.
 RAG source snippets are also not returned by the API. The local Streamlit UI can
@@ -215,6 +227,11 @@ cd /home/mo/Projects/omai
 source .venv/bin/activate
 python3 -m uvicorn omai.api.app:app --host 127.0.0.1 --port 50009
 ```
+
+Questions asking why something changed, what caused a condition, or explicitly
+requesting an investigation are routed automatically through the synchronous
+LangGraph workflow. Direct factual questions continue through the normal chat
+path.
 
 Process queued Omai RAG index events periodically:
 
