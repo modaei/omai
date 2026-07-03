@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import date
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,7 @@ from omai.clients.database_schema_client import (
     UnavailableDatabaseSchemaClient,
 )
 from omai.clients.data_point_client import DataPointClient, UnavailableDataPointClient
+from omai.clients.data_entry_client import DataEntryClient
 from omai.clients.onrr_client import OnrrClient, UnavailableOnrrClient
 from omai.clients.reading_client import ReadingClient, UnavailableReadingClient
 from omai.clients.report_client import ReportClient
@@ -47,6 +49,7 @@ from omai.rag.vector_store import (
 from omai.tools.capability_tools import build_capability_tools
 from omai.tools.database_schema_tools import build_database_schema_tools
 from omai.tools.data_point_tools import build_data_point_tools
+from omai.tools.data_entry_tools import build_data_entry_tools
 from omai.tools.onrr_tools import build_onrr_tools
 from omai.tools.operational_context_tools import build_operational_context_tools
 from omai.tools.reading_tools import build_reading_tools
@@ -66,6 +69,7 @@ def answer_chat(
     history: list[dict[str, str]],
     question: str,
     response_mode: str = "fast",
+    current_date: str | None = None,
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     settings.validate()
     resolved_site_name = site_name or _site_name_from_db(settings, site_id)
@@ -116,7 +120,13 @@ def answer_chat(
         )
     except Exception as exc:
         database_schema_client = UnavailableDatabaseSchemaClient(str(exc))
+    data_entry_client = DataEntryClient.from_settings(settings)
     tools = [
+        *build_data_entry_tools(
+            data_entry_client,
+            site_id,
+            current_date or date.today().isoformat(),
+        ),
         *build_capability_tools(capability_client),
         *build_database_schema_tools(
             database_schema_client,

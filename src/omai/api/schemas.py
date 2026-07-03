@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 from uuid import UUID
+from datetime import date
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -14,6 +15,7 @@ class ChatRequest(BaseModel):
     user_id: int = Field(gt=0)
     site_id: int = Field(gt=0)
     response_mode: Literal["fast", "intelligent"] = "fast"
+    current_date: date | None = None
 
     @field_validator("message")
     @classmethod
@@ -33,3 +35,4 @@ class ChatResponse(BaseModel):
     conversation_id: str
     answer: str
     assistant_message_id: int
+    data_entry_intent: dict | None = None

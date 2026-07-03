@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 from collections.abc import Callable
 from datetime import datetime, timezone
 from threading import BoundedSemaphore
@@ -116,14 +117,17 @@ def create_app(
                     answer=OUT_OF_DOMAIN_RESPONSE,
                     assistant_message_id=assistant_message_id,
                 )
-            answer, tool_calls, stats = app.state.chat_handler(
-                settings,
-                payload.site_id,
-                None,
-                history,
-                payload.message,
+            handler_args = (
+                settings, payload.site_id, None, history, payload.message,
                 payload.response_mode,
             )
+            if app.state.chat_handler is answer_chat:
+                answer, tool_calls, stats = app.state.chat_handler(
+                    *handler_args,
+                    current_date=(payload.current_date.isoformat() if payload.current_date else None),
+                )
+            else:
+                answer, tool_calls, stats = app.state.chat_handler(*handler_args)
             repository.append_message(conversation, "user", payload.message)
             assistant_message_id = repository.append_message(
                 conversation,
@@ -136,6 +140,7 @@ def create_app(
                 conversation_id=conversation.uuid,
                 answer=answer,
                 assistant_message_id=assistant_message_id,
+                data_entry_intent=_data_entry_intent(tool_calls),
             )
         except ConversationNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -192,6 +197,21 @@ def _assistant_info(
         "rag_documents": extract_rag_sources(tool_calls),
         "sql_queries": _sql_query_audit(tool_calls),
     }
+
+
+def _data_entry_intent(tool_calls: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Forward only successful navigation intents; warnings remain chat responses."""
+
+    for call in reversed(tool_calls):
+        if call.get("tool") != "prepare_data_entry":
+            continue
+        try:
+            result = json.loads(str(call.get("result", "")))
+        except (TypeError, ValueError):
+            return None
+        if result.get("status") == "ready":
+            return result
+    return None
 
 
 def _sql_query_audit(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
