@@ -36,3 +36,4 @@ class ChatResponse(BaseModel):
     answer: str
     assistant_message_id: int
     data_entry_intent: dict | None = None
+    view_intent: dict | None = None

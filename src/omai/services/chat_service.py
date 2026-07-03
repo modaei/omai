@@ -41,6 +41,7 @@ from omai.clients.well_filter_client import (
     WellFilterClient,
 )
 from omai.clients.work_order_client import UnavailableWorkOrderClient, WorkOrderClient
+from omai.clients.view_navigation_client import ViewNavigationClient
 from omai.config.settings import Settings
 from omai.rag.vector_store import (
     UnavailableOperationalContextStore,
@@ -57,6 +58,7 @@ from omai.tools.report_tools import build_report_tools
 from omai.tools.shutdown_tools import build_shutdown_tools
 from omai.tools.well_timeline_tools import build_well_timeline_tools
 from omai.tools.work_order_tools import build_work_order_tools
+from omai.tools.view_navigation_tools import build_view_navigation_tools
 
 
 logger = logging.getLogger(__name__)
@@ -121,9 +123,15 @@ def answer_chat(
     except Exception as exc:
         database_schema_client = UnavailableDatabaseSchemaClient(str(exc))
     data_entry_client = DataEntryClient.from_settings(settings)
+    view_navigation_client = ViewNavigationClient.from_settings(settings)
     tools = [
         *build_data_entry_tools(
             data_entry_client,
+            site_id,
+            current_date or date.today().isoformat(),
+        ),
+        *build_view_navigation_tools(
+            view_navigation_client,
             site_id,
             current_date or date.today().isoformat(),
         ),

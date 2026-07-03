@@ -141,6 +141,7 @@ def create_app(
                 answer=answer,
                 assistant_message_id=assistant_message_id,
                 data_entry_intent=_data_entry_intent(tool_calls),
+                view_intent=_view_intent(payload.message, tool_calls),
             )
         except ConversationNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -211,6 +212,43 @@ def _data_entry_intent(tool_calls: list[dict[str, Any]]) -> dict[str, Any] | Non
             return None
         if result.get("status") == "ready":
             return result
+    return None
+
+
+def _view_intent(message: str, tool_calls: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Forward ready view intents only for explicit 'show me' requests."""
+    if not message.strip().lower().startswith("show me"):
+        return None
+    for call in reversed(tool_calls):
+        if call.get("tool") == "prepare_data_view":
+            try:
+                result = json.loads(str(call.get("result", "")))
+            except (TypeError, ValueError):
+                return None
+            if result.get("status") == "ready":
+                return result
+        if call.get("tool") == "run_report":
+            arguments = call.get("arguments", {})
+            view_type = {
+                "gas_flared": "flared_vent",
+                "gas_vented": "flared_vent",
+                "gas_flared_vented": "flared_vent",
+                "gas_fuel": "fuel_gas",
+            }.get(arguments.get("report_name"), arguments.get("report_name"))
+            if view_type in {
+                "oil_sale", "oil_production", "injection_allocation",
+                "production_allocation", "water_production", "water_transfer",
+                "flared_vent", "fuel_gas", "battery", "water_injection",
+            } and arguments.get("start_date") and arguments.get("end_date"):
+                return {
+                    "status": "ready",
+                    "destination": "report",
+                    "view_type": view_type,
+                    "filters": {
+                        "startDate": arguments["start_date"],
+                        "endDate": arguments["end_date"],
+                    },
+                }
     return None
 
 
