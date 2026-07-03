@@ -12,6 +12,7 @@ from omai.agents.chat_agent import (
     reasoning_effort_for_response_mode,
 )
 from omai.agents.data_point_graph import try_answer_data_point_value_question
+from omai.agents.navigation_router import try_answer_navigation_request
 from omai.agents.producing_wells_graph import (
     prepare_well_population_dependency,
     try_answer_producing_well_question,
@@ -169,6 +170,13 @@ def answer_chat(
             site_id,
         ),
     ]
+    navigation_answer = try_answer_navigation_request(
+        tools=tools,
+        question=question,
+        today=date.fromisoformat(current_date) if current_date else None,
+    )
+    if navigation_answer is not None:
+        return navigation_answer
     deterministic_answer = try_answer_producing_well_question(
         tools=tools,
         question=question,
