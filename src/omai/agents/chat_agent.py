@@ -10,6 +10,9 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 
+from omai.agents.producing_wells_graph import (
+    is_producing_well_test_coverage_request,
+)
 from omai.services.domain_guard import OUT_OF_DOMAIN_RESPONSE
 
 
@@ -179,7 +182,11 @@ def answer_chat_question(
                 "per well, per battery, or for the selected site. Use "
                 "analysis_mode='latest_previous' for latest-versus-prior-test "
                 "comparisons and analysis_mode='range_summary' for grouped counts, "
-                "sums, averages, minima, and maxima over a date range. "
+                "sums, averages, minima, and maxima over a date range. Use "
+                "analysis_mode='recent_tests' with test_count for requests to compare "
+                "the latest N tests per well. Use analysis_mode='range_sequence' for "
+                "requests to compare all tests in a date range per well; each test is "
+                "compared with that well's preceding test inside the selected range. "
                 "Use ONRR tools for questions asking what an ONRR code means, "
                 "whether a well is active/producing/injection by ONRR code, or "
                 "for ONRR-only well counts. ONRR code status must be resolved as "
@@ -350,6 +357,10 @@ def answer_chat_question(
     force_final_response = False
     seen_sql_drafts: set[str] = set()
     failed_sql_attempts = 0
+    block_coverage_sql = is_producing_well_test_coverage_request(
+        question,
+        history,
+    )
 
     for _ in range(MAX_TOOL_ROUNDS):
         model_started_at = perf_counter()
@@ -371,6 +382,23 @@ def answer_chat_question(
             tool = tool_map.get(tool_name)
             if tool is None:
                 result = f"Unknown tool: {tool_name}"
+            elif block_coverage_sql and tool_name in {
+                "draft_operational_sql",
+                "execute_operational_sql",
+            }:
+                result = json.dumps(
+                    {
+                        "ok": False,
+                        "executed": False,
+                        "error": (
+                            "Operational SQL cannot classify producing-well test "
+                            "coverage. Use get_producing_wells and an unfiltered "
+                            "search_well_tests result for the same date range."
+                        ),
+                    },
+                    separators=(",", ":"),
+                )
+                force_final_response = True
             elif _is_repeated_sql_draft(tool_name, arguments, seen_sql_drafts):
                 # Repeated SQL drafts were a common source of tool-limit failures.
                 # Return a structured failure so the model can stop or use prior

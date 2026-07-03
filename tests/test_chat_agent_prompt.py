@@ -335,6 +335,29 @@ def test_successful_sql_execution_forces_final_answer_without_more_tools():
     assert model.final_messages is not None
 
 
+def test_producing_well_test_coverage_sql_is_blocked_at_runtime():
+    model = FakeSqlStopModel()
+
+    answer, traces, stats = answer_chat_question(
+        model=model,
+        tools=[execute_operational_sql],
+        site_id=1,
+        site_name="HARTZOG DRAW",
+        history=[],
+        question=(
+            "Which active oil producing wells did not have at least one test "
+            "in the last 30 days?"
+        ),
+    )
+
+    assert answer == "Final answer from SQL rows."
+    assert len(traces) == 1
+    assert traces[0]["tool"] == "execute_operational_sql"
+    assert "cannot classify producing-well test coverage" in traces[0]["result"]
+    assert '"executed":false' in traces[0]["result"]
+    assert stats["model_calls"] == 2
+
+
 def test_valid_sql_draft_is_auto_executed_without_more_tool_rounds():
     model = FakeSqlDraftAutoExecuteModel()
 

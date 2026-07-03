@@ -154,6 +154,7 @@ def answer_chat(
     deterministic_answer = try_answer_producing_well_question(
         tools=tools,
         question=question,
+        history=history,
     )
     if deterministic_answer is not None:
         return deterministic_answer

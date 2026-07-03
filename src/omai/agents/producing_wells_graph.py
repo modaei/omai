@@ -18,6 +18,7 @@ class ProducingWellGraphState(TypedDict, total=False):
     start_date: str
     end_date: str
     is_single_date: bool
+    output_mode: Literal["all", "list", "count"]
     producing_result: dict[str, Any]
     well_test_result: dict[str, Any]
     answer: str
@@ -54,6 +55,7 @@ def try_answer_producing_well_question(
     *,
     tools: list[BaseTool],
     question: str,
+    history: list[dict[str, str]] | None = None,
     today: date | None = None,
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any]] | None:
     """Run clear producing-well questions without an LLM routing call.
@@ -63,7 +65,7 @@ def try_answer_producing_well_question(
     Python. Questions that are not recognized confidently fall through to the
     general chat agent.
     """
-    route = _classify_request(question, today or date.today())
+    route = _classify_request(question, today or date.today(), history or [])
     if route is None:
         return None
 
@@ -209,6 +211,7 @@ def _build_graph(tool_map: dict[str, BaseTool]):
             if _well_test_display_name(item)
         }
         missing = sorted(producing_names - tested_names)
+        tested_producing_count = len(producing_names & tested_names)
         if not missing:
             return {
                 "answer": (
@@ -216,13 +219,15 @@ def _build_graph(tool_map: dict[str, BaseTool]):
                     f"day from {period} had a well test in that period."
                 )
             }
+        summary = (
+            f"For {period}, {len(missing)} of {len(producing_names)} wells that "
+            f"produced on at least one day had no well test. "
+            f"{tested_producing_count} producing wells had at least one test."
+        )
+        if state.get("output_mode") == "count":
+            return {"answer": summary}
         names = "\n".join(f"- {name}" for name in missing)
-        return {
-            "answer": (
-                f"{len(missing)} of {len(producing_names)} wells that produced on at "
-                f"least one day from {period} had no well test in that period:\n{names}"
-            )
-        }
+        return {"answer": f"{summary}\n\n{names}"}
 
     graph.add_node("fetch_producing_wells", fetch_producing_wells)
     graph.add_node("fetch_well_tests", fetch_well_tests)
@@ -231,9 +236,13 @@ def _build_graph(tool_map: dict[str, BaseTool]):
     graph.add_conditional_edges(
         "fetch_producing_wells",
         lambda state: (
-            "fetch_well_tests"
-            if state["intent"] == "well_test_coverage"
-            else "format_answer"
+            "format_answer"
+            if not state["producing_result"].get("ok", True)
+            else (
+                "fetch_well_tests"
+                if state["intent"] == "well_test_coverage"
+                else "format_answer"
+            )
         ),
     )
     graph.add_edge("fetch_well_tests", "format_answer")
@@ -256,13 +265,20 @@ def _invoke_json_tool(
     )
 
 
-def _classify_request(question: str, today: date) -> dict[str, Any] | None:
+def _classify_request(
+    question: str,
+    today: date,
+    history: list[dict[str, str]] | None = None,
+) -> dict[str, Any] | None:
     """Recognize only explicit producer count and producer test-coverage requests."""
     normalized = " ".join(question.lower().split())
     producer_terms = re.search(r"\b(producing wells?|oil producers?|active producers?)\b", normalized)
     if not producer_terms:
-        return None
-    has_well_test = bool(re.search(r"\bwell[ -]?tests?\b", normalized))
+        return _classify_coverage_follow_up(normalized, today, history or [])
+    has_well_test = bool(
+        re.search(r"\bwell[ -]?tests?\b", normalized)
+        or re.search(r"\btests?\b", normalized)
+    )
     coverage_terms = bool(
         re.search(r"\b(missing|without|did not|does not|no |coverage|at least one|all)\b", normalized)
     )
@@ -283,7 +299,79 @@ def _classify_request(question: str, today: date) -> dict[str, Any] | None:
         "start_date": start_date.isoformat(),
         "end_date": end_date.isoformat(),
         "is_single_date": start_date == end_date,
+        "output_mode": _coverage_output_mode(normalized),
     }
+
+
+def is_producing_well_test_coverage_request(
+    question: str,
+    history: list[dict[str, str]] | None = None,
+    today: date | None = None,
+) -> bool:
+    """Return whether a turn belongs to deterministic producing-test coverage."""
+    route = _classify_request(question, today or date.today(), history or [])
+    return bool(route and route.get("intent") == "well_test_coverage")
+
+
+def _classify_coverage_follow_up(
+    normalized: str,
+    today: date,
+    history: list[dict[str, str]],
+) -> dict[str, Any] | None:
+    """Apply a safe date/output-only follow-up to the latest coverage request."""
+    if not _is_safe_coverage_follow_up(normalized):
+        return None
+    anchor = _latest_coverage_anchor(history, today)
+    if anchor is None:
+        return None
+    replacement_range = _resolve_date_range(normalized, today)
+    if replacement_range is None:
+        bare_days = re.search(r"\b(\d{1,3})\s+days?\b", normalized)
+        if bare_days:
+            day_count = int(bare_days.group(1))
+            replacement_range = (today - timedelta(days=day_count - 1), today)
+    if replacement_range is not None:
+        anchor["start_date"] = replacement_range[0].isoformat()
+        anchor["end_date"] = replacement_range[1].isoformat()
+        anchor["is_single_date"] = replacement_range[0] == replacement_range[1]
+    anchor["output_mode"] = _coverage_output_mode(normalized, anchor["output_mode"])
+    return anchor
+
+
+def _latest_coverage_anchor(
+    history: list[dict[str, str]], today: date
+) -> dict[str, Any] | None:
+    """Find the latest complete user request establishing coverage semantics."""
+    for item in reversed(history[-10:]):
+        if item.get("role") != "user":
+            continue
+        route = _classify_request(str(item.get("content", "")), today, [])
+        if route and route.get("intent") == "well_test_coverage":
+            return dict(route)
+    return None
+
+
+def _is_safe_coverage_follow_up(normalized: str) -> bool:
+    """Allow only bounded date replacements and count/list refinements."""
+    if re.search(
+        r"\b(shutdowns?|alarms?|production|allocation|reports?|readings?|tanks?|flares?|injection)\b",
+        normalized,
+    ):
+        return False
+    return bool(
+        re.match(r"^(?:how|what)\s+about\b", normalized)
+        or re.match(r"^and\b", normalized)
+        or re.match(r"^use\b", normalized)
+        or re.match(r"^(?:show|list|count)\b", normalized)
+    )
+
+
+def _coverage_output_mode(normalized: str, default: str = "all") -> str:
+    if re.search(r"\b(count only|how many|number of)\b", normalized):
+        return "count"
+    if re.search(r"\b(list|show)\b", normalized):
+        return "list"
+    return default
 
 
 def _classify_population_dependency(
@@ -360,6 +448,12 @@ def _compact_population_result(tool_name: str, result: dict[str, Any]) -> dict[s
 
 def _resolve_date_range(text: str, today: date) -> tuple[date, date] | None:
     """Resolve common explicit dates without paying for a classifier model call."""
+    trailing_days = re.search(r"\b(?:last|past)\s+(\d{1,3})\s+days?\b", text)
+    if trailing_days:
+        day_count = int(trailing_days.group(1))
+        if day_count <= 0:
+            return None
+        return today - timedelta(days=day_count - 1), today
     if re.search(r"\btoday\b|\bnow\b", text):
         return today, today
     if re.search(r"\byesterday\b", text):

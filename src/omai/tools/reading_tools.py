@@ -121,10 +121,15 @@ class SearchWellTestsInput(BaseModel):
 
 
 class AnalyzeWellTestsInput(BaseModel):
-    analysis_mode: Literal["latest_previous", "range_summary"] = Field(
+    analysis_mode: Literal[
+        "latest_previous", "range_summary", "recent_tests", "range_sequence"
+    ] = Field(
         description=(
             "latest_previous compares each well's latest test with its immediately "
-            "previous test; range_summary aggregates tests in a date range."
+            "previous test; range_summary aggregates tests in a date range; "
+            "recent_tests compares the latest test_count tests within each well; "
+            "range_sequence compares every test in a date range with that well's "
+            "immediately preceding test in the same range."
         )
     )
     group_by: Literal["well", "battery", "site"] = Field(
@@ -149,6 +154,12 @@ class AnalyzeWellTestsInput(BaseModel):
     )
     battery_name: str | None = Field(
         default=None, description="Optional case-insensitive partial battery name."
+    )
+    test_count: int | None = Field(
+        default=None,
+        ge=2,
+        le=10,
+        description="Number of latest tests per well; required for recent_tests only.",
     )
 
 
@@ -541,6 +552,7 @@ def build_reading_tools(
         end_date: str | None = None,
         well_name: str | None = None,
         battery_name: str | None = None,
+        test_count: int | None = None,
     ) -> str:
         """Compare or summarize well tests by well, battery, or selected site."""
         logger.info(
@@ -563,6 +575,7 @@ def build_reading_tools(
                         end_date=end_date,
                         well_name=well_name,
                         battery_name=battery_name,
+                        test_count=test_count,
                     ),
                 }
             )
@@ -892,7 +905,9 @@ def build_reading_tools(
             description=(
                 "Search well tests across a date range, optionally filtered by well "
                 "name and numeric oil, water, gas, or runtime thresholds. Use this "
-                "for questions like 'show all well tests between two dates with oil > 20'."
+                "for questions like 'show all well tests between two dates with oil > 20'. "
+                "For producing-well test coverage, search the complete range without "
+                "well_name so the caller can compare all tested wells."
             ),
             args_schema=SearchWellTestsInput,
         ),
@@ -904,7 +919,11 @@ def build_reading_tools(
                 "Use latest_previous for each well's latest test versus its prior "
                 "test, optionally rolled up by battery/site. Use range_summary for "
                 "grouped test counts, sums, averages, minima, and maxima over a date "
-                "range. Prefer this tool over operational SQL for well-test analysis."
+                "range. Use recent_tests to compare the latest requested number of "
+                "tests chronologically within each well. Use range_sequence to "
+                "compare every test in a date range with that well's preceding test "
+                "inside that range. Sequence modes require group_by=well. "
+                "Prefer this tool over operational SQL for well-test analysis."
             ),
             args_schema=AnalyzeWellTestsInput,
         ),

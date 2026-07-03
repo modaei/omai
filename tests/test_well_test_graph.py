@@ -17,6 +17,7 @@ class AnalysisArguments(BaseModel):
     end_date: str | None = None
     well_name: str | None = None
     battery_name: str | None = None
+    test_count: int | None = None
 
 
 def make_tool(calls, *, fail=False):
@@ -43,6 +44,49 @@ def make_tool(calls, *, fail=False):
                             "water_average": 20,
                             "gas_sum": 8,
                             "gas_average": 2,
+                        }
+                    ],
+                }
+            )
+        if arguments["analysis_mode"] in {"recent_tests", "range_sequence"}:
+            return json.dumps(
+                {
+                    "ok": True,
+                    "analysis_mode": arguments["analysis_mode"],
+                    "group_by": "well",
+                    "start_date": arguments.get("start_date"),
+                    "end_date": arguments.get("end_date"),
+                    "requested_test_count": arguments.get("test_count"),
+                    "truncated": False,
+                    "groups": [
+                        {
+                            "group_name": "HDU 4048",
+                            "well_name": "HDU 4048",
+                            "test_count": 2,
+                            "tests": [
+                                {
+                                    "date": "2026-06-01",
+                                    "oil": 10,
+                                    "water": 20,
+                                    "gas": 2,
+                                    "runtime": 24,
+                                    "oil_change": None,
+                                    "water_change": None,
+                                    "gas_change": None,
+                                    "runtime_change": None,
+                                },
+                                {
+                                    "date": "2026-06-15",
+                                    "oil": 12,
+                                    "water": 18,
+                                    "gas": 3,
+                                    "runtime": 20,
+                                    "oil_change": 2,
+                                    "water_change": -2,
+                                    "gas_change": 1,
+                                    "runtime_change": -4,
+                                },
+                            ],
                         }
                     ],
                 }
@@ -185,3 +229,40 @@ def test_raw_well_test_search_falls_through():
 
     assert result is None
     assert calls == []
+
+
+def test_latest_three_tests_by_battery_routes_without_model():
+    calls = []
+    result = try_answer_well_test_analysis(
+        tools=[make_tool(calls)],
+        question="For wells in battery 6 compare last three well tests.",
+        history=[],
+        today=date(2026, 7, 2),
+    )
+
+    assert result is not None
+    assert calls[0]["analysis_mode"] == "recent_tests"
+    assert calls[0]["group_by"] == "well"
+    assert calls[0]["test_count"] == 3
+    assert calls[0]["battery_name"] == "Battery 6"
+    assert "baseline (no preceding selected test)" in result[0]
+    assert "oil 12 bbl (+2)" in result[0]
+    assert result[2]["model_calls"] == 0
+
+
+def test_compare_tests_in_month_routes_to_per_well_range_sequence():
+    calls = []
+    result = try_answer_well_test_analysis(
+        tools=[make_tool(calls)],
+        question="For wells in battery 6 compare well tests in June 2026.",
+        history=[],
+        today=date(2026, 7, 2),
+    )
+
+    assert result is not None
+    assert calls[0]["analysis_mode"] == "range_sequence"
+    assert calls[0]["group_by"] == "well"
+    assert calls[0]["start_date"] == "2026-06-01"
+    assert calls[0]["end_date"] == "2026-06-30"
+    assert calls[0]["battery_name"] == "Battery 6"
+    assert "06/01/2026 through 06/30/2026" in result[0]

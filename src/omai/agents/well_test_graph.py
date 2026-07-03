@@ -16,7 +16,9 @@ class WellTestAnalysisState(TypedDict, total=False):
     """State for deterministic well-test analysis and dependency prefetching."""
 
     question: str
-    analysis_mode: Literal["latest_previous", "range_summary"]
+    analysis_mode: Literal[
+        "latest_previous", "range_summary", "recent_tests", "range_sequence"
+    ]
     group_by: Literal["well", "battery", "site"]
     arguments: dict[str, Any]
     result: dict[str, Any]
@@ -142,13 +144,54 @@ def _classify_well_test_analysis(
         return None
 
     contextual = f"{prior} {current}".strip() if is_follow_up else current
+    number_words = {
+        "two": 2,
+        "three": 3,
+        "four": 4,
+        "five": 5,
+        "six": 6,
+        "seven": 7,
+        "eight": 8,
+        "nine": 9,
+        "ten": 10,
+    }
+    recent_match = re.search(
+        r"\b(?:last|latest|most recent)\s+"
+        r"(?P<count>\d+|two|three|four|five|six|seven|eight|nine|ten)\s+"
+        r"(?:well[ -]?)?tests?\b",
+        contextual,
+    )
+    recent_test_count = None
+    if recent_match:
+        raw_count = recent_match.group("count")
+        recent_test_count = number_words.get(
+            raw_count,
+            int(raw_count) if raw_count.isdigit() else 0,
+        )
+        if not 2 <= recent_test_count <= 10:
+            return None
+
+    resolved_dates = _resolve_date_range(contextual, today)
+    explicitly_previous = bool(
+        re.search(r"\b(previous|previus|prior|before)\b", contextual)
+    )
+    range_sequence = bool(
+        recent_test_count is None
+        and resolved_dates
+        and not explicitly_previous
+        and re.search(r"\bcompar(?:e|ing|ison)\b", contextual)
+    )
     latest_previous = bool(
+        recent_test_count is None
+        and not range_sequence
+        and (
         re.search(
             r"\b(latest|last|most recent)\b.*\b(previous|previus|prior|before|last test)\b",
             contextual,
         )
         or re.search(r"\bcompare\b.*\b(previous|previus|prior|before)\b", contextual)
         or re.search(r"\btest one before\b", contextual)
+        )
     )
     range_summary = bool(
         re.search(
@@ -156,10 +199,22 @@ def _classify_well_test_analysis(
             contextual,
         )
     )
-    if not latest_previous and not range_summary:
+    if (
+        not recent_test_count
+        and not range_sequence
+        and not latest_previous
+        and not range_summary
+    ):
         return None
 
-    analysis_mode = "latest_previous" if latest_previous else "range_summary"
+    if recent_test_count:
+        analysis_mode = "recent_tests"
+    elif range_sequence:
+        analysis_mode = "range_sequence"
+    elif latest_previous:
+        analysis_mode = "latest_previous"
+    else:
+        analysis_mode = "range_summary"
     if re.search(r"\b(?:by|per)\s+batter(?:y|ies)\b|\bbattery breakdown\b", contextual):
         group_by = "battery"
     elif re.search(r"\b(?:by|per|each)\s+well\b|\bfor each well\b", contextual):
@@ -167,22 +222,34 @@ def _classify_well_test_analysis(
     elif re.search(r"\b(?:whole|entire|selected) site\b|\b(?:by|per) site\b", contextual):
         group_by = "site"
     else:
-        group_by = "well" if analysis_mode == "latest_previous" else "site"
+        group_by = (
+            "well"
+            if analysis_mode in {"latest_previous", "recent_tests", "range_sequence"}
+            else "site"
+        )
+    if analysis_mode in {"recent_tests", "range_sequence"}:
+        group_by = "well"
 
     arguments: dict[str, Any] = {
         "analysis_mode": analysis_mode,
         "group_by": group_by,
     }
-    resolved_dates = _resolve_date_range(contextual, today)
     if resolved_dates:
         arguments["start_date"] = resolved_dates[0].isoformat()
         arguments["end_date"] = resolved_dates[1].isoformat()
-    elif analysis_mode == "range_summary":
+    elif analysis_mode in {"range_summary", "range_sequence"}:
         return None
+    if recent_test_count:
+        arguments["test_count"] = recent_test_count
 
     battery_match = re.search(r"\bbattery\s+([a-z0-9_-]+)\b", current, re.IGNORECASE)
     if battery_match and battery_match.group(1).lower() not in {"breakdown", "summary"}:
-        arguments["battery_name"] = battery_match.group(1)
+        battery_reference = battery_match.group(1)
+        arguments["battery_name"] = (
+            f"Battery {battery_reference}"
+            if battery_reference.isdigit()
+            else battery_reference
+        )
     well_match = re.search(r"\bwell\s+([a-z0-9_-]*\d[a-z0-9_-]*)\b", current, re.IGNORECASE)
     if well_match:
         arguments["well_name"] = well_match.group(1)
@@ -224,12 +291,66 @@ def _format_analysis_result(result: dict[str, Any]) -> str:
         ]
         lines.extend(_format_latest_previous_group(group, group_by) for group in groups)
         return "\n".join(lines)
+    if mode in {"recent_tests", "range_sequence"}:
+        return _format_sequence_result(result, groups)
 
     start = _display_date(result.get("start_date"))
     end = _display_date(result.get("end_date"))
     lines = [f"Well-test summary from {start} through {end} by {group_by}:"]
     lines.extend(_format_range_group(group) for group in groups)
     return "\n".join(lines)
+
+
+def _format_sequence_result(
+    result: dict[str, Any], groups: list[dict[str, Any]]
+) -> str:
+    """Render per-well chronological tests and their adjacent changes."""
+    if result.get("analysis_mode") == "recent_tests":
+        requested = result.get("requested_test_count")
+        lines = [
+            f"Compared the latest {requested} well tests for {len(groups)} well(s)."
+        ]
+    else:
+        lines = [
+            "Compared well tests from "
+            f"{_display_date(result.get('start_date'))} through "
+            f"{_display_date(result.get('end_date'))} for {len(groups)} well(s)."
+        ]
+    if result.get("truncated"):
+        lines.append(
+            "The result reached the row limit, so later wells or tests may be omitted."
+        )
+    for group in groups:
+        lines.append(f"- {group.get('well_name', group.get('group_name', 'Unknown'))}")
+        tests = group.get("tests", [])
+        if len(tests) == 1:
+            lines.append(
+                f"  - {_format_sequence_test(tests[0], baseline=True)}; "
+                "no comparison is available because only one test was selected"
+            )
+            continue
+        for index, test in enumerate(tests):
+            lines.append(
+                f"  - {_format_sequence_test(test, baseline=index == 0)}"
+            )
+    return "\n".join(lines)
+
+
+def _format_sequence_test(test: dict[str, Any], *, baseline: bool) -> str:
+    """Format one selected test with changes from its immediate predecessor."""
+    metrics = []
+    for metric, unit in (
+        ("oil", " bbl"),
+        ("water", " bbl"),
+        ("gas", ""),
+        ("runtime", " hours"),
+    ):
+        value = f"{_number(test.get(metric))}{unit}"
+        if not baseline and test.get(f"{metric}_change") is not None:
+            value += f" ({_signed(test.get(f'{metric}_change'))})"
+        metrics.append(f"{metric} {value}")
+    suffix = "; baseline (no preceding selected test)" if baseline else ""
+    return f"{_display_date(test.get('date'))}: {'; '.join(metrics)}{suffix}"
 
 
 def _format_latest_previous_group(group: dict[str, Any], group_by: str) -> str:

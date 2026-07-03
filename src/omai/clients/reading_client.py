@@ -665,9 +665,15 @@ class ReadingClient:
         end_date: str | None = None,
         well_name: str | None = None,
         battery_name: str | None = None,
+        test_count: int | None = None,
     ) -> dict[str, Any]:
         """Analyze well tests deterministically by well, battery, or selected site."""
-        if analysis_mode not in {"latest_previous", "range_summary"}:
+        if analysis_mode not in {
+            "latest_previous",
+            "range_summary",
+            "recent_tests",
+            "range_sequence",
+        }:
             raise ReadingClientError("Unsupported well-test analysis mode.")
         if group_by not in {"well", "battery", "site"}:
             raise ReadingClientError("group_by must be well, battery, or site.")
@@ -679,6 +685,18 @@ class ReadingClient:
             raise ReadingClientError("end_date must be on or after start_date.")
         if analysis_mode == "range_summary" and start_day is None:
             raise ReadingClientError("range_summary requires start_date and end_date.")
+        if analysis_mode == "range_sequence" and start_day is None:
+            raise ReadingClientError("range_sequence requires start_date and end_date.")
+        if analysis_mode in {"recent_tests", "range_sequence"} and group_by != "well":
+            raise ReadingClientError(
+                f"{analysis_mode} compares tests per well and requires group_by=well."
+            )
+        if analysis_mode == "recent_tests" and (
+            test_count is None or not 2 <= test_count <= 10
+        ):
+            raise ReadingClientError("recent_tests requires test_count between 2 and 10.")
+        if analysis_mode != "recent_tests" and test_count is not None:
+            raise ReadingClientError("test_count is only supported by recent_tests.")
 
         conditions = ["w.site_id = :site_id"]
         params: dict[str, Any] = {"site_id": site_id}
@@ -702,6 +720,19 @@ class ReadingClient:
                 params=params,
                 start_day=start_day,
                 end_day=end_day,
+            )
+
+        if analysis_mode in {"recent_tests", "range_sequence"}:
+            return self._sequence_well_tests(
+                site_id=site_id,
+                analysis_mode=analysis_mode,
+                where_sql=where_sql,
+                params=params,
+                start_day=start_day,
+                end_day=end_day,
+                well_name=well_name,
+                battery_name=battery_name,
+                test_count=test_count,
             )
 
         query = text(
@@ -752,6 +783,141 @@ class ReadingClient:
             "group_count": len(groups),
             "groups": groups,
         }
+
+    def _sequence_well_tests(
+        self,
+        *,
+        site_id: int,
+        analysis_mode: str,
+        where_sql: str,
+        params: dict[str, Any],
+        start_day: date | None,
+        end_day: date | None,
+        well_name: str | None,
+        battery_name: str | None,
+        test_count: int | None,
+    ) -> dict[str, Any]:
+        """Return chronological per-well tests and deterministic adjacent deltas."""
+        if analysis_mode == "recent_tests":
+            query = text(
+                f"""
+                SELECT ranked.test_id,
+                    ranked.well_name,
+                    ranked.battery_name,
+                    ranked.test_time,
+                    ranked.oil,
+                    ranked.water,
+                    ranked.gas,
+                    ranked.runtime
+                FROM (
+                    SELECT wt.id AS test_id,
+                        w.name AS well_name,
+                        COALESCE(b.name, 'No Battery') AS battery_name,
+                        wt.time AS test_time,
+                        wt.oil,
+                        wt.water,
+                        wt.gas,
+                        wt.runtime,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY w.id ORDER BY wt.time DESC, wt.id DESC
+                        ) AS rn
+                    FROM well_tests wt
+                    JOIN wells w ON w.id = wt.well_id
+                    LEFT JOIN batteries b ON b.id = w.battery_id
+                    WHERE {where_sql}
+                ) ranked
+                WHERE ranked.rn <= :sequence_test_count
+                ORDER BY ranked.well_name, ranked.test_time, ranked.test_id
+                LIMIT :fetch_limit
+                """
+            )
+            params = {
+                **params,
+                "sequence_test_count": test_count,
+                "fetch_limit": self.max_rows + 1,
+            }
+        else:
+            query = text(
+                f"""
+                SELECT wt.id AS test_id,
+                    w.name AS well_name,
+                    COALESCE(b.name, 'No Battery') AS battery_name,
+                    wt.time AS test_time,
+                    wt.oil,
+                    wt.water,
+                    wt.gas,
+                    wt.runtime
+                FROM well_tests wt
+                JOIN wells w ON w.id = wt.well_id
+                LEFT JOIN batteries b ON b.id = w.battery_id
+                WHERE {where_sql}
+                ORDER BY w.name, wt.time, wt.id
+                LIMIT :fetch_limit
+                """
+            )
+            params = {**params, "fetch_limit": self.max_rows + 1}
+
+        rows = self._execute(query, **params)
+        truncated = len(rows) > self.max_rows
+        selected_rows = rows[: self.max_rows]
+        groups = self._well_test_sequences(selected_rows)
+        return {
+            "analysis_mode": analysis_mode,
+            "group_by": "well",
+            "site_id": site_id,
+            "start_date": start_day.isoformat() if start_day else None,
+            "end_date": end_day.isoformat() if end_day else None,
+            "filters": {
+                **({"well_name": well_name} if well_name else {}),
+                **({"battery_name": battery_name} if battery_name else {}),
+            },
+            **({"requested_test_count": test_count} if test_count else {}),
+            "well_count": len(groups),
+            "test_count": sum(group["test_count"] for group in groups),
+            "truncated": truncated,
+            "groups": groups,
+        }
+
+    @classmethod
+    def _well_test_sequences(
+        cls, rows: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Group tests by well and compare each test with its selected predecessor."""
+        by_well: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            by_well.setdefault(str(row["well_name"]), []).append(row)
+
+        groups = []
+        for well_name, tests in sorted(by_well.items()):
+            ordered = sorted(
+                tests,
+                key=lambda item: (str(item["test_time"]), int(item["test_id"])),
+            )
+            sequence = []
+            previous: dict[str, Any] | None = None
+            for test in ordered:
+                item: dict[str, Any] = {"date": str(test["test_time"])[:10]}
+                for metric in ("oil", "water", "gas", "runtime"):
+                    value = test.get(metric)
+                    item[metric] = value
+                    previous_value = previous.get(metric) if previous else None
+                    item[f"{metric}_change"] = (
+                        round(float(value) - float(previous_value), 3)
+                        if value is not None and previous_value is not None
+                        else None
+                    )
+                sequence.append(cls._round_numeric_values(item))
+                previous = test
+            groups.append(
+                {
+                    "group_name": well_name,
+                    "well_name": well_name,
+                    "battery_name": ordered[-1]["battery_name"],
+                    "test_count": len(sequence),
+                    "tests": sequence,
+                }
+            )
+        return groups
 
     def _summarize_well_tests_by_group(
         self,
@@ -2934,6 +3100,7 @@ class UnavailableReadingClient:
         end_date: str | None = None,
         well_name: str | None = None,
         battery_name: str | None = None,
+        test_count: int | None = None,
     ) -> dict[str, Any]:
         raise ReadingClientError(self.reason)
 

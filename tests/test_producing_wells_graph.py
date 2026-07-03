@@ -29,15 +29,21 @@ class ActiveArguments(BaseModel):
 def make_tools(calls):
     def get_producing_wells(**arguments):
         calls.append(("get_producing_wells", arguments))
+        if arguments.get("start_date") == "2026-06-03":
+            producing_wells = [
+                {"well": f"Well - WELL {index}"} for index in range(1, 9)
+            ]
+        else:
+            producing_wells = [
+                {"well": "Well - ALPHA"},
+                {"well": "Well - BRAVO"},
+                {"well": "Well - CHARLIE"},
+            ]
         return json.dumps(
             {
                 "ok": True,
-                "producing_count": 3,
-                "producing_wells": [
-                    {"well": "Well - ALPHA"},
-                    {"well": "Well - BRAVO"},
-                    {"well": "Well - CHARLIE"},
-                ],
+                "producing_count": len(producing_wells),
+                "producing_wells": producing_wells,
             }
         )
 
@@ -45,13 +51,18 @@ def make_tools(calls):
         calls.append(
             ("search_well_tests", {"start_date": start_date, "end_date": end_date})
         )
+        well_tests = (
+            [{"entity_display_name": "Well - WELL 1"}]
+            if start_date == "2026-06-03"
+            else [
+                {"entity_display_name": "Well - ALPHA"},
+                {"entity_display_name": "Well - CHARLIE"},
+            ]
+        )
         return json.dumps(
             {
                 "ok": True,
-                "well_tests": [
-                    {"entity_display_name": "Well - ALPHA"},
-                    {"entity_display_name": "Well - CHARLIE"},
-                ],
+                "well_tests": well_tests,
             }
         )
 
@@ -189,4 +200,106 @@ def test_does_not_apply_undefined_active_well_range_semantics():
     )
 
     assert dependency is None
+    assert calls == []
+
+
+def test_routes_last_sixty_days_coverage_without_model_call():
+    calls = []
+    result = try_answer_producing_well_question(
+        tools=make_tools(calls),
+        question=(
+            "For last 60 days which active oil producing well does not have "
+            "at least one test?"
+        ),
+        history=[],
+        today=date(2026, 7, 2),
+    )
+
+    assert result is not None
+    answer, _, stats = result
+    assert calls[0][1]["start_date"] == "2026-05-04"
+    assert calls[0][1]["end_date"] == "2026-07-02"
+    assert calls[1] == (
+        "search_well_tests",
+        {"start_date": "2026-05-04", "end_date": "2026-07-02"},
+    )
+    assert "BRAVO" in answer
+    assert stats["model_calls"] == 0
+
+
+def test_follow_up_replaces_coverage_range_from_history():
+    calls = []
+    result = try_answer_producing_well_question(
+        tools=make_tools(calls),
+        question="How about last 30 days?",
+        history=[
+            {
+                "role": "user",
+                "content": (
+                    "For last 60 days which active oil producing well does not "
+                    "have at least one test?"
+                ),
+            },
+            {"role": "assistant", "content": "One well was missing a test."},
+        ],
+        today=date(2026, 7, 2),
+    )
+
+    assert result is not None
+    answer, _, stats = result
+    assert calls[0][1]["start_date"] == "2026-06-03"
+    assert calls[0][1]["end_date"] == "2026-07-02"
+    assert calls[1][1] == {"start_date": "2026-06-03", "end_date": "2026-07-02"}
+    assert "7 of 8" in answer
+    assert "WELL 8" in answer
+    assert stats["model_calls"] == 0
+
+
+def test_last_one_day_is_inclusive_of_today():
+    calls = []
+    result = try_answer_producing_well_question(
+        tools=make_tools(calls),
+        question="Which producing wells had no well test in the last 1 day?",
+        today=date(2026, 7, 2),
+    )
+
+    assert result is not None
+    assert calls[0][1]["producing_date"] == "2026-07-02"
+    assert calls[1][1] == {"start_date": "2026-07-02", "end_date": "2026-07-02"}
+
+
+def test_count_only_follow_up_reuses_coverage_range():
+    calls = []
+    result = try_answer_producing_well_question(
+        tools=make_tools(calls),
+        question="Count only.",
+        history=[
+            {
+                "role": "user",
+                "content": "Which producing wells had no well test in June 2026?",
+            }
+        ],
+        today=date(2026, 7, 2),
+    )
+
+    assert result is not None
+    assert "BRAVO" not in result[0]
+    assert "1 of 3" in result[0]
+
+
+def test_unrelated_follow_up_does_not_reuse_coverage_intent():
+    calls = []
+    result = try_answer_producing_well_question(
+        tools=make_tools(calls),
+        question="What about shutdowns in the last 30 days?",
+        history=[
+            {
+                "role": "user",
+                "content": "Which producing wells had no well test in June 2026?",
+            }
+        ],
+        today=date(2026, 7, 2),
+    )
+
+    assert result is None
     assert calls == []

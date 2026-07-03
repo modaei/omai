@@ -1597,6 +1597,56 @@ def test_analyze_well_tests_summarizes_range_by_battery_and_scopes_site():
     assert "Other Site Battery" not in groups
 
 
+def test_analyze_well_tests_compares_latest_three_tests_per_well():
+    result = make_well_test_client().analyze_well_tests(
+        site_id=1,
+        analysis_mode="recent_tests",
+        group_by="well",
+        battery_name="Battery 6",
+        test_count=3,
+    )
+
+    assert result["requested_test_count"] == 3
+    assert result["well_count"] == 1
+    tests = result["groups"][0]["tests"]
+    assert [item["date"] for item in tests] == [
+        "2026-05-01",
+        "2026-06-05",
+        "2026-06-06",
+    ]
+    assert [item["oil_change"] for item in tests] == [None, 14.5, 10.0]
+
+
+def test_range_sequence_uses_only_preceding_test_inside_selected_range():
+    result = make_well_test_client().analyze_well_tests(
+        site_id=1,
+        analysis_mode="range_sequence",
+        group_by="well",
+        start_date="2026-06-01",
+        end_date="2026-06-30",
+        battery_name="Battery 6",
+    )
+
+    tests = result["groups"][0]["tests"]
+    assert [item["date"] for item in tests] == ["2026-06-05", "2026-06-06"]
+    assert tests[0]["oil_change"] is None
+    assert tests[1]["oil_change"] == 10.0
+
+
+def test_range_sequence_keeps_well_with_only_one_selected_test():
+    result = make_well_test_client().analyze_well_tests(
+        site_id=1,
+        analysis_mode="range_sequence",
+        group_by="well",
+        start_date="2026-05-01",
+        end_date="2026-05-31",
+        battery_name="Battery 13",
+    )
+
+    assert result["groups"][0]["well_name"] == "HARTZOG DRAW UNIT 4050"
+    assert result["groups"][0]["tests"][0]["oil_change"] is None
+
+
 def test_search_readings_filters_lact_range_and_numeric_field():
     result = make_sqlite_client().search_readings(
         1,
