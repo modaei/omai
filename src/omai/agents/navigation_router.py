@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from calendar import monthrange
 from datetime import date
 from time import perf_counter
 from typing import Any
@@ -91,6 +92,18 @@ ENTRY_FIELDS: dict[str, tuple[str, ...]] = {
     "well_shutdown": ("hours",),
     "work_order": ("cost_estimate", "final_cost", "priority"),
 }
+
+
+READING_ENTITY_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("flow_meter_reading", ("flow meter", "flowmeter")),
+    ("water_plant_reading", ("water plant",)),
+    ("knockout_reading", ("knockout", "knock out")),
+    ("flare_reading", ("flare",)),
+    ("pump_reading", ("pump",)),
+    ("treater_reading", ("treater",)),
+    ("lact_reading", ("lact",)),
+    ("tank_reading", ("tank",)),
+)
 
 
 def try_answer_navigation_request(
@@ -185,8 +198,17 @@ def _parse_data_entry_request(question: str, today: date) -> dict[str, Any] | No
     date_range = _safe_date_range(normalized, today)
     if _contains_date_marker(normalized) and date_range is None:
         return None
-    values, consumed_numeric_spans = _entry_values(normalized, entry_type, today)
     entity_name = _entry_entity_name(normalized, entry_type, today)
+    if entry_type == "generic_reading" and entity_name:
+        inferred_types = _reading_types_from_entity(entity_name)
+        if len(inferred_types) > 1:
+            return None
+        if inferred_types:
+            entry_type = inferred_types[0]
+
+    # Field extraction must happen after generic requests have been resolved to a
+    # concrete reading type. Otherwise type-specific values remain unexplained.
+    values, consumed_numeric_spans = _entry_values(normalized, entry_type, today)
     entity_numbers = set(re.findall(r"[-+]?\d+(?:\.\d+)?", entity_name or ""))
     # Unknown numbers often represent form values. Let the model interpret them
     # rather than silently opening a form with incomplete prefilled data.
@@ -205,6 +227,15 @@ def _parse_data_entry_request(question: str, today: date) -> dict[str, Any] | No
     if entry_type == "well_shutdown":
         values["long_shutdown"] = "long shutdown" in normalized
     return arguments
+
+
+def _reading_types_from_entity(entity_name: str) -> list[str]:
+    """Infer reading types from explicit equipment words in an entity phrase."""
+    matches = []
+    for entry_type, markers in READING_ENTITY_MARKERS:
+        if any(re.search(rf"\b{re.escape(marker)}\b", entity_name) for marker in markers):
+            matches.append(entry_type)
+    return list(dict.fromkeys(matches))
 
 
 def _alias_matches(
@@ -227,6 +258,21 @@ def _alias_matches(
 
 def _safe_date_range(text: str, today: date) -> tuple[date, date] | None:
     """Resolve supported relative, ISO, and US-formatted dates without guessing."""
+    explicit_range = re.search(
+        r"\bfrom\s+(.+?)\s+(?:until|to|through)\s+(.+?)"
+        r"(?:\s+for\s+.+)?\s*$",
+        text,
+    )
+    if not explicit_range:
+        explicit_range = re.search(
+            r"\bbetween\s+(.+?)\s+and\s+(.+?)(?:\s+for\s+.+)?\s*$",
+            text,
+        )
+    if explicit_range:
+        start = _parse_date_endpoint(explicit_range.group(1), today, "start")
+        end = _parse_date_endpoint(explicit_range.group(2), today, "end")
+        return (start, end) if start and end else None
+
     named_dates = re.findall(
         rf"\b({'|'.join(MONTHS)})\s+(\d{{1,2}})(?:st|nd|rd|th)?"
         r"(?:,?\s+(\d{4}))?\b",
@@ -255,6 +301,49 @@ def _safe_date_range(text: str, today: date) -> tuple[date, date] | None:
         return _resolve_date_range(text, today)
     except ValueError:
         return None
+
+
+def _parse_date_endpoint(
+    value: str,
+    today: date,
+    boundary: str,
+) -> date | None:
+    """Parse one boundary in an explicit from/between date expression."""
+    normalized = value.strip(" ,.?\t\n").lower()
+    if normalized in {"today", "now"}:
+        return today
+    if normalized == "yesterday":
+        return date.fromordinal(today.toordinal() - 1)
+
+    iso_match = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", normalized)
+    us_match = re.fullmatch(r"(\d{1,2})/(\d{1,2})/(\d{4})", normalized)
+    named_match = re.fullmatch(
+        rf"({'|'.join(MONTHS)})\s+(\d{{1,2}})(?:st|nd|rd|th)?"
+        r"(?:,?\s+(\d{4}))?",
+        normalized,
+    )
+    month_match = re.fullmatch(
+        rf"({'|'.join(MONTHS)})(?:\s+(\d{{4}}))?",
+        normalized,
+    )
+    try:
+        if iso_match:
+            return date(*(int(part) for part in iso_match.groups()))
+        if us_match:
+            month, day, year = (int(part) for part in us_match.groups())
+            return date(year, month, day)
+        if named_match:
+            month_name, day, year = named_match.groups()
+            return date(int(year or today.year), MONTHS[month_name], int(day))
+        if month_match:
+            month_name, year = month_match.groups()
+            resolved_year = int(year or today.year)
+            month = MONTHS[month_name]
+            day = 1 if boundary == "start" else monthrange(resolved_year, month)[1]
+            return date(resolved_year, month, day)
+    except ValueError:
+        return None
+    return None
 
 
 def _contains_date_marker(text: str) -> bool:
@@ -306,12 +395,28 @@ def _entry_values(
             values[field] = float(match.group(1))
             consumed.append(match.span(1))
     comments = re.search(r"\bcomments?\s*(?:is|=|:)?\s*[\"']([^\"']+)[\"']", text)
+    if not comments:
+        comments = re.search(r"\bcomments?\s*(?:is|=|:)?\s+(.+)$", text)
     if comments:
         values["comments"] = comments.group(1).strip()
+        consumed.extend(_numeric_spans_in_group(comments, 1))
     subject = re.search(r"\bsubject\s*(?:is|=|:)?\s*[\"']([^\"']+)[\"']", text)
     if subject and entry_type == "work_order":
         values["subject"] = subject.group(1).strip()
+        consumed.extend(_numeric_spans_in_group(subject, 1))
     return values, consumed
+
+
+def _numeric_spans_in_group(
+    match: re.Match[str],
+    group: int,
+) -> list[tuple[int, int]]:
+    """Return absolute spans for numbers inside an explicitly captured text value."""
+    offset = match.start(group)
+    return [
+        (offset + item.start(), offset + item.end())
+        for item in re.finditer(r"[-+]?\d+(?:\.\d+)?", match.group(group))
+    ]
 
 
 def _entry_entity_name(text: str, entry_type: str, today: date) -> str | None:

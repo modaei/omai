@@ -104,6 +104,81 @@ def test_show_me_operational_view_extracts_search_text_before_month():
     }
 
 
+def test_show_me_resolves_named_start_date_until_today():
+    calls = []
+    result = try_answer_navigation_request(
+        tools=make_tools(calls),
+        question="show me oil production from june 1st until today",
+        today=date(2026, 7, 4),
+    )
+
+    assert result is not None
+    assert calls[0][1]["start_date"] == "2026-06-01"
+    assert calls[0][1]["end_date"] == "2026-07-04"
+    assert result[2]["model_calls"] == 0
+
+
+def test_show_me_resolves_explicit_range_connector_formats():
+    examples = (
+        ("from 2026-06-01 through 2026-07-04", "2026-06-01", "2026-07-04"),
+        ("from 06/01/2026 to 07/04/2026", "2026-06-01", "2026-07-04"),
+        ("between june 1st and july 4th", "2026-06-01", "2026-07-04"),
+        ("from june until today", "2026-06-01", "2026-07-04"),
+    )
+
+    for date_text, expected_start, expected_end in examples:
+        calls = []
+        result = try_answer_navigation_request(
+            tools=make_tools(calls),
+            question=f"show me oil production {date_text}",
+            today=date(2026, 7, 4),
+        )
+
+        assert result is not None
+        assert calls[0][1]["start_date"] == expected_start
+        assert calls[0][1]["end_date"] == expected_end
+
+
+def test_show_me_separates_trailing_search_text_from_explicit_date_range():
+    calls = []
+    result = try_answer_navigation_request(
+        tools=make_tools(calls),
+        question=(
+            "show me tank readings from June 2nd until June 10th "
+            "for 15-7 Water"
+        ),
+        today=date(2026, 7, 4),
+    )
+
+    assert result is not None
+    assert calls[0][1]["view_type"] == "tank_readings"
+    assert calls[0][1]["start_date"] == "2026-06-02"
+    assert calls[0][1]["end_date"] == "2026-06-10"
+    assert calls[0][1]["search_text"] == "15-7 water"
+    assert result[2]["model_calls"] == 0
+
+
+def test_explicit_range_connectors_allow_trailing_search_text():
+    examples = (
+        "from 2026-06-02 through 2026-06-10 for 15-7 Water",
+        "from 06/02/2026 to 06/10/2026 for 15-7 Water",
+        "between June 2nd and June 10th for 15-7 Water",
+    )
+
+    for date_text in examples:
+        calls = []
+        result = try_answer_navigation_request(
+            tools=make_tools(calls),
+            question=f"show me tank readings {date_text}",
+            today=date(2026, 7, 4),
+        )
+
+        assert result is not None
+        assert calls[0][1]["start_date"] == "2026-06-02"
+        assert calls[0][1]["end_date"] == "2026-06-10"
+        assert calls[0][1]["search_text"] == "15-7 water"
+
+
 def test_unrecognized_show_me_request_falls_through():
     calls = []
     result = try_answer_navigation_request(
@@ -174,3 +249,83 @@ def test_multiple_entry_types_fall_through_to_model():
 
     assert result is None
     assert calls == []
+
+
+def test_generic_reading_infers_lact_type_from_complete_entity_phrase():
+    calls = []
+    result = try_answer_navigation_request(
+        tools=make_tools(calls),
+        question="create a reading for Battery 6 Lact with reading 4545",
+        today=date(2026, 7, 4),
+    )
+
+    assert result is not None
+    assert calls[0][1]["entry_type"] == "lact_reading"
+    assert calls[0][1]["entity_name"] == "battery 6 lact"
+    assert calls[0][1]["values"] == {"reading": 4545.0}
+    assert result[2]["model_calls"] == 0
+
+
+def test_generic_reading_infers_every_supported_equipment_marker():
+    examples = {
+        "Battery 6 Flare": "flare_reading",
+        "Battery 6 Flow Meter": "flow_meter_reading",
+        "Injection Pump 1": "pump_reading",
+        "Battery 6 Treater": "treater_reading",
+        "Battery 6 Knock Out": "knockout_reading",
+        "Water Plant 1": "water_plant_reading",
+        "Battery 6 Lact": "lact_reading",
+        "Tank 6-1": "tank_reading",
+    }
+
+    for entity_name, expected_type in examples.items():
+        calls = []
+        result = try_answer_navigation_request(
+            tools=make_tools(calls),
+            question=f"Create a reading for {entity_name}",
+            today=date(2026, 7, 4),
+        )
+
+        assert result is not None
+        assert calls[0][1]["entry_type"] == expected_type
+        assert calls[0][1]["entity_name"] == entity_name.lower()
+
+
+def test_generic_reading_with_multiple_entity_markers_falls_through():
+    calls = []
+    result = try_answer_navigation_request(
+        tools=make_tools(calls),
+        question="Create a reading for Battery 6 Lact Flare",
+        today=date(2026, 7, 4),
+    )
+
+    assert result is None
+    assert calls == []
+
+
+def test_general_note_extracts_unquoted_trailing_comments():
+    calls = []
+    result = try_answer_navigation_request(
+        tools=make_tools(calls),
+        question="create general notes comments I'm having a good day",
+        today=date(2026, 7, 4),
+    )
+
+    assert result is not None
+    assert calls[0][1]["entry_type"] == "general_note"
+    assert calls[0][1]["values"] == {
+        "comments": "i'm having a good day",
+    }
+    assert result[2]["model_calls"] == 0
+
+
+def test_unquoted_comments_can_contain_numbers_without_llm_fallback():
+    calls = []
+    result = try_answer_navigation_request(
+        tools=make_tools(calls),
+        question="create general note comments checked 3 devices",
+        today=date(2026, 7, 4),
+    )
+
+    assert result is not None
+    assert calls[0][1]["values"]["comments"] == "checked 3 devices"

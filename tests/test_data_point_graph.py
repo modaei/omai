@@ -137,3 +137,75 @@ def test_other_value_question_without_data_point_marker_falls_through():
 
     assert result is None
     assert calls == []
+
+
+def test_routes_facility_first_data_point_question_without_model():
+    calls = []
+    result = try_answer_data_point_value_question(
+        tools=[make_tool(calls, multiple=True)],
+        question="what is 4048 data point peak load",
+    )
+
+    assert result is not None
+    assert calls[0]["facility_name"] == "4048"
+    assert calls[0]["data_point_name"] == "peak load"
+    assert calls[0]["device_name"] is None
+    assert result[2]["model_calls"] == 0
+
+
+def test_routes_point_first_data_point_question_without_value_words():
+    calls = []
+    result = try_answer_data_point_value_question(
+        tools=[make_tool(calls)],
+        question="show me data_point stroke min for well 2510",
+    )
+
+    assert result is not None
+    assert calls[0]["facility_name"] == "2510"
+    assert calls[0]["data_point_name"] == "stroke min"
+
+
+def test_routes_facility_first_question_with_explicit_device():
+    calls = []
+    result = try_answer_data_point_value_question(
+        tools=[make_tool(calls)],
+        question=(
+            "get facility 2510 device Controller A data-point stroke min"
+        ),
+    )
+
+    assert result is not None
+    assert calls[0]["facility_name"] == "2510"
+    assert calls[0]["device_name"] == "Controller A"
+    assert calls[0]["data_point_name"] == "stroke min"
+
+
+def test_possessive_facility_is_normalized_in_facility_first_question():
+    calls = []
+    result = try_answer_data_point_value_question(
+        tools=[make_tool(calls)],
+        question="what is 4048's datapoint stroke min",
+    )
+
+    assert result is not None
+    assert calls[0]["facility_name"] == "4048"
+
+
+def test_multiple_or_incomplete_data_point_markers_fall_through():
+    calls = []
+
+    assert (
+        try_answer_data_point_value_question(
+            tools=[make_tool(calls)],
+            question="compare 4048 data point peak load with 2510 data point peak load",
+        )
+        is None
+    )
+    assert (
+        try_answer_data_point_value_question(
+            tools=[make_tool(calls)],
+            question="what is data point peak load",
+        )
+        is None
+    )
+    assert calls == []

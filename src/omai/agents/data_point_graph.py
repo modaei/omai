@@ -75,26 +75,67 @@ def try_answer_data_point_value_question(
 
 
 def _parse_value_question(question: str) -> dict[str, Any] | None:
-    """Parse explicit data-point value questions and ignore other value domains."""
+    """Parse explicit data-point value questions and ignore other value domains.
+
+    The data-point marker is mandatory. This keeps similarly phrased reading,
+    tank, report, and production questions out of this deterministic route.
+    """
     data_point_marker = re.compile(r"\bdata(?:\s|_|-)?point\b", re.IGNORECASE)
-    if not data_point_marker.search(question):
+    if len(data_point_marker.findall(question)) != 1:
         return None
-    # The marker establishes the domain but is not part of the telemetry selector.
-    without_marker = data_point_marker.sub("", question)
-    normalized = " ".join(without_marker.strip().rstrip("?.").split())
-    match = re.match(
-        r"^(?:what is|what's|show me|show|get|give me)\s+"
-        r"(?:the\s+)?(?:current\s+)?value\s+of\s+(.+?)\s+"
-        r"(?:in|for|on)\s+(.+)$",
+
+    normalized = " ".join(question.strip().rstrip("?.").split())
+    normalized = data_point_marker.sub("data point", normalized)
+    body = re.sub(
+        r"^(?:what is|what's|show me|show|get|give me)\s+",
+        "",
         normalized,
         flags=re.IGNORECASE,
+    ).strip()
+    body = re.sub(
+        r"^(?:the\s+)?(?:current\s+)?(?:value\s+of\s+)?",
+        "",
+        body,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    # Point-first: "data point peak load for 4048" and the established
+    # "value of data point peak load in 4048" form.
+    point_first = re.fullmatch(
+        r"data point\s+(.+?)\s+(?:in|for|on)\s+(.+)",
+        body,
+        flags=re.IGNORECASE,
     )
-    if not match:
+    if point_first:
+        data_point_name = point_first.group(1).strip()
+        location = point_first.group(2).strip()
+    else:
+        # Facility-first: "4048 data point peak load". Device selection remains
+        # explicit through the `device` keyword in the location portion.
+        facility_first = re.fullmatch(
+            r"(.+?)\s+data point\s+(.+)",
+            body,
+            flags=re.IGNORECASE,
+        )
+        if not facility_first:
+            return None
+        location = facility_first.group(1).strip()
+        data_point_name = facility_first.group(2).strip()
+
+    facility_name, device_name = _parse_location(location)
+    if not facility_name or not data_point_name:
         return None
-    data_point_name = match.group(1).strip()
-    location = match.group(2).strip()
-    device_match = re.match(
-        r"(?:facility\s+)?(.+?)(?:,?\s+device\s+)(.+)$",
+    return {
+        "facility_name": facility_name,
+        "data_point_name": data_point_name,
+        **({"device_name": device_name} if device_name else {}),
+    }
+
+
+def _parse_location(location: str) -> tuple[str, str | None]:
+    """Split an explicit device selector while leaving facility shorthand intact."""
+    device_match = re.fullmatch(
+        r"(?:facility\s+)?(.+?)(?:,?\s+device\s+)(.+)",
         location,
         flags=re.IGNORECASE,
     )
@@ -106,13 +147,8 @@ def _parse_value_question(question: str) -> dict[str, Any] | None:
             r"^(?:facility|well)\s+", "", location, flags=re.IGNORECASE
         ).strip()
         device_name = None
-    if not facility_name or not data_point_name:
-        return None
-    return {
-        "facility_name": facility_name,
-        "data_point_name": data_point_name,
-        **({"device_name": device_name} if device_name else {}),
-    }
+    facility_name = re.sub(r"(?:'s|’)\s*$", "", facility_name).strip()
+    return facility_name, device_name
 
 
 def _format_result(result: dict[str, Any]) -> str:
