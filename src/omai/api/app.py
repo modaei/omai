@@ -10,7 +10,8 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from omai.api.schemas import ChatRequest, ChatResponse
+from omai.api.schemas import ChatRequest, ChatResponse, RodPumpHealthReportRequest
+from omai.clients.rod_pump_analysis_client import RodPumpAnalysisClient
 from omai.repositories.conversation_repository import (
     ConversationNotFoundError,
     ConversationRepository,
@@ -35,6 +36,10 @@ ChatHandler = Callable[
     [Settings, int, str | None, list[dict[str, str]], str, str],
     tuple[str, list[dict[str, Any]], dict[str, Any]],
 ]
+RodPumpReportHandler = Callable[
+    [Settings, int, str | None, list[int] | None],
+    dict[str, Any],
+]
 
 
 def create_app(
@@ -42,6 +47,7 @@ def create_app(
     chat_handler: ChatHandler = answer_chat,
     conversation_repository: ConversationRepository | None = None,
     daily_usage_repository: DailyUsageRepository | None = None,
+    rod_pump_report_handler: RodPumpReportHandler | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
     configure_logging(settings.log_level)
@@ -50,7 +56,11 @@ def create_app(
     app.state.chat_handler = chat_handler
     app.state.conversation_repository = conversation_repository
     app.state.daily_usage_repository = daily_usage_repository
+    app.state.rod_pump_report_handler = (
+        rod_pump_report_handler or _run_rod_pump_health_report
+    )
     app.state.chat_slots = BoundedSemaphore(settings.omai_max_concurrent)
+    app.state.rod_pump_report_slots = BoundedSemaphore(1)
 
     @app.middleware("http")
     async def allow_only_localhost(request: Request, call_next):
@@ -164,7 +174,49 @@ def create_app(
         finally:
             app.state.chat_slots.release()
 
+    @app.post("/rod-pump-health-report")
+    def rod_pump_health_report(payload: RodPumpHealthReportRequest) -> dict[str, Any]:
+        """Run deterministic fleet analysis without creating chat records."""
+        if not app.state.rod_pump_report_slots.acquire(
+            timeout=settings.omai_slot_timeout
+        ):
+            raise HTTPException(
+                status_code=503,
+                detail="A rod-pump health report is already running",
+            )
+        try:
+            return app.state.rod_pump_report_handler(
+                settings,
+                payload.site_id,
+                payload.as_of_time.isoformat() if payload.as_of_time else None,
+                payload.well_ids,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            logger.exception("Rod-pump health report failed")
+            raise HTTPException(
+                status_code=503,
+                detail="Rod-pump health report failed",
+            ) from exc
+        finally:
+            app.state.rod_pump_report_slots.release()
+
     return app
+
+
+def _run_rod_pump_health_report(
+    settings: Settings,
+    site_id: int,
+    as_of_time: str | None,
+    well_ids: list[int] | None,
+) -> dict[str, Any]:
+    """Construct the deterministic client outside the chat/conversation path."""
+    return RodPumpAnalysisClient.from_settings(settings).rank_wells(
+        site_id,
+        as_of_time,
+        well_ids=well_ids,
+    )
 
 
 def is_allowed_client_host(host: str) -> bool:
