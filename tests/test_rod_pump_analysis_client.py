@@ -162,3 +162,13 @@ def test_batch_ranking_respects_configured_wells_and_reports_ignored_ids():
     assert result["well_scope"] == "configured"
     assert result["ignored_well_ids"] == [99]
     assert [row["well"]["name"] for row in result["wells"]] == ["5823"]
+
+
+def test_batch_ranking_preserves_an_explicit_empty_scope():
+    result = make_client().rank_wells(
+        4,
+        "2026-07-06T00:00:00+00:00",
+        well_ids=[],
+    )
+    assert result["well_scope"] == "configured"
+    assert result["wells"] == []

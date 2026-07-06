@@ -172,18 +172,19 @@ class RodPumpAnalysisClient:
     ) -> dict[str, Any]:
         """Analyze every site-scoped rod well and apply deterministic ordering."""
         end = self._parse_time(as_of_time) if as_of_time else datetime.now(self.timezone)
-        requested_ids = {int(well_id) for well_id in well_ids or []}
+        configured_scope = well_ids is not None
+        requested_ids = {int(well_id) for well_id in (well_ids or [])}
         try:
             with self.engine.connect() as connection:
                 wells = connection.execute(
-                    text("SELECT id, name FROM wells WHERE site_id=:site_id AND pump_type='ROD' ORDER BY name"),
+                    text("SELECT id, name FROM wells WHERE site_id=:site_id AND LOWER(pump_type)='rod' ORDER BY name"),
                     {"site_id": site_id},
                 ).mappings().all()
         except SQLAlchemyError as exc:
             raise RodPumpAnalysisError(f"Could not list rod-pump wells: {exc}") from exc
         available_ids = {int(well["id"]) for well in wells}
         ignored_well_ids = sorted(requested_ids - available_ids)
-        if requested_ids:
+        if configured_scope:
             wells = [well for well in wells if int(well["id"]) in requested_ids]
         rows = []
 
@@ -209,7 +210,7 @@ class RodPumpAnalysisClient:
         return {
             "site_id": site_id,
             "as_of_time": end.isoformat(),
-            "well_scope": "configured" if requested_ids else "all_rod_pump_wells",
+            "well_scope": "configured" if configured_scope else "all_rod_pump_wells",
             "ignored_well_ids": ignored_well_ids,
             "wells": rows,
         }
@@ -239,7 +240,7 @@ class RodPumpAnalysisClient:
         query = text("""
             SELECT w.id well_id, w.name well_name, w.`key` well_key, s.`key` site_key
             FROM wells w JOIN sites s ON s.id=w.site_id
-            WHERE w.site_id=:site_id AND w.pump_type='ROD'
+            WHERE w.site_id=:site_id AND LOWER(w.pump_type)='rod'
               AND LOWER(w.name)=LOWER(:name)
             LIMIT 1
         """)
