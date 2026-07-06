@@ -13,7 +13,12 @@ from omai.clients.rod_pump_analysis_client import (
 
 
 class RodPumpAnalysisInput(BaseModel):
-    well_name: str = Field(description="Exact well name in the selected site.")
+    well_name: str = Field(
+        description=(
+            "Exact well name, exact telemetry key, or complete unique field "
+            "identifier in the selected site, such as 5823 or HDU_5823."
+        )
+    )
     start_time: str | None = Field(
         default=None,
         description="Optional ISO-8601 start time; defaults to 24 hours before end_time.",
@@ -48,7 +53,8 @@ def build_rod_pump_analysis_tools(
             func=analyze_rod_pump,
             name="analyze_rod_pump",
             description=(
-                "Analyze one exact rod-pump well using its controller trends, every averaged "
+                "Analyze one rod-pump well identified by exact name, telemetry key, or "
+                "complete unique field identifier. Uses controller trends, every averaged "
                 "surface and downhole dynograph pull, and chart-note history. Returns "
                 "current diagnoses, severity, confidence, explainable evidence, health "
                 "score, recommended review actions, and gated next-24-hour paraffin "

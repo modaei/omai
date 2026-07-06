@@ -37,7 +37,7 @@ def make_client():
         ):
             connection.execute(text(statement))
         connection.execute(text("INSERT INTO sites VALUES (4, 'HARTZOG')"))
-        connection.execute(text("INSERT INTO wells VALUES (10,4,'5823','HDU_5823','ROD')"))
+        connection.execute(text("INSERT INTO wells VALUES (10,4,'HARTZOG DRAW UNIT 5823','HDU_5823','ROD')"))
         first = int(datetime(2026, 7, 5, 12, tzinfo=timezone.utc).timestamp())
         second = int(datetime(2026, 7, 5, 13, tzinfo=timezone.utc).timestamp())
         connection.execute(text("INSERT INTO rod_pump_monitoring_data VALUES (1,10,:ts)"), {"ts": first})
@@ -130,7 +130,7 @@ def test_prediction_is_unavailable_without_validated_artifact():
     assert result["paraffin_prediction"]["available"] is False
 
 
-def test_analysis_requires_an_exact_well_name():
+def test_analysis_rejects_an_incomplete_identifier():
     with pytest.raises(RodPumpAnalysisError, match="not found"):
         make_client().analyze(
             4, "823", "2026-07-05T00:00:00+00:00", "2026-07-06T00:00:00+00:00"
@@ -161,7 +161,7 @@ def test_batch_ranking_respects_configured_wells_and_reports_ignored_ids():
 
     assert result["well_scope"] == "configured"
     assert result["ignored_well_ids"] == [99]
-    assert [row["well"]["name"] for row in result["wells"]] == ["5823"]
+    assert [row["well"]["name"] for row in result["wells"]] == ["HARTZOG DRAW UNIT 5823"]
 
 
 def test_batch_ranking_preserves_an_explicit_empty_scope():
@@ -172,3 +172,32 @@ def test_batch_ranking_preserves_an_explicit_empty_scope():
     )
     assert result["well_scope"] == "configured"
     assert result["wells"] == []
+
+
+@pytest.mark.parametrize(
+    "identifier",
+    ["5823", "Well 5823", "HDU_5823", "hartzog draw unit 5823"],
+)
+def test_analysis_resolves_supported_exact_identifiers(identifier):
+    result = make_client().analyze(
+        4,
+        identifier,
+        "2026-07-05T00:00:00+00:00",
+        "2026-07-06T00:00:00+00:00",
+    )
+    assert result["well"]["name"] == "HARTZOG DRAW UNIT 5823"
+
+
+def test_analysis_rejects_an_ambiguous_terminal_identifier():
+    client = make_client()
+    with client.engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO wells VALUES (11,4,'OTHER UNIT 5823','OTHER_5823','rod')"
+        ))
+    with pytest.raises(RodPumpAnalysisError, match="ambiguous"):
+        client.analyze(
+            4,
+            "5823",
+            "2026-07-05T00:00:00+00:00",
+            "2026-07-06T00:00:00+00:00",
+        )

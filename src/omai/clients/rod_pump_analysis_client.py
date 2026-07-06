@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
@@ -234,24 +235,57 @@ class RodPumpAnalysisClient:
         return parsed.astimezone(self.timezone)
 
     def _well(self, site_id: int, well_name: str) -> dict[str, Any]:
-        normalized = well_name.strip()
+        normalized = re.sub(
+            r"^well\s+",
+            "",
+            well_name.strip(),
+            flags=re.IGNORECASE,
+        ).strip()
         if not normalized:
             raise RodPumpAnalysisError("well_name is required.")
         query = text("""
             SELECT w.id well_id, w.name well_name, w.`key` well_key, s.`key` site_key
             FROM wells w JOIN sites s ON s.id=w.site_id
             WHERE w.site_id=:site_id AND LOWER(w.pump_type)='rod'
-              AND LOWER(w.name)=LOWER(:name)
-            LIMIT 1
+            ORDER BY w.name
         """)
         try:
             with self.engine.connect() as connection:
-                rows = connection.execute(query, {"site_id": site_id, "name": normalized}).mappings().all()
+                rows = connection.execute(query, {"site_id": site_id}).mappings().all()
         except SQLAlchemyError as exc:
             raise RodPumpAnalysisError(f"Could not resolve the rod-pump well: {exc}") from exc
-        if not rows:
-            raise RodPumpAnalysisError(f"Rod-pump well not found: {well_name}")
-        return dict(rows[0])
+
+        requested = normalized.casefold()
+        exact = [
+            row for row in rows
+            if requested in {
+                str(row["well_name"]).strip().casefold(),
+                str(row["well_key"]).strip().casefold(),
+            }
+        ]
+        if len(exact) == 1:
+            return dict(exact[0])
+
+        # Operators commonly use the complete field identifier (for example
+        # 5823) instead of the stored display name HARTZOG DRAW UNIT 5823.
+        # Match only a complete terminal token; arbitrary substrings remain
+        # invalid so 823 cannot resolve 5823.
+        identifier_matches = [
+            row for row in rows
+            if requested in _rod_pump_well_identifiers(row)
+        ]
+        if len(identifier_matches) == 1:
+            return dict(identifier_matches[0])
+        if len(identifier_matches) > 1:
+            candidates = ", ".join(str(row["well_name"]) for row in identifier_matches)
+            raise RodPumpAnalysisError(
+                f"Rod-pump well identifier is ambiguous: {well_name}. "
+                f"Use one of these exact names: {candidates}"
+            )
+        raise RodPumpAnalysisError(
+            "Rod-pump well not found. Use an exact well name, telemetry key, "
+            f"or complete field identifier: {well_name}"
+        )
 
     def _trend_series(self, site_key: str, well_key: str, start: datetime, end: datetime) -> tuple[dict[str, list], list[str]]:
         """Retrieve the same Graphite POC metrics used by OMetrics trend charts."""
@@ -439,6 +473,16 @@ def _note_event(note: str) -> str:
     if any(word in value for word in ("power", "facility", "communication")): return "interruption"
     if any(word in value for word in ("repair", "failure", "drag", "tag")): return "mechanical_event"
     return "unknown"
+
+
+def _rod_pump_well_identifiers(row: Any) -> set[str]:
+    """Return complete terminal identifiers without enabling substring search."""
+    identifiers = set()
+    for value in (row["well_name"], row["well_key"]):
+        tokens = [token for token in re.split(r"[\s_]+", str(value).strip()) if token]
+        if tokens:
+            identifiers.add(tokens[-1].casefold())
+    return identifiers
 
 
 def _compact_card(card: dict[str, Any], max_points: int = 48) -> dict[str, Any]:
