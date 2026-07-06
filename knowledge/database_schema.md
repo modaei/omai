@@ -204,16 +204,23 @@ WHERE lacts.site_id = :site_id
 ### Pumps And Rod Pump Data
 
 - `pump_readings.pump_id -> pumps.id`
-- `rod_pump_cards.pump_id -> pumps.id`
-- `rod_pump_monitoring_data.pump_id -> pumps.id`
-- `rod_pump_notes.pump_id -> pumps.id`
+- `rod_pump_monitoring_data.well_id -> wells.id`
+- `rod_pump_notes.well_id -> wells.id`
 - `rod_pump_monitoring_data_cards.rod_pump_monitoring_data_id -> rod_pump_monitoring_data.id`
+- `rod_pump_monitoring_data_cards.rod_pump_card_id -> rod_pump_cards.id`
 
-Site filter for pump records:
+Site filter for ordinary pump records:
 
 ```sql
 JOIN pumps ON <child>.pump_id = pumps.id
 WHERE pumps.site_id = :site_id
+```
+
+Site filter for rod-pump monitoring data and notes:
+
+```sql
+JOIN wells ON <child>.well_id = wells.id
+WHERE wells.site_id = :site_id
 ```
 
 Site filter for monitoring-data cards:
@@ -221,9 +228,12 @@ Site filter for monitoring-data cards:
 ```sql
 JOIN rod_pump_monitoring_data
   ON rod_pump_monitoring_data_cards.rod_pump_monitoring_data_id = rod_pump_monitoring_data.id
-JOIN pumps ON rod_pump_monitoring_data.pump_id = pumps.id
-WHERE pumps.site_id = :site_id
+JOIN wells ON rod_pump_monitoring_data.well_id = wells.id
+WHERE wells.site_id = :site_id
 ```
+
+`rod_pump_cards` has no direct well key. Scope it through
+`rod_pump_monitoring_data_cards` and `rod_pump_monitoring_data`.
 
 ### Tanks
 

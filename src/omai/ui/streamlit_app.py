@@ -8,6 +8,10 @@ from omai.agents.chat_agent import answer_chat_question, build_model
 from omai.clients.capability_client import CapabilityClient, UnavailableCapabilityClient
 from omai.clients.reading_client import ReadingClient, UnavailableReadingClient
 from omai.clients.report_client import ReportClient
+from omai.clients.rod_pump_analysis_client import (
+    RodPumpAnalysisClient,
+    UnavailableRodPumpAnalysisClient,
+)
 from omai.clients.shutdown_client import ShutdownClient, UnavailableShutdownClient
 from omai.clients.site_client import SiteClient
 from omai.clients.well_timeline_client import (
@@ -26,6 +30,7 @@ from omai.tools.capability_tools import build_capability_tools
 from omai.tools.operational_context_tools import build_operational_context_tools
 from omai.tools.reading_tools import build_reading_tools
 from omai.tools.report_tools import build_report_tools
+from omai.tools.rod_pump_analysis_tools import build_rod_pump_analysis_tools
 from omai.tools.shutdown_tools import build_shutdown_tools
 from omai.tools.well_timeline_tools import build_well_timeline_tools
 from omai.tools.work_order_tools import build_work_order_tools
@@ -191,6 +196,10 @@ def main() -> None:
                 except ValueError as exc:
                     work_order_client = UnavailableWorkOrderClient(str(exc))
                 try:
+                    rod_pump_client = RodPumpAnalysisClient.from_settings(settings)
+                except (ValueError, RuntimeError) as exc:
+                    rod_pump_client = UnavailableRodPumpAnalysisClient(str(exc))
+                try:
                     capability_client = CapabilityClient.from_default()
                 except Exception as exc:
                     capability_client = UnavailableCapabilityClient(str(exc))
@@ -223,6 +232,7 @@ def main() -> None:
                     ),
                     *build_report_tools(client, int(site_id), site_name),
                     *build_reading_tools(reading_client, int(site_id)),
+                    *build_rod_pump_analysis_tools(rod_pump_client, int(site_id)),
                     *build_shutdown_tools(shutdown_client, int(site_id)),
                     *build_well_timeline_tools(well_timeline_client, int(site_id)),
                     *build_work_order_tools(work_order_client, int(site_id)),
