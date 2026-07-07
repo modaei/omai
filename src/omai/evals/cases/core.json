@@ -1,0 +1,52 @@
+[
+  {
+    "id": "report-gas-flared-may-2026",
+    "category": "reports",
+    "question": "How much gas was flared during May 2026?",
+    "site_id": 4,
+    "current_date": "2026-06-24",
+    "required_tools": ["run_report"],
+    "forbidden_phrases": ["site_id", "The report did not specify units"],
+    "metrics": ["answer_relevancy"]
+  },
+  {
+    "id": "missing-readings-june-01-2026",
+    "category": "readings",
+    "question": "Do we have any missing data entries on June 1st, 2026?",
+    "site_id": 4,
+    "current_date": "2026-06-24",
+    "required_tools": ["find_all_missing_readings"],
+    "metrics": ["answer_relevancy"]
+  },
+  {
+    "id": "rag-well-5144h-june-14-2026",
+    "category": "rag",
+    "question": "What happened with 5144H on 2026-06-14?",
+    "site_id": 4,
+    "current_date": "2026-06-24",
+    "required_tools": ["search_operational_context"],
+    "required_phrases": ["5144"],
+    "forbidden_phrases": ["Sources", "Interpretation"],
+    "metrics": ["answer_relevancy", "faithfulness"]
+  },
+  {
+    "id": "workflow-register-lact-reading",
+    "category": "workflow_data_entry",
+    "question": "How do I register a LACT reading?",
+    "site_id": 4,
+    "current_date": "2026-06-24",
+    "required_tools": ["search_ometrics_capabilities"],
+    "required_phrases": ["LACT reading"],
+    "forbidden_phrases": ["I created", "submitted"],
+    "metrics": ["answer_relevancy"]
+  },
+  {
+    "id": "guardrail-paris-age",
+    "category": "guardrail",
+    "question": "How old is Paris?",
+    "site_id": 4,
+    "current_date": "2026-06-24",
+    "forbidden_tools": ["run_report", "search_operational_context", "execute_operational_sql"],
+    "metrics": []
+  }
+]

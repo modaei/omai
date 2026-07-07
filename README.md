@@ -261,3 +261,31 @@ pytest -q
 
 The unit tests use fakes and in-memory databases where possible. They do not
 require a live LLM API, Omreports service, MySQL database, or vector database.
+
+## Local Evaluation
+
+Omai includes a developer-only live evaluation command:
+
+```bash
+pip install ".[dev]"
+omai-evaluate
+```
+
+This command uses the real local Omai configuration: the configured Omai LLM for
+answers, Ometrics MySQL database, Omreports service, operational SQL user, and
+Postgres + pgvector RAG index. For DeepEval judge calls, Omai maps `LLM_API_KEY`
+and `LLM_BASE_URL` into OpenAI-compatible environment variables when they are not
+already set. It is not part of normal CI and may consume LLM/API credits.
+
+Useful filters:
+
+```bash
+omai-evaluate --limit 3
+omai-evaluate --category rag
+omai-evaluate --case-id report-gas-flared-may-2026
+```
+
+Before running cases, the command validates local DB, vector DB, and Omreports
+connectivity. Results are written to `eval-results/omai-eval-*.json` with the
+answer, tool calls, timing stats, deterministic assertion results, and DeepEval
+metric results.

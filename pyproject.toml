@@ -26,15 +26,20 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8,<9",
+    "deepeval>=3,<4",
 ]
 
 [project.scripts]
 omai-index-operational-text = "omai.rag.index_operational_text:main"
 omai-process-rag-index-events = "omai.rag.process_index_events:main"
 omai-vector-db-migrate = "omai.rag.migrate_vector_db:main"
+omai-evaluate = "omai.evals.runner:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+omai = ["evals/cases/*.json"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

@@ -5,4 +5,7 @@ __pycache__/
 *.pyc
 omai.log
 *.egg-info/
+build/
+docs/
+.idea/
 
