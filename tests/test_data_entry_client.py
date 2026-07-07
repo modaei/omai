@@ -15,9 +15,16 @@ def make_client():
         connection.execute(text("CREATE TABLE lacts (id INTEGER PRIMARY KEY, site_id INTEGER, name TEXT)"))
         connection.execute(text("CREATE TABLE tanks (id INTEGER PRIMARY KEY, site_id INTEGER, name TEXT, type TEXT)"))
         connection.execute(text("CREATE TABLE flare_readings (id INTEGER PRIMARY KEY, flare_id INTEGER, time TEXT)"))
+        connection.execute(text("CREATE TABLE lact_readings (id INTEGER PRIMARY KEY, lact_id INTEGER, time TEXT)"))
+        connection.execute(text("CREATE TABLE linear_tank_readings (id INTEGER PRIMARY KEY, tank_id INTEGER, time TEXT)"))
+        connection.execute(text("CREATE TABLE mixed_tank_readings (id INTEGER PRIMARY KEY, tank_id INTEGER, time TEXT)"))
+        connection.execute(text("CREATE TABLE non_linear_tank_readings (id INTEGER PRIMARY KEY, tank_id INTEGER, time TEXT)"))
         connection.execute(text("CREATE TABLE general_notes (id INTEGER PRIMARY KEY, site_id INTEGER, date TEXT)"))
         connection.execute(text("CREATE TABLE work_orders (id INTEGER PRIMARY KEY, site_id INTEGER, subject TEXT)"))
         connection.execute(text("INSERT INTO flares VALUES (1, 4, 'Battery 6 Flare'), (2, 4, 'Battery 60 Flare'), (3, 5, 'Battery 6 Flare')"))
+        connection.execute(text("INSERT INTO lacts VALUES (8, 4, 'Battery 5 Lact')"))
+        connection.execute(text("INSERT INTO tanks VALUES (5, 4, '5-2 Float Over', 'mixed-water-oil')"))
+        connection.execute(text("INSERT INTO tanks VALUES (15, 4, '15-2 Float Over', 'mixed-water-oil')"))
     return DataEntryClient(engine)
 
 
@@ -78,3 +85,84 @@ def test_generic_reading_asks_when_name_exists_for_multiple_entity_types():
 
     assert result["status"] == "needs_clarification"
     assert {candidate["type"] for candidate in result["candidates"]} == {"flare", "tank"}
+
+
+def test_prepares_tank_reading_with_voice_parsed_values():
+    result = make_client().prepare(
+        4,
+        "tank_reading",
+        "tank 5–2 float over",
+        {
+            "top_level_feet": 5.0,
+            "top_level_inches": 2.0,
+            "water_level_feet": 2.0,
+            "water_level_inches": 1.0,
+        },
+        "2026-07-07",
+    )
+
+    assert result == {
+        "status": "ready",
+        "entry_type": "tank_reading",
+        "entity_type": "tank",
+        "entity_id": 5,
+        "entity_name": "5-2 Float Over",
+        "values": {
+            "top_level_feet": 5.0,
+            "top_level_inches": 2.0,
+            "water_level_feet": 2.0,
+            "water_level_inches": 1.0,
+            "date": "2026-07-07",
+        },
+    }
+
+
+def test_tank_identifier_does_not_fuzzy_match_larger_identifier():
+    result = make_client().prepare(
+        4,
+        "tank_reading",
+        "tank 5–2 float over",
+        {"top_level_feet": 5.0},
+        "2026-07-07",
+    )
+
+    assert result["status"] == "ready"
+    assert result["entity_id"] == 5
+    assert result["entity_name"] == "5-2 Float Over"
+
+
+def test_spoken_tank_prefix_matches_database_name_without_tank_prefix():
+    result = make_client().prepare(
+        4,
+        "tank_reading",
+        "tank 5-2 float over",
+        {"top_level_feet": 5.0},
+        "2026-07-07",
+    )
+
+    assert result["status"] == "ready"
+    assert result["entity_id"] == 5
+    assert result["entity_name"] == "5-2 Float Over"
+
+
+def test_spoken_number_and_redundant_prefix_resolve_lact_entity():
+    result = make_client().prepare(
+        4,
+        "lact_reading",
+        "lact battery five lact",
+        {"reading": 22.0, "comments": "hhhh"},
+        "2026-07-07",
+    )
+
+    assert result == {
+        "status": "ready",
+        "entry_type": "lact_reading",
+        "entity_type": "LACT",
+        "entity_id": 8,
+        "entity_name": "Battery 5 Lact",
+        "values": {
+            "reading": 22.0,
+            "comments": "hhhh",
+            "date": "2026-07-07",
+        },
+    }

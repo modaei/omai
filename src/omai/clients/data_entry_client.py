@@ -48,6 +48,31 @@ GENERIC_READING_TYPES = {
     "knockout_reading", "water_plant_reading", "lact_reading", "tank_reading",
 }
 
+SPOKEN_NUMBERS = {
+    "zero": "0",
+    "oh": "0",
+    "one": "1",
+    "two": "2",
+    "three": "3",
+    "four": "4",
+    "five": "5",
+    "six": "6",
+    "seven": "7",
+    "eight": "8",
+    "nine": "9",
+    "ten": "10",
+    "eleven": "11",
+    "twelve": "12",
+    "thirteen": "13",
+    "fourteen": "14",
+    "fifteen": "15",
+    "sixteen": "16",
+    "seventeen": "17",
+    "eighteen": "18",
+    "nineteen": "19",
+    "twenty": "20",
+}
+
 
 class DataEntryClient:
     """Resolve and validate form-navigation requests without writing records."""
@@ -137,8 +162,17 @@ class DataEntryClient:
                 ).mappings()]
             catalog.extend((entry_type, definition, row) for row in rows)
         matches = [
-            item for item in catalog if _normalize(item[2]["name"]) == needle
+            item for item in catalog
+            if _entity_match_key(needle, item[1].entity_type) == _normalize(item[2]["name"])
         ]
+        if not matches:
+            matches = [
+                item for item in catalog
+                if _token_sequence_match(
+                    _entity_match_key(needle, item[1].entity_type),
+                    _normalize(item[2]["name"]),
+                )
+            ]
         if not matches:
             matches = [
                 item for item in catalog
@@ -162,8 +196,15 @@ class DataEntryClient:
         with self.engine.connect() as connection:
             rows = [dict(row) for row in connection.execute(query, {"site_id": site_id}).mappings()]
         needle = _normalize(name)
-        exact = [row for row in rows if _normalize(row["name"]) == needle]
-        matches = exact or [row for row in rows if _fuzzy_match(needle, _normalize(row["name"]))]
+        match_key = _entity_match_key(needle, definition.entity_type)
+        exact = [row for row in rows if _normalize(row["name"]) == match_key]
+        token_exact = exact or [
+            row for row in rows
+            if _token_sequence_match(match_key, _normalize(row["name"]))
+        ]
+        matches = token_exact or [
+            row for row in rows if _fuzzy_match(needle, _normalize(row["name"]))
+        ]
         if len(matches) == 1:
             return {"status": "resolved", "entity": matches[0]}
         candidates = [{"type": definition.entity_type, "name": row["name"]} for row in matches[:10]]
@@ -222,7 +263,10 @@ class DataEntryClient:
 
 def _normalize(value: str) -> str:
     """Normalize display names without exposing database-specific matching rules."""
-    return " ".join(re.findall(r"[a-z0-9]+", value.lower()))
+    return " ".join(
+        SPOKEN_NUMBERS.get(token, token)
+        for token in re.findall(r"[a-z0-9]+", value.lower())
+    )
 
 
 def _fuzzy_match(needle: str, candidate: str) -> bool:
@@ -232,3 +276,26 @@ def _fuzzy_match(needle: str, candidate: str) -> bool:
     needle_tokens, candidate_tokens = set(needle.split()), set(candidate.split())
     return (needle in candidate or candidate in needle or needle_tokens <= candidate_tokens
             or SequenceMatcher(None, needle, candidate).ratio() >= 0.80)
+
+
+def _token_sequence_match(needle: str, candidate: str) -> bool:
+    """Match adjacent full tokens so tank 5-2 does not match tank 15-2."""
+    needle_tokens = needle.split()
+    candidate_tokens = candidate.split()
+    if not needle_tokens or len(needle_tokens) > len(candidate_tokens):
+        return False
+    return any(
+        candidate_tokens[index:index + len(needle_tokens)] == needle_tokens
+        for index in range(len(candidate_tokens) - len(needle_tokens) + 1)
+    )
+
+
+def _entity_match_key(needle: str, entity_type: str | None) -> str:
+    """Drop a spoken entity-type prefix when database names omit it."""
+    if not entity_type:
+        return needle
+    entity_tokens = entity_type.lower().split()
+    needle_tokens = needle.split()
+    if needle_tokens[:len(entity_tokens)] == entity_tokens:
+        return " ".join(needle_tokens[len(entity_tokens):])
+    return needle
