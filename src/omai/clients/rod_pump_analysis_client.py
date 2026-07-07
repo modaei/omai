@@ -25,6 +25,11 @@ from omai.services.rod_pump_analysis_engine import (
     health_scores,
     rule_diagnoses,
 )
+from omai.services.paraffin_prediction import (
+    build_prediction_features,
+    load_predictor,
+    score_prediction,
+)
 
 
 METRICS = {
@@ -55,6 +60,7 @@ class RodPumpAnalysisClient:
         max_data_points: int = 96,
         http_get: Callable[..., Any] = httpx.get,
         prediction_metadata_path: str | None = None,
+        prediction_artifact_path: str | None = None,
         batch_workers: int = 2,
     ):
         self.engine = engine
@@ -64,6 +70,8 @@ class RodPumpAnalysisClient:
         self.max_data_points = max_data_points
         self.http_get = http_get
         self.prediction_metadata_path = prediction_metadata_path
+        self.prediction_artifact_path = prediction_artifact_path
+        self._prediction_artifact: dict[str, Any] | None = None
         self.batch_workers = max(1, batch_workers)
 
     @classmethod
@@ -94,6 +102,7 @@ class RodPumpAnalysisClient:
             timeout_seconds=float(os.getenv("ROD_PUMP_TIMEOUT_SECONDS", "20")),
             max_data_points=int(os.getenv("ROD_PUMP_MAX_DATA_POINTS", "96")),
             prediction_metadata_path=os.getenv("ROD_PUMP_MODEL_METADATA") or None,
+            prediction_artifact_path=os.getenv("ROD_PUMP_MODEL_ARTIFACT") or None,
             batch_workers=int(os.getenv("ROD_PUMP_BATCH_WORKERS", "2")),
         )
 
@@ -116,6 +125,7 @@ class RodPumpAnalysisClient:
         baseline_series, baseline_warnings = self._trend_series(
             well["site_key"], well["well_key"], baseline_start, start
         )
+        prediction_series = _merge_series(baseline_series, series)
         baseline_cards = self._averaged_cards(
             well["well_id"], start - timedelta(days=14), start
         )
@@ -134,7 +144,7 @@ class RodPumpAnalysisClient:
             baseline_series,
             baseline_card_features,
         )
-        prediction = self._prediction_gate()
+        prediction = self._prediction(prediction_series, notes, end)
         diagnoses = fuse_diagnoses(rules, anomaly, prediction)
         scores = health_scores(trends, card_features, diagnoses)
         if baseline_warnings:
@@ -287,7 +297,14 @@ class RodPumpAnalysisClient:
             f"or complete field identifier: {well_name}"
         )
 
-    def _trend_series(self, site_key: str, well_key: str, start: datetime, end: datetime) -> tuple[dict[str, list], list[str]]:
+    def _trend_series(
+        self,
+        site_key: str,
+        well_key: str,
+        start: datetime,
+        end: datetime,
+        max_data_points: int | None = None,
+    ) -> tuple[dict[str, list], list[str]]:
         """Retrieve the same Graphite POC metrics used by OMetrics trend charts."""
         result: dict[str, list] = {label: [] for label in METRICS.values()}
         warnings: list[str] = []
@@ -298,7 +315,7 @@ class RodPumpAnalysisClient:
             ("from", start.strftime("%H:%M_%Y%m%d")),
             ("until", end.strftime("%H:%M_%Y%m%d")),
             ("format", "json"), ("noNullPoints", "true"),
-            ("maxDataPoints", str(self.max_data_points)),
+            ("maxDataPoints", str(max_data_points or self.max_data_points)),
             ("tz", str(self.timezone)),
         ])
         try:
@@ -408,7 +425,7 @@ class RodPumpAnalysisClient:
                 rows = connection.execute(query, {"well_id": well_id, "end_time": end.replace(tzinfo=None), "history_start": (end-timedelta(days=730)).replace(tzinfo=None)}).mappings().all()
         except SQLAlchemyError:
             return []
-        return [{"time": str(row["x_axis_value"]), "chart": row["chart_name"], "text": row["note"], "event": _note_event(row["note"] or "")} for row in rows]
+        return [{"time": str(row["x_axis_value"]), "chart": row["chart_name"], "text": row["note"], "event": categorize_chart_note(row["note"] or "")} for row in rows]
 
     def _current_status(self, site_id: int, well_key: str) -> dict[str, Any]:
         query = text("""
@@ -437,8 +454,35 @@ class RodPumpAnalysisClient:
             }
         return {"available": bool(values), "values": values}
 
-    def _prediction_gate(self) -> dict[str, Any]:
-        """Prevent an unvalidated paraffin artifact from influencing diagnosis."""
+    def _prediction(self, series, notes, as_of) -> dict[str, Any]:
+        """Score a validated artifact without allowing card data into the model."""
+        if self.prediction_artifact_path:
+            try:
+                if self._prediction_artifact is None:
+                    self._prediction_artifact = load_predictor(self.prediction_artifact_path)
+                features, warnings = build_prediction_features(series, notes, as_of)
+                covered_metrics = sum(
+                    features.get(f"{metric}|24h|coverage", 0) >= .25
+                    for metric in (
+                        "Min Load Last Stroke", "Peak Load Last Stroke", "Pump Fillage",
+                        "Yesterday Cycles", "Yesterday Strokes per minute",
+                    )
+                )
+                if covered_metrics < 3:
+                    return {
+                        "available": False,
+                        "reason": "Insufficient recent telemetry coverage for paraffin prediction.",
+                        "data_quality_warnings": warnings,
+                    }
+                result = score_prediction(self._prediction_artifact, features)
+                if warnings:
+                    result["data_quality_warnings"] = warnings
+                return result
+            except (OSError, RuntimeError, ValueError, TypeError) as exc:
+                return {"available": False, "reason": f"Paraffin prediction artifact is unavailable: {exc}"}
+
+        # Retain the previous JSON metadata check during migration. Metadata can
+        # demonstrate validation, but cannot produce a probability.
         if not self.prediction_metadata_path:
             return {"available": False, "reason": "No validated paraffin prediction artifact is configured."}
         try:
@@ -464,7 +508,8 @@ class UnavailableRodPumpAnalysisClient:
     def rank_wells(self, *args, **kwargs): raise RodPumpAnalysisError(self.reason)
 
 
-def _note_event(note: str) -> str:
+def categorize_chart_note(note: str) -> str:
+    """Map free-text operational notes to stable model event categories."""
     value = note.lower()
     if "paraffin" in value or "wax" in value: return "paraffin"
     if "chemical" in value: return "chemical_treatment"
@@ -498,6 +543,19 @@ def _compact_card(card: dict[str, Any], max_points: int = 48) -> dict[str, Any]:
         }
         compact = [point for index, point in enumerate(points) if index in indices]
     return {**card, "raw_point_count": len(points), "points": compact}
+
+
+def _merge_series(*collections: dict[str, list[dict[str, Any]]]) -> dict[str, list[dict[str, Any]]]:
+    """Combine adjacent Graphite intervals and remove boundary duplicates."""
+    merged: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+    for collection in collections:
+        for metric, points in collection.items():
+            for point in points:
+                merged[metric][str(point.get("time"))] = point
+    return {
+        metric: sorted(points.values(), key=lambda point: str(point.get("time")))
+        for metric, points in merged.items()
+    }
 
 
 def _exclude_intervention_windows(

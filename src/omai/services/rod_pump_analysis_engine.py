@@ -179,7 +179,7 @@ def fuse_diagnoses(
         if item["name"] == "Possible paraffin/wax buildup" and prediction_probability is not None:
             confidence = min(1, .65 * confidence + .35 * float(prediction_probability))
             item["provenance"].append("classifier")
-            item["evidence"].append({"source": "classifier", "detail": f"Validated next-24-hour probability: {prediction_probability:.3f}"})
+            item["evidence"].append({"source": "classifier", "detail": f"Validated next-48-hour probability: {prediction_probability:.3f}"})
         item["confidence"] = round(confidence, 2)
         output.append(item)
     return sorted(output, key=lambda row: (-SEVERITY_ORDER[row["severity"]], -row["confidence"]))

@@ -57,7 +57,7 @@ def build_rod_pump_analysis_tools(
                 "complete unique field identifier. Uses controller trends, every averaged "
                 "surface and downhole dynograph pull, and chart-note history. Returns "
                 "current diagnoses, severity, confidence, explainable evidence, health "
-                "score, recommended review actions, and gated next-24-hour paraffin "
+                "score, recommended review actions, and gated next-48-hour paraffin "
                 "prediction status. Prefer this over SQL for rod-pump health questions."
             ),
             args_schema=RodPumpAnalysisInput,

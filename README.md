@@ -155,11 +155,46 @@ MONITORING_DATA_API_URL=http://metrics1.ultimatesys.com/render
 ROD_PUMP_TIMEOUT_SECONDS=20
 ROD_PUMP_MAX_DATA_POINTS=96
 ROD_PUMP_BATCH_WORKERS=2
-# Leave unset until a paraffin model passes the validation gate.
+# Legacy validation metadata; does not enable scoring.
 ROD_PUMP_MODEL_METADATA=
+# Set only to a trusted artifact that passed the test precision/recall gate.
+ROD_PUMP_MODEL_ARTIFACT=/path/to/paraffin-48h.joblib
 OMREPORTS_TIMEOUT_SECONDS=30
 MAX_REPORT_DAYS=366
 ```
+
+### Training the 48-hour paraffin model
+
+Install the optional ML dependencies, then retrieve Graphite/MySQL history and
+train directly. Omit `--site-id` to include every site containing rod wells:
+
+```bash
+pip install -e '.[ml]'
+omai-train-paraffin \
+  --live \
+  --site-id 4 \
+  --start 2024-01-01T00:00:00Z \
+  --end 2026-06-30T00:00:00Z \
+  --dataset-output /path/to/rod-pump-training-history.json \
+  --output /path/to/paraffin-48h.joblib \
+  --model-version 2026-07-06.1
+```
+
+Live mode selects case-insensitive `pump_type='rod'` wells from MySQL, retrieves
+Graphite in bounded seven-day chunks, and loads chart notes from MySQL. It
+automatically retrieves the 30-day telemetry warm-up and 90-day event-history
+warm-up preceding `--start`. `--end` is the historical cutoff and must be far
+enough in the past that the following 48-hour label outcome is known.
+
+Use `--input /path/to/rod-pump-training-history.json` instead of `--live` to
+retrain reproducibly without querying production systems. The input is either
+a list or `{ "wells": [...] }`. Each well contains
+`site_id`, `well_key`, `trend_series`, and categorized `chart_note_events` in
+the same shapes returned by rod-pump analysis. Training uses only telemetry
+and prior chemical/thermal/paraffin event timestamps. Dynograph cards and note
+text are not model features. Only explicit paraffin/wax events become positive
+labels. The generated artifact is rejected at runtime unless its untouched
+test precision is at least 0.50 and recall is at least 0.60.
 
 ## Operational RAG
 
