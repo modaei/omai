@@ -5,9 +5,23 @@
     "question": "How much gas was flared during May 2026?",
     "site_id": 4,
     "current_date": "2026-06-24",
-    "required_tools": ["run_report"],
-    "forbidden_phrases": ["site_id", "The report did not specify units"],
-    "metrics": ["answer_relevancy"]
+    "forbidden_phrases": [
+      "site_id",
+      "The report did not specify units"
+    ],
+    "metrics": [
+      "answer_relevancy"
+    ],
+    "expected_tool_calls": [
+      {
+        "tool": "run_report",
+        "arguments": {
+          "report_name": "gas_flared",
+          "start_date": "2026-05-01",
+          "end_date": "2026-05-31"
+        }
+      }
+    ]
   },
   {
     "id": "missing-readings-june-01-2026",
@@ -15,8 +29,17 @@
     "question": "Do we have any missing data entries on June 1st, 2026?",
     "site_id": 4,
     "current_date": "2026-06-24",
-    "required_tools": ["find_all_missing_readings"],
-    "metrics": ["answer_relevancy"]
+    "metrics": [
+      "answer_relevancy"
+    ],
+    "expected_tool_calls": [
+      {
+        "tool": "find_all_missing_readings",
+        "arguments": {
+          "reading_date": "2026-06-01"
+        }
+      }
+    ]
   },
   {
     "id": "rag-well-5144h-june-14-2026",
@@ -24,10 +47,29 @@
     "question": "What happened with 5144H on 2026-06-14?",
     "site_id": 4,
     "current_date": "2026-06-24",
-    "required_tools": ["search_operational_context"],
-    "required_phrases": ["5144"],
-    "forbidden_phrases": ["Sources", "Interpretation"],
-    "metrics": ["answer_relevancy", "faithfulness"]
+    "required_phrases": [
+      "5144"
+    ],
+    "forbidden_phrases": [
+      "Sources",
+      "Interpretation"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "faithfulness"
+    ],
+    "expected_tool_calls": [
+      {
+        "tool": "search_operational_context",
+        "arguments": {
+          "query": {
+            "contains": "5144"
+          },
+          "start_date": "2026-06-14",
+          "end_date": "2026-06-14"
+        }
+      }
+    ]
   },
   {
     "id": "workflow-register-lact-reading",
@@ -35,10 +77,29 @@
     "question": "How do I register a LACT reading?",
     "site_id": 4,
     "current_date": "2026-06-24",
-    "required_tools": ["search_ometrics_capabilities"],
-    "required_phrases": ["LACT reading"],
-    "forbidden_phrases": ["I created", "submitted"],
-    "metrics": ["answer_relevancy"]
+    "required_phrases": [
+      "LACT reading"
+    ],
+    "forbidden_phrases": [
+      "I created",
+      "submitted"
+    ],
+    "metrics": [
+      "answer_relevancy"
+    ],
+    "expected_tool_calls": [
+      {
+        "tool": "search_ometrics_capabilities",
+        "arguments": {
+          "query": {
+            "contains_all": [
+              "LACT",
+              "reading"
+            ]
+          }
+        }
+      }
+    ]
   },
   {
     "id": "guardrail-paris-age",
@@ -46,7 +107,1581 @@
     "question": "How old is Paris?",
     "site_id": 4,
     "current_date": "2026-06-24",
-    "forbidden_tools": ["run_report", "search_operational_context", "execute_operational_sql"],
+    "forbidden_tools": [
+      "run_report",
+      "search_operational_context",
+      "execute_operational_sql"
+    ],
     "metrics": []
+  },
+  {
+    "id": "data-entry-lact-spoken-five-leading-type",
+    "category": "workflow_data_entry",
+    "question": "create a reading for lact Battery five Lact reading 22 comments hhhh",
+    "site_id": 4,
+    "current_date": "2026-07-07",
+    "required_phrases": [
+      "Opening the prefilled data-entry form"
+    ],
+    "forbidden_phrases": [
+      "No LACT matched",
+      "Multiple LACT records matched",
+      "Battery 15"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Resolve Battery five Lact to Battery 5 Lact even with the leading LACT type token, extract reading=22 and comments=hhhh, and open the prefilled form.",
+    "expected_tool_calls": [
+      {
+        "tool": "prepare_data_entry",
+        "arguments": {
+          "entry_type": "lact_reading",
+          "entity_name": {
+            "contains_all": [
+              "battery",
+              "five",
+              "lact"
+            ]
+          },
+          "values.reading": 22,
+          "values.comments": "hhhh"
+        }
+      }
+    ]
+  },
+  {
+    "id": "data-entry-lact-digit-five-leading-type",
+    "category": "workflow_data_entry",
+    "question": "create a reading for lact Battery 5 Lact reading 22 comments hhhh",
+    "site_id": 4,
+    "current_date": "2026-07-07",
+    "required_phrases": [
+      "Opening the prefilled data-entry form"
+    ],
+    "forbidden_phrases": [
+      "Multiple LACT records matched",
+      "Battery 15"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Resolve Battery 5 Lact exactly and avoid token matching against Battery 15 Lact.",
+    "expected_tool_calls": [
+      {
+        "tool": "prepare_data_entry",
+        "arguments": {
+          "entry_type": "lact_reading",
+          "entity_name": {
+            "contains_all": [
+              "battery",
+              "5",
+              "lact"
+            ]
+          },
+          "values.reading": 22,
+          "values.comments": "hhhh"
+        }
+      }
+    ]
+  },
+  {
+    "id": "data-entry-lact-spoken-five-no-leading-type",
+    "category": "workflow_data_entry",
+    "question": "create a reading for Battery five Lact reading 22 comments hhhh",
+    "site_id": 4,
+    "current_date": "2026-07-07",
+    "required_phrases": [
+      "Opening the prefilled data-entry form"
+    ],
+    "forbidden_phrases": [
+      "No LACT matched",
+      "Multiple LACT records matched"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Resolve spoken five to Battery 5 Lact and open the LACT reading form.",
+    "expected_tool_calls": [
+      {
+        "tool": "prepare_data_entry",
+        "arguments": {
+          "entry_type": "lact_reading",
+          "entity_name": {
+            "contains_all": [
+              "battery",
+              "five",
+              "lact"
+            ]
+          },
+          "values.reading": 22,
+          "values.comments": "hhhh"
+        }
+      }
+    ]
+  },
+  {
+    "id": "data-entry-flow-meter-spoken-two-water-transfer",
+    "category": "workflow_data_entry",
+    "question": "create a flow meter reading for Battery two Water Transfer flow twenty total nine",
+    "site_id": 4,
+    "current_date": "2026-07-07",
+    "required_phrases": [
+      "Opening the prefilled data-entry form"
+    ],
+    "forbidden_phrases": [
+      "Multiple flow meter records matched",
+      "Battery 3 Water Transfer",
+      "Battery 4 Water Transfer"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Resolve Battery two Water Transfer to Battery 2 Water Transfer and extract flow=20 and total=9.",
+    "expected_tool_calls": [
+      {
+        "tool": "prepare_data_entry",
+        "arguments": {
+          "entry_type": "flow_meter_reading",
+          "entity_name": {
+            "contains_all": [
+              "battery",
+              "two",
+              "water",
+              "transfer"
+            ]
+          },
+          "values.flow": 20,
+          "values.total": 9
+        }
+      }
+    ]
+  },
+  {
+    "id": "data-entry-tank-five-two-float-over-with-tank-token",
+    "category": "workflow_data_entry",
+    "question": "Create a tank reading for tank 5\u20132 float over top level fit five top level inch two water level feet two water level inch one",
+    "site_id": 4,
+    "current_date": "2026-07-07",
+    "required_phrases": [
+      "Opening the prefilled data-entry form"
+    ],
+    "forbidden_phrases": [
+      "Multiple tank records matched",
+      "15-2 Float Over"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Resolve 5-2 Float Over, not 15-2 Float Over, and extract top_level_feet=5, top_level_inches=2, water_level_feet=2, water_level_inches=1. Treat 'fit' as feet.",
+    "expected_tool_calls": [
+      {
+        "tool": "prepare_data_entry",
+        "arguments": {
+          "entry_type": "tank_reading",
+          "entity_name": {
+            "contains_all": [
+              "5",
+              "2",
+              "float",
+              "over"
+            ]
+          },
+          "values.top_level_feet": 5,
+          "values.top_level_inches": 2,
+          "values.water_level_feet": 2,
+          "values.water_level_inches": 1
+        }
+      }
+    ]
+  },
+  {
+    "id": "data-entry-water-plant-tank-field-mismatch",
+    "category": "workflow_data_entry",
+    "question": "Create a water plant reading for 5\u20132 float over top level fit five top level inch two water level feet two water level inch one",
+    "site_id": 4,
+    "current_date": "2026-07-07",
+    "forbidden_phrases": [
+      "No water plant matched"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Do not search water plants using the entire measurement tail. Either infer this is a tank reading from tank-level fields or ask a concise clarification.",
+    "expected_tool_calls": [
+      {
+        "tool": "prepare_data_entry",
+        "arguments": {
+          "entity_name": {
+            "contains_all": [
+              "5",
+              "2",
+              "float",
+              "over"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "data-entry-tank-five-two-float-over-no-tank-token",
+    "category": "workflow_data_entry",
+    "question": "Create a reading for 5\u20132 float over top level feet five top level inch two water level feet two water level inch one",
+    "site_id": 4,
+    "current_date": "2026-07-07",
+    "forbidden_phrases": [
+      "Multiple tank records matched",
+      "15-2 Float Over"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Infer tank reading from top/water level fields even without the word tank and resolve 5-2 Float Over exactly.",
+    "expected_tool_calls": [
+      {
+        "tool": "prepare_data_entry",
+        "arguments": {
+          "entry_type": "tank_reading",
+          "entity_name": {
+            "contains_all": [
+              "5",
+              "2",
+              "float",
+              "over"
+            ]
+          },
+          "values.top_level_feet": 5,
+          "values.top_level_inches": 2,
+          "values.water_level_feet": 2,
+          "values.water_level_inches": 1
+        }
+      }
+    ]
+  },
+  {
+    "id": "data-entry-flow-meter-inferred-from-fields",
+    "category": "workflow_data_entry",
+    "question": "create reading for Battery 2 Water Transfer flow 20 total 9",
+    "site_id": 4,
+    "current_date": "2026-07-07",
+    "required_phrases": [
+      "Opening the prefilled data-entry form"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Infer flow meter reading from flow and total fields and open the form for Battery 2 Water Transfer.",
+    "expected_tool_calls": [
+      {
+        "tool": "prepare_data_entry",
+        "arguments": {
+          "entry_type": "flow_meter_reading",
+          "entity_name": {
+            "contains_all": [
+              "Battery",
+              "2",
+              "Water",
+              "Transfer"
+            ]
+          },
+          "values.flow": 20,
+          "values.total": 9
+        }
+      }
+    ]
+  },
+  {
+    "id": "data-entry-flare-reading-basic",
+    "category": "workflow_data_entry",
+    "question": "create reading for Battery 6 flare volume 6",
+    "site_id": 4,
+    "current_date": "2026-07-04",
+    "required_phrases": [
+      "Opening the prefilled data-entry form"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Open flare reading for Battery 6 with volume=6.",
+    "expected_tool_calls": [
+      {
+        "tool": "prepare_data_entry",
+        "arguments": {
+          "entry_type": "flare_reading",
+          "entity_name": {
+            "contains_all": [
+              "Battery",
+              "6"
+            ]
+          },
+          "values.volume": 6
+        }
+      }
+    ]
+  },
+  {
+    "id": "data-entry-flare-comment-unsupported",
+    "category": "workflow_data_entry",
+    "question": "Add reading for battery 6 flare volume 6 comment bad read",
+    "site_id": 4,
+    "current_date": "2026-07-04",
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Handle unsupported flare comment explicitly: either reject only the unsupported comment while preserving volume=6, or map it if the form supports a comment field. Do not silently create/drop fields.",
+    "expected_tool_calls": [
+      {
+        "tool": "prepare_data_entry",
+        "arguments": {
+          "entry_type": "flare_reading",
+          "entity_name": {
+            "contains_all": [
+              "Battery",
+              "6"
+            ]
+          },
+          "values.volume": 6
+        }
+      }
+    ]
+  },
+  {
+    "id": "data-entry-tank-water-feet-inches-aliases",
+    "category": "workflow_data_entry",
+    "question": "create a reading for 2-4 water feet 10 inches 10",
+    "site_id": 4,
+    "current_date": "2026-07-03",
+    "forbidden_phrases": [
+      "water_feet",
+      "water_inches",
+      "aren\u2019t supported fields",
+      "aren't supported fields"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Map water feet/inches to supported tank water level fields.",
+    "expected_tool_calls": [
+      {
+        "tool": "prepare_data_entry",
+        "arguments": {
+          "entry_type": "tank_reading",
+          "entity_name": {
+            "contains": "2-4"
+          },
+          "values.water_level_feet": 10,
+          "values.water_level_inches": 10
+        }
+      }
+    ]
+  },
+  {
+    "id": "data-entry-tank-top-and-water-levels",
+    "category": "workflow_data_entry",
+    "question": "create tank reading for 2-4 top feet 5 top inches 2 water feet 1 water inches 3",
+    "site_id": 4,
+    "current_date": "2026-07-03",
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Extract top_level_feet=5, top_level_inches=2, water_level_feet=1, water_level_inches=3.",
+    "expected_tool_calls": [
+      {
+        "tool": "prepare_data_entry",
+        "arguments": {
+          "entry_type": "tank_reading",
+          "entity_name": {
+            "contains": "2-4"
+          },
+          "values.top_level_feet": 5,
+          "values.top_level_inches": 2,
+          "values.water_level_feet": 1,
+          "values.water_level_inches": 3
+        }
+      }
+    ]
+  },
+  {
+    "id": "data-entry-run-ticket-numeric-fields",
+    "category": "workflow_data_entry",
+    "question": "create run ticket for Battery 6 observed gravity 40 observed temperature 80 bsw one percent",
+    "site_id": 4,
+    "current_date": "2026-07-03",
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Extract observed gravity, observed temperature, and BSW percent for a run ticket.",
+    "expected_tool_calls": [
+      {
+        "tool": "prepare_data_entry",
+        "arguments": {
+          "entry_type": "run_ticket",
+          "entity_name": {
+            "contains_all": [
+              "Battery",
+              "6"
+            ]
+          },
+          "values.obs_grav": 40,
+          "values.obs_temp": 80,
+          "values.b_s_w": 1
+        }
+      }
+    ]
+  },
+  {
+    "id": "data-entry-well-test-not-well-fluid",
+    "category": "workflow_data_entry",
+    "question": "create well test for 4048 oil 3 water 20 gas 6 hours 24",
+    "site_id": 4,
+    "current_date": "2026-07-03",
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Prepare a well test reading for 4048 and extract oil, water, gas, and hours. Do not route to well-fluid reading.",
+    "expected_tool_calls": [
+      {
+        "tool": "prepare_data_entry",
+        "arguments": {
+          "entry_type": "well_test",
+          "entity_name": {
+            "contains": "4048"
+          },
+          "values.oil": 3,
+          "values.water": 20,
+          "values.gas": 6,
+          "values.runtime": 24
+        }
+      }
+    ]
+  },
+  {
+    "id": "data-entry-well-fluid-not-well-test",
+    "category": "workflow_data_entry",
+    "question": "create well fluid reading for 4048 fluid level 2717",
+    "site_id": 4,
+    "current_date": "2026-07-03",
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Prepare a well-fluid reading for 4048 with fluid level 2717. Do not route to well test.",
+    "expected_tool_calls": [
+      {
+        "tool": "prepare_data_entry",
+        "arguments": {
+          "entry_type": "well_fluid",
+          "entity_name": {
+            "contains": "4048"
+          },
+          "values.level": 2717
+        }
+      }
+    ]
+  },
+  {
+    "id": "rod-pump-health-well-5823-with-well-token",
+    "category": "rod_pump",
+    "question": "Analyze rod-pump health for well 5823",
+    "site_id": 4,
+    "current_date": "2026-07-06",
+    "required_phrases": [
+      "health",
+      "diagnosis",
+      "severity",
+      "confidence"
+    ],
+    "forbidden_phrases": [
+      "couldn\u2019t find",
+      "couldn't find",
+      "Please send the exact well name"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Resolve numeric well 5823 and return current rod-pump health, diagnosis, severity, confidence, evidence, and recommendation.",
+    "expected_tool_calls": [
+      {
+        "tool": "analyze_rod_pump",
+        "arguments": {
+          "well_name": {
+            "contains": "5823"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "rod-pump-health-well-5823-no-well-token",
+    "category": "rod_pump",
+    "question": "Analyze rod-pump health for 5823",
+    "site_id": 4,
+    "current_date": "2026-07-06",
+    "required_phrases": [
+      "health",
+      "diagnosis"
+    ],
+    "forbidden_phrases": [
+      "couldn\u2019t find",
+      "couldn't find"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Analyze the single requested well by number.",
+    "expected_tool_calls": [
+      {
+        "tool": "analyze_rod_pump",
+        "arguments": {
+          "well_name": {
+            "contains": "5823"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "rod-pump-health-well-5823-exact-name-regression",
+    "category": "rod_pump",
+    "question": "Analyze rod-pump health for HARTZOG DRAW UNIT 5823",
+    "site_id": 4,
+    "current_date": "2026-07-06",
+    "required_phrases": [
+      "health",
+      "diagnosis",
+      "severity",
+      "confidence"
+    ],
+    "forbidden_phrases": [
+      "couldn\u2019t find",
+      "couldn't find"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Regression success case using the exact Ometrics well name; return health score, diagnosis, severity, confidence, evidence, and recommendation.",
+    "expected_tool_calls": [
+      {
+        "tool": "analyze_rod_pump",
+        "arguments": {
+          "well_name": {
+            "contains": "5823"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "rod-pump-health-ranking-chat-guardrail",
+    "category": "rod_pump",
+    "question": "Rank all rod-pump wells by current health",
+    "site_id": 4,
+    "current_date": "2026-07-06",
+    "forbidden_tools": [
+      "analyze_rod_pump"
+    ],
+    "required_phrases": [
+      "scheduled report"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Do not run broad Graphite analysis in chat. Explain that all-well ranking is available through the scheduled Omtasks report."
+  },
+  {
+    "id": "rod-pump-urgent-intervention-chat-guardrail",
+    "category": "rod_pump",
+    "question": "Which rod-pump wells need urgent intervention?",
+    "site_id": 4,
+    "current_date": "2026-07-06",
+    "forbidden_tools": [
+      "analyze_rod_pump"
+    ],
+    "required_phrases": [
+      "scheduled report"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Reject broad urgent-intervention ranking in chat and point to the scheduled rod-pump health report."
+  },
+  {
+    "id": "rod-pump-mechanical-risk-chat-guardrail",
+    "category": "rod_pump",
+    "question": "Which wells have the highest mechanical risk?",
+    "site_id": 4,
+    "current_date": "2026-07-06",
+    "forbidden_tools": [
+      "analyze_rod_pump"
+    ],
+    "required_phrases": [
+      "scheduled report"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Reject broad mechanical-risk ranking in Ometrics chat and require an exact well for interactive analysis."
+  },
+  {
+    "id": "well-tests-compare-last-three-hdu-4048",
+    "category": "well_tests",
+    "question": "Compare last three well test for hdu_4048",
+    "site_id": 4,
+    "current_date": "2026-07-04",
+    "required_phrases": [
+      "4048"
+    ],
+    "forbidden_phrases": [
+      "Compared the latest 3 well tests for 120 well"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Scope the comparison to well 4048 only.",
+    "expected_tool_calls": [
+      {
+        "tool": "analyze_well_tests",
+        "arguments": {
+          "analysis_mode": "recent_tests",
+          "group_by": "well",
+          "well_name": {
+            "contains": "4048"
+          },
+          "test_count": 3
+        }
+      }
+    ]
+  },
+  {
+    "id": "well-tests-4048-anomaly-standalone",
+    "category": "well_tests",
+    "question": "For well 4048, are there any anomalies in the last three well tests?",
+    "site_id": 4,
+    "current_date": "2026-07-04",
+    "required_phrases": [
+      "4048",
+      "anomal"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Analyze anomaly significance, not only list raw test values.",
+    "expected_tool_calls": [
+      {
+        "tool": "analyze_well_tests",
+        "arguments": {
+          "analysis_mode": "recent_tests",
+          "group_by": "well",
+          "well_name": {
+            "contains": "4048"
+          },
+          "test_count": 3
+        }
+      }
+    ]
+  },
+  {
+    "id": "well-tests-all-wells-last-three-anomalies",
+    "category": "well_tests",
+    "question": "Are there any anomalies between last three well test on all wells",
+    "site_id": 4,
+    "current_date": "2026-07-04",
+    "required_phrases": [
+      "anomal"
+    ],
+    "forbidden_phrases": [
+      "Compared the latest 3 well tests for 120 well(s)."
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Return anomaly-focused summary/ranking instead of dumping every well comparison.",
+    "expected_tool_calls": [
+      {
+        "tool": "analyze_well_tests",
+        "arguments": {
+          "analysis_mode": "recent_tests",
+          "group_by": "well",
+          "test_count": 3,
+          "well_name": {
+            "absent": true
+          },
+          "battery_name": {
+            "absent": true
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "well-tests-each-well-latest-vs-previous",
+    "category": "well_tests",
+    "question": "for each well, can you compare latest well test and test one before",
+    "site_id": 4,
+    "current_date": "2026-07-02",
+    "forbidden_phrases": [
+      "couldn\u2019t complete",
+      "couldn't complete"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Return per-well latest vs previous comparison without SQL failure.",
+    "expected_tool_calls": [
+      {
+        "tool": "analyze_well_tests",
+        "arguments": {
+          "analysis_mode": "recent_tests",
+          "group_by": "well",
+          "test_count": {
+            "one_of": [
+              2,
+              null
+            ]
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "well-tests-battery-6-oil-producers-last-three",
+    "category": "well_tests",
+    "question": "for all oil producing wells connected to battery 6, can you check past three tests and compare each",
+    "site_id": 4,
+    "current_date": "2026-07-02",
+    "required_phrases": [
+      "Battery 6"
+    ],
+    "forbidden_phrases": [
+      "couldn\u2019t complete",
+      "couldn't complete"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Scope to Battery 6 oil-producing wells and compare last three tests.",
+    "expected_tool_calls": [
+      {
+        "tool": "analyze_well_tests",
+        "arguments": {
+          "analysis_mode": "recent_tests",
+          "group_by": "well",
+          "battery_name": {
+            "contains": "Battery 6"
+          },
+          "test_count": 3
+        }
+      }
+    ]
+  },
+  {
+    "id": "well-tests-battery-6-last-three",
+    "category": "well_tests",
+    "question": "for wells in battery 6 compare last three well test",
+    "site_id": 4,
+    "current_date": "2026-07-02",
+    "required_phrases": [
+      "Battery 6"
+    ],
+    "forbidden_phrases": [
+      "couldn\u2019t complete",
+      "couldn't complete"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Compare last three tests for Battery 6 wells.",
+    "expected_tool_calls": [
+      {
+        "tool": "analyze_well_tests",
+        "arguments": {
+          "analysis_mode": "recent_tests",
+          "group_by": "well",
+          "battery_name": {
+            "contains": "Battery 6"
+          },
+          "test_count": 3
+        }
+      }
+    ]
+  },
+  {
+    "id": "well-tests-battery-6-oil-producers-success-regression",
+    "category": "well_tests",
+    "question": "for oil producing wells in battery 6, check last three tests and compare them",
+    "site_id": 4,
+    "current_date": "2026-07-04",
+    "required_phrases": [
+      "Battery 6"
+    ],
+    "forbidden_phrases": [
+      "couldn\u2019t complete",
+      "couldn't complete"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Regression success case: concise per-well comparison and notable changes.",
+    "expected_tool_calls": [
+      {
+        "tool": "analyze_well_tests",
+        "arguments": {
+          "analysis_mode": "recent_tests",
+          "group_by": "well",
+          "battery_name": {
+            "contains": "Battery 6"
+          },
+          "test_count": 3
+        }
+      }
+    ]
+  },
+  {
+    "id": "well-tests-battery-6-avg-oil-changes-2026",
+    "category": "well_tests",
+    "question": "analyze battery 6's well test average oil value changes in 2026",
+    "site_id": 4,
+    "current_date": "2026-07-02",
+    "required_phrases": [
+      "Battery 6"
+    ],
+    "forbidden_phrases": [
+      "couldn\u2019t complete",
+      "couldn't complete"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Provide trend analysis for Battery 6 well-test oil averages in 2026.",
+    "expected_tool_calls": [
+      {
+        "tool": "analyze_well_tests",
+        "arguments": {
+          "group_by": {
+            "one_of": [
+              "battery",
+              "well"
+            ]
+          },
+          "battery_name": {
+            "contains": "Battery 6"
+          },
+          "start_date": "2026-01-01"
+        }
+      }
+    ]
+  },
+  {
+    "id": "production-compare-last-month-vs-previous",
+    "category": "reports",
+    "question": "compare last month oil production with the month before and analyse the variation",
+    "site_id": 4,
+    "current_date": "2026-06-25",
+    "forbidden_phrases": [
+      "site_id"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Compare May 2026 to April 2026, include totals, percent change, and top contributors without unsupported causal claims.",
+    "expected_tool_calls": [
+      {
+        "tool": "compare_report_periods",
+        "arguments": {
+          "report_name": "oil_production",
+          "first_start_date": "2026-05-01",
+          "first_end_date": "2026-05-31",
+          "second_start_date": "2026-04-01",
+          "second_end_date": "2026-04-30"
+        }
+      }
+    ]
+  },
+  {
+    "id": "production-compare-june-and-may",
+    "category": "reports",
+    "question": "compare oil production in June and May and analyze",
+    "site_id": 4,
+    "current_date": "2026-07-03",
+    "required_phrases": [
+      "May",
+      "June"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Compare May and June correctly and discuss daily-average impact.",
+    "expected_tool_calls": [
+      {
+        "tool": "compare_report_periods",
+        "arguments": {
+          "report_name": "oil_production",
+          "first_start_date": "2026-06-01",
+          "first_end_date": "2026-06-30",
+          "second_start_date": "2026-05-01",
+          "second_end_date": "2026-05-31"
+        }
+      }
+    ]
+  },
+  {
+    "id": "production-compare-battery-yesterday-vs-day-before",
+    "category": "reports",
+    "question": "compare each battery oil production between yesterday and the day before",
+    "site_id": 4,
+    "current_date": "2026-07-03",
+    "required_phrases": [
+      "Battery",
+      "Change"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Return battery-level comparison for 07/02/2026 vs 07/01/2026.",
+    "expected_tool_calls": [
+      {
+        "tool": "compare_report_periods",
+        "arguments": {
+          "report_name": "oil_production",
+          "first_start_date": "2026-07-02",
+          "first_end_date": "2026-07-02",
+          "second_start_date": "2026-07-01",
+          "second_end_date": "2026-07-01"
+        }
+      }
+    ]
+  },
+  {
+    "id": "production-battery-6-variation-reason",
+    "category": "rag",
+    "question": "why battery 6 had oil production variation",
+    "site_id": 4,
+    "current_date": "2026-06-26",
+    "required_phrases": [
+      "Battery 6"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "faithfulness",
+      "correctness"
+    ],
+    "expected_output": "Combine production variation context with operational notes; clearly state if no supporting evidence is found.",
+    "expected_tool_calls": [
+      {
+        "tool": "search_operational_context",
+        "arguments": {
+          "query": {
+            "contains_all": [
+              "Battery 6",
+              "production"
+            ]
+          },
+          "entity_name": {
+            "contains": "Battery 6"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "production-oil-dip-reason-with-context",
+    "category": "rag",
+    "question": "Battery 6 oil production dropped on 06/21/2026. What was the reason for oil production dip?",
+    "site_id": 4,
+    "current_date": "2026-06-23",
+    "metrics": [
+      "answer_relevancy",
+      "faithfulness",
+      "correctness"
+    ],
+    "expected_output": "Use relevant notes/shutdowns/work orders to explain the dip and avoid unsupported conclusions.",
+    "expected_tool_calls": [
+      {
+        "tool": "search_operational_context",
+        "arguments": {
+          "query": {
+            "contains_all": [
+              "Battery 6",
+              "dip"
+            ]
+          },
+          "entity_name": {
+            "contains": "Battery 6"
+          },
+          "start_date": "2026-06-20",
+          "end_date": "2026-06-21"
+        }
+      }
+    ]
+  },
+  {
+    "id": "production-battery-16-down-reason",
+    "category": "rag",
+    "question": "why battery 16 is down",
+    "site_id": 4,
+    "current_date": "2026-06-22",
+    "required_phrases": [
+      "Battery 16"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "faithfulness",
+      "correctness"
+    ],
+    "expected_output": "Search operational context around Battery 16 and avoid unsupported causal claims.",
+    "expected_tool_calls": [
+      {
+        "tool": "search_operational_context",
+        "arguments": {
+          "query": {
+            "contains_all": [
+              "Battery 16"
+            ]
+          },
+          "entity_name": {
+            "contains": "Battery 16"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "allocation-count-active-producers",
+    "category": "allocation",
+    "question": "how many active producers",
+    "site_id": 4,
+    "current_date": "2026-06-26",
+    "forbidden_phrases": [
+      "couldn\u2019t complete",
+      "couldn't complete"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Return count of active producing wells using correct active-producer definition."
+  },
+  {
+    "id": "allocation-active-oil-producers-missing-june-well-test",
+    "category": "allocation",
+    "question": "which active oil producers well did not have a well test on june",
+    "site_id": 4,
+    "current_date": "2026-07-02",
+    "forbidden_phrases": [
+      "1151"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Exclude inactive wells and wells shut down for the full relevant period from active oil-producer lists."
+  },
+  {
+    "id": "allocation-no-artificial-lift-yesterday",
+    "category": "allocation",
+    "question": "how much oil did wells with no artificial lift produce yesterday?",
+    "site_id": 4,
+    "current_date": "2026-07-03",
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Use correct no-artificial-lift classification and explain if no wells match.",
+    "expected_tool_calls": [
+      {
+        "tool": "summarize_well_allocation",
+        "arguments": {
+          "allocation_type": "production",
+          "start_date": "2026-07-02",
+          "end_date": "2026-07-02",
+          "well_filters.0.field": "pump_type"
+        }
+      }
+    ]
+  },
+  {
+    "id": "allocation-rod-pump-followup-standalone",
+    "category": "allocation",
+    "question": "For yesterday, how much oil did rod pump wells produce?",
+    "site_id": 4,
+    "current_date": "2026-07-03",
+    "required_phrases": [
+      "rod pump"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Use rod pump filter and yesterday's date.",
+    "expected_tool_calls": [
+      {
+        "tool": "summarize_well_allocation",
+        "arguments": {
+          "allocation_type": "production",
+          "start_date": "2026-07-02",
+          "end_date": "2026-07-02",
+          "well_filters.0.field": "pump_type",
+          "well_filters.0.value": {
+            "contains": "ROD"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "allocation-top-producing-well-yesterday",
+    "category": "allocation",
+    "question": "which well produced most oil yesterday",
+    "site_id": 4,
+    "current_date": "2026-06-25",
+    "forbidden_phrases": [
+      "can\u2019t determine",
+      "can't determine",
+      "tools available here"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Return the top oil-producing well for the requested date if well-level allocation data exists."
+  },
+  {
+    "id": "allocation-top-producing-well-last-week",
+    "category": "allocation",
+    "question": "which well produced most oil last week",
+    "site_id": 4,
+    "current_date": "2026-06-25",
+    "forbidden_phrases": [
+      "can\u2019t determine",
+      "can't determine",
+      "tools available here"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Return the top oil-producing well over the previous calendar week if well-level allocation data exists."
+  },
+  {
+    "id": "shutdown-inclement-weather-last-month-context",
+    "category": "shutdowns",
+    "question": "How many wells were shut down because of Inclement Weather last month?",
+    "site_id": 4,
+    "current_date": "2026-06-25",
+    "required_phrases": [
+      "Inclement Weather"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Match Inclement Weather shutdown causes, including relevant spelling/case variants, for May 2026.",
+    "expected_tool_calls": [
+      {
+        "tool": "summarize_shutdown_causes",
+        "arguments": {
+          "start_date": "2026-05-01",
+          "end_date": "2026-05-31"
+        }
+      }
+    ]
+  },
+  {
+    "id": "shutdown-wells-more-than-20-hours-may",
+    "category": "shutdowns",
+    "question": "Which wells had more than 20 hours shutdown in may?",
+    "site_id": 4,
+    "current_date": "2026-06-22",
+    "forbidden_phrases": [
+      "tool-call limit",
+      "could not complete"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Return wells with more than 20 downtime hours in May without exceeding the tool limit."
+  },
+  {
+    "id": "shutdown-break-by-reason-standalone",
+    "category": "shutdowns",
+    "question": "For May 2026 shutdowns, break by shutdown reason",
+    "site_id": 4,
+    "current_date": "2026-06-22",
+    "required_phrases": [
+      "reason"
+    ],
+    "forbidden_phrases": [
+      "tool-call limit",
+      "could not complete"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Group May shutdowns by reason without relying on ambiguous prior context."
+  },
+  {
+    "id": "shutdown-average-downtime-by-code-2026",
+    "category": "shutdowns",
+    "question": "What is the average downtime hours per shutdown code in 2026",
+    "site_id": 4,
+    "current_date": "2026-06-21",
+    "forbidden_phrases": [
+      "tool-call limit",
+      "could not complete"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Aggregate average downtime hours by shutdown code in 2026."
+  },
+  {
+    "id": "shutdowns-and-well-tests-same-date-june-2026",
+    "category": "shutdowns",
+    "question": "Find wells that had both shutdowns and well tests on the same date in June 2026",
+    "site_id": 4,
+    "current_date": "2026-06-21",
+    "forbidden_phrases": [
+      "tool-call limit",
+      "could not complete"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Correlate shutdowns and well tests by well/date in June 2026."
+  },
+  {
+    "id": "tank-battery-6-oil-tanks",
+    "category": "readings",
+    "question": "what are the tanks in battery 6 that contain oil",
+    "site_id": 4,
+    "current_date": "2026-06-25",
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Use tank product/role metadata where available, not only the word Oil in the tank name."
+  },
+  {
+    "id": "tank-missing-strapping",
+    "category": "readings",
+    "question": "which tank you dont have strapping",
+    "site_id": 4,
+    "current_date": "2026-06-25",
+    "required_phrases": [
+      "strapping"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Identify strapping availability accurately and understand BBL/foot calculations."
+  },
+  {
+    "id": "tank-adjusted-inventory-bottom-18-battery-6-bottom-24",
+    "category": "readings",
+    "question": "no considering 18 inch bottom for all tanks except battery 6 tanks, for battery 6 dont consider bottom 24 inch, how much oil did we have yesterday",
+    "site_id": 4,
+    "current_date": "2026-06-26",
+    "forbidden_phrases": [
+      "couldn\u2019t complete",
+      "couldn't complete"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Calculate adjusted tank oil inventory if strapping is available; otherwise clearly report the missing conversion data."
+  },
+  {
+    "id": "tank-adjusted-inventory-bottom-18-all-tanks",
+    "category": "readings",
+    "question": "not considering each tank bottom 18 inch, how much oil did we have in tanks yesterday",
+    "site_id": 4,
+    "current_date": "2026-06-26",
+    "forbidden_phrases": [
+      "couldn\u2019t complete",
+      "couldn't complete"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Calculate adjusted oil inventory excluding bottom 18 inches per tank when strapping data supports it."
+  },
+  {
+    "id": "tank-monthly-average-oil-volumes-2026-typo",
+    "category": "readings",
+    "question": "Compare the average of tank oil volumes between monthos in 2026",
+    "site_id": 4,
+    "current_date": "2026-06-22",
+    "forbidden_phrases": [
+      "tool-call limit",
+      "could not complete"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Handle typo monthos as months and compare monthly average tank oil volumes in 2026."
+  },
+  {
+    "id": "tank-average-daily-oil-last-30-days",
+    "category": "readings",
+    "question": "Average daily oil in tanks last 30 days",
+    "site_id": 4,
+    "current_date": "2026-06-25",
+    "forbidden_phrases": [
+      "tool-call limit",
+      "could not complete"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Return average daily tank oil over the last 30 days without exceeding tool limits."
+  },
+  {
+    "id": "missing-data-entry-last-calendar-week",
+    "category": "readings",
+    "question": "are there any missing data entry on last calendar week",
+    "site_id": 4,
+    "current_date": "2026-06-22",
+    "forbidden_phrases": [
+      "tool-call limit",
+      "could not complete"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Check the full previous calendar week efficiently without duplicate date calls.",
+    "expected_tool_calls": [
+      {
+        "tool": "find_all_missing_readings_for_range",
+        "arguments": {
+          "start_date": "2026-06-15",
+          "end_date": "2026-06-21"
+        }
+      }
+    ]
+  },
+  {
+    "id": "missing-readings-last-calendar-week",
+    "category": "readings",
+    "question": "are there any missing readings on last calendar week",
+    "site_id": 4,
+    "current_date": "2026-06-22",
+    "forbidden_phrases": [
+      "tool-call limit",
+      "could not complete"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Check missing readings for the previous calendar week and summarize results.",
+    "expected_tool_calls": [
+      {
+        "tool": "find_all_missing_readings_for_range",
+        "arguments": {
+          "start_date": "2026-06-15",
+          "end_date": "2026-06-21"
+        }
+      }
+    ]
+  },
+  {
+    "id": "readings-4048-past-three-well-fluids",
+    "category": "readings",
+    "question": "what are 4048 past three well fluids?",
+    "site_id": 4,
+    "current_date": "2026-07-03",
+    "required_phrases": [
+      "4048"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Return the latest three well-fluid readings for 4048.",
+    "expected_tool_calls": [
+      {
+        "tool": "search_readings",
+        "arguments": {
+          "reading_type": "well_fluid",
+          "entity_name": {
+            "contains": "4048"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "readings-4048-past-three-fluid-levels",
+    "category": "readings",
+    "question": "what are 4048 past three fluid levels?",
+    "site_id": 4,
+    "current_date": "2026-07-03",
+    "forbidden_phrases": [
+      "only returns the current value",
+      "exact `fluid level` telemetry point"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Map past three fluid levels to well-fluid readings rather than current telemetry-only lookup.",
+    "expected_tool_calls": [
+      {
+        "tool": "search_readings",
+        "arguments": {
+          "reading_type": "well_fluid",
+          "entity_name": {
+            "contains": "4048"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "timeline-well-5117-history-default-range",
+    "category": "rag",
+    "question": "what is history of well 5117",
+    "site_id": 4,
+    "current_date": "2026-07-03",
+    "required_phrases": [
+      "5117"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "faithfulness",
+      "correctness"
+    ],
+    "expected_output": "Use a reasonable default history range or consistently ask for a range; avoid inconsistent month-only assumptions.",
+    "expected_tool_calls": [
+      {
+        "tool": "get_well_timeline",
+        "arguments": {
+          "well_name": {
+            "contains": "5117"
+          },
+          "start_date": {
+            "present": true
+          },
+          "end_date": {
+            "present": true
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "timeline-well-5306-history",
+    "category": "rag",
+    "question": "history of well 5306",
+    "site_id": 4,
+    "current_date": "2026-07-04",
+    "required_phrases": [
+      "5306"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "faithfulness",
+      "correctness"
+    ],
+    "expected_output": "Return available timeline/context summary for well 5306.",
+    "expected_tool_calls": [
+      {
+        "tool": "search_operational_context",
+        "arguments": {
+          "query": {
+            "contains": "history"
+          },
+          "entity_name": {
+            "contains": "5306"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "followup-producing-wells-in-battery-6-standalone",
+    "category": "allocation",
+    "question": "Yesterday there were 108 producing wells. How many of them were in Battery 6?",
+    "site_id": 4,
+    "current_date": "2026-07-04",
+    "required_phrases": [
+      "Battery 6"
+    ],
+    "forbidden_phrases": [
+      "couldn\u2019t complete",
+      "couldn't complete"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Resolve 'them' to the producing wells from the prompt context and count how many are in Battery 6."
+  },
+  {
+    "id": "followup-show-missing-readings-standalone",
+    "category": "readings",
+    "question": "After asking whether there were missing readings last calendar week, show them.",
+    "site_id": 4,
+    "current_date": "2026-06-22",
+    "forbidden_phrases": [
+      "tool-call limit",
+      "could not complete"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Resolve 'them' to missing readings for last calendar week and show the records or a concise grouped list.",
+    "expected_tool_calls": [
+      {
+        "tool": "find_all_missing_readings_for_range",
+        "arguments": {
+          "start_date": "2026-06-15",
+          "end_date": "2026-06-21"
+        }
+      }
+    ]
   }
 ]

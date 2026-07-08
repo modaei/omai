@@ -8,6 +8,7 @@ from omai.evals.models import EvaluationCase, MetricResult
 
 METRIC_DEFAULT_THRESHOLDS = {
     "answer_relevancy": 0.7,
+    "correctness": 0.7,
     "faithfulness": 0.7,
     "contextual_precision": 0.7,
     "contextual_recall": 0.7,
@@ -33,8 +34,9 @@ def run_deepeval_metrics(
             ContextualPrecisionMetric,
             ContextualRecallMetric,
             FaithfulnessMetric,
+            GEval,
         )
-        from deepeval.test_case import LLMTestCase  # type: ignore
+        from deepeval.test_case import LLMTestCase, SingleTurnParams  # type: ignore
     except ImportError as exc:
         raise DeepEvalUnavailableError(
             "DeepEval is not installed. Install dev dependencies before running "
@@ -42,12 +44,14 @@ def run_deepeval_metrics(
         ) from exc
 
     retrieval_context = _retrieval_context(tool_calls)
+    judge_context = _judge_context(tool_calls)
+    expected_output = case.expected_output or "\n".join(case.required_phrases) or None
     test_case = LLMTestCase(
         input=case.question,
         actual_output=answer,
         retrieval_context=retrieval_context or None,
-        context=retrieval_context or None,
-        expected_output="\n".join(case.required_phrases) or None,
+        context=judge_context or retrieval_context or None,
+        expected_output=expected_output,
     )
     metric_factories = {
         "answer_relevancy": AnswerRelevancyMetric,
@@ -58,7 +62,7 @@ def run_deepeval_metrics(
     results: list[MetricResult] = []
     for metric_name in case.metrics:
         factory = metric_factories.get(metric_name)
-        if factory is None:
+        if factory is None and metric_name != "correctness":
             results.append(
                 MetricResult(
                     name=metric_name,
@@ -72,7 +76,38 @@ def run_deepeval_metrics(
             metric_name, METRIC_DEFAULT_THRESHOLDS[metric_name]
         )
         try:
-            metric = factory(threshold=threshold)
+            if metric_name == "correctness":
+                if not expected_output:
+                    results.append(
+                        MetricResult(
+                            name=metric_name,
+                            score=None,
+                            passed=False,
+                            error="Correctness metric requires expected_output or required_phrases.",
+                        )
+                    )
+                    continue
+                metric = GEval(
+                    name="Correctness",
+                    threshold=threshold,
+                    evaluation_params=[
+                        SingleTurnParams.INPUT,
+                        SingleTurnParams.ACTUAL_OUTPUT,
+                        SingleTurnParams.EXPECTED_OUTPUT,
+                        SingleTurnParams.CONTEXT,
+                    ],
+                    criteria=(
+                        "Judge whether the actual Omai response satisfies the expected "
+                        "output or expected behavior for this operational query. Use the "
+                        "provided context, including tool-call arguments and tool results, "
+                        "when the visible answer is intentionally brief. Accept wording "
+                        "differences, but fail if the answer omits required operational "
+                        "facts, uses the wrong entity/date/scope, contradicts the expected "
+                        "output, or only gives a generic non-answer."
+                    ),
+                )
+            else:
+                metric = factory(threshold=threshold)
             metric.measure(test_case)
             score = getattr(metric, "score", None)
             success = getattr(metric, "success", None)
@@ -97,6 +132,26 @@ def run_deepeval_metrics(
                 )
             )
     return results
+
+
+def _judge_context(tool_calls: list[dict[str, Any]]) -> list[str]:
+    """Provide compact tool traces so correctness can judge terse UI answers."""
+
+    context = []
+    compact_calls = []
+    for call in tool_calls:
+        compact = {
+            "tool": call.get("tool"),
+            "arguments": call.get("arguments"),
+        }
+        result = call.get("result")
+        if result is not None:
+            compact["result"] = result
+        compact_calls.append(compact)
+    if compact_calls:
+        context.append(f"Tool calls: {json.dumps(compact_calls, default=str)[:6000]}")
+    context.extend(_retrieval_context(tool_calls))
+    return context
 
 
 def _retrieval_context(tool_calls: list[dict[str, Any]]) -> list[str]:

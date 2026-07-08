@@ -210,9 +210,12 @@ def _report_payload(results: list[EvaluationResult]) -> dict[str, Any]:
                 "passed": result.passed,
                 "answer": result.answer,
                 "tool_calls": result.tool_calls,
-                "stats": result.stats,
-                "checks": [asdict(check) for check in result.checks],
-                "metrics": [asdict(metric) for metric in result.metrics],
+                "failed_checks": [
+                    asdict(check) for check in result.checks if not check.passed
+                ],
+                "failed_metrics": [
+                    asdict(metric) for metric in result.metrics if not metric.passed
+                ],
             }
             for result in results
         ],

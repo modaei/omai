@@ -2,9 +2,11 @@ import json
 from pathlib import Path
 
 from omai.config.settings import Settings
-from omai.evals.cases import filter_cases, load_cases
+import pytest
+
+from omai.evals.cases import EvaluationCaseError, filter_cases, load_cases
 from omai.evals.checks import run_deterministic_checks
-from omai.evals.models import EvaluationCase, EvaluationResult
+from omai.evals.models import EvaluationCase, EvaluationResult, MetricResult
 from omai.evals.runner import (
     _configure_deepeval_environment,
     _report_payload,
@@ -23,7 +25,14 @@ def test_load_cases_parses_json_file(tmp_path: Path):
                     "category": "reports",
                     "question": "How much gas was flared?",
                     "site_id": 4,
-                    "required_tools": ["run_report"],
+                    "expected_output": "The answer should include the May 2026 gas flared total.",
+                    "expected_tool_calls": [
+                        {
+                            "tool": "run_report",
+                            "arguments": {"report_name": "gas_flared"},
+                        }
+                    ],
+                    "metrics": ["answer_relevancy", "correctness"],
                     "metric_thresholds": {"answer_relevancy": 0.8},
                 }
             ]
@@ -35,8 +44,33 @@ def test_load_cases_parses_json_file(tmp_path: Path):
 
     assert len(cases) == 1
     assert cases[0].id == "case-1"
-    assert cases[0].required_tools == ("run_report",)
+    assert cases[0].expected_output == "The answer should include the May 2026 gas flared total."
+    assert cases[0].expected_tool_calls == (
+        {"tool": "run_report", "arguments": {"report_name": "gas_flared"}},
+    )
+    assert cases[0].metrics == ("answer_relevancy", "correctness")
     assert cases[0].metric_thresholds == {"answer_relevancy": 0.8}
+
+
+def test_load_cases_rejects_invalid_expected_tool_calls(tmp_path: Path):
+    path = tmp_path / "cases.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "case-1",
+                    "category": "reports",
+                    "question": "How much gas was flared?",
+                    "site_id": 4,
+                    "expected_tool_calls": [{"arguments": {"report_name": "gas"}}],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(EvaluationCaseError, match="must include tool"):
+        load_cases(path)
 
 
 def test_filter_cases_applies_category_case_id_and_limit():
@@ -57,7 +91,7 @@ def test_deterministic_checks_validate_tools_and_phrases():
         category="reports",
         question="q",
         site_id=4,
-        required_tools=("run_report",),
+        expected_tool_calls=({"tool": "run_report", "arguments": {}},),
         forbidden_tools=("execute_operational_sql",),
         required_phrases=("gas flared",),
         forbidden_phrases=("site_id",),
@@ -70,6 +104,109 @@ def test_deterministic_checks_validate_tools_and_phrases():
     )
 
     assert all(check.passed for check in checks)
+
+
+def test_deterministic_checks_validate_expected_tool_call_arguments():
+    case = EvaluationCase(
+        id="case-1",
+        category="workflow_data_entry",
+        question="q",
+        site_id=4,
+        expected_tool_calls=(
+            {
+                "tool": "prepare_data_entry",
+                "arguments": {
+                    "entry_type": "lact_reading",
+                    "entity_name": {"contains_all": ["battery", "five", "lact"]},
+                    "values.reading": 22,
+                    "values.comments": {"contains": "hhh"},
+                    "values.optional": {"absent": True},
+                    "values.required": {"present": True},
+                    "values.kind": {"one_of": ["oil", "lact"]},
+                },
+            },
+        ),
+    )
+
+    checks = run_deterministic_checks(
+        case,
+        "Opening the prefilled data-entry form.",
+        [
+            {
+                "tool": "prepare_data_entry",
+                "arguments": {
+                    "entry_type": "lact_reading",
+                    "entity_name": "Battery five Lact",
+                    "values": {
+                        "reading": 22.0,
+                        "comments": "hhhh",
+                        "required": "yes",
+                        "kind": "LACT",
+                    },
+                },
+            }
+        ],
+    )
+
+    assert all(check.passed for check in checks)
+
+
+def test_deterministic_checks_fail_expected_tool_call_argument_mismatch():
+    case = EvaluationCase(
+        id="case-1",
+        category="reports",
+        question="q",
+        site_id=4,
+        expected_tool_calls=(
+            {
+                "tool": "compare_report_periods",
+                "arguments": {"first_start_date": "2026-06-01"},
+            },
+        ),
+    )
+
+    checks = run_deterministic_checks(
+        case,
+        "Compared production.",
+        [
+            {
+                "tool": "compare_report_periods",
+                "arguments": {"first_start_date": "2026-05-01"},
+            }
+        ],
+    )
+
+    assert any(
+        check.name == "expected_tool_call:1:compare_report_periods"
+        and not check.passed
+        and "first_start_date" in check.message
+        for check in checks
+    )
+
+
+def test_deterministic_checks_fail_missing_expected_tool_call():
+    case = EvaluationCase(
+        id="case-1",
+        category="reports",
+        question="q",
+        site_id=4,
+        expected_tool_calls=(
+            {"tool": "compare_report_periods", "arguments": {"report_name": "oil"}},
+        ),
+    )
+
+    checks = run_deterministic_checks(
+        case,
+        "Answer.",
+        [{"tool": "run_report", "arguments": {"report_name": "oil"}}],
+    )
+
+    assert any(
+        check.name == "expected_tool_call:1:compare_report_periods"
+        and not check.passed
+        and "was not used" in check.message
+        for check in checks
+    )
 
 
 def test_deterministic_checks_reject_guardrail_answer_that_is_not_refusal():
@@ -108,16 +245,37 @@ def test_write_report_outputs_json(tmp_path: Path):
         tool_calls=[{"tool": "run_report"}],
         stats={"total_seconds": 1.0},
         checks=[],
-        metrics=[],
+        metrics=[
+            MetricResult(name="answer_relevancy", score=1.0, passed=True),
+            MetricResult(
+                name="correctness",
+                score=0.2,
+                passed=False,
+                reason="Missing expected output.",
+            ),
+        ],
     )
 
     path = _write_report([result], tmp_path)
     payload = json.loads(path.read_text(encoding="utf-8"))
 
     assert path.name.startswith("omai-eval-")
-    assert payload["passed"] == 1
+    assert payload["passed"] == 0
     assert payload["total"] == 1
     assert payload["results"][0]["case"]["id"] == "case-1"
+    assert "stats" not in payload["results"][0]
+    assert "checks" not in payload["results"][0]
+    assert "metrics" not in payload["results"][0]
+    assert payload["results"][0]["failed_checks"] == []
+    assert payload["results"][0]["failed_metrics"] == [
+        {
+            "name": "correctness",
+            "score": 0.2,
+            "passed": False,
+            "reason": "Missing expected output.",
+            "error": None,
+        }
+    ]
 
 
 def test_report_payload_marks_failed_results():
@@ -138,6 +296,11 @@ def test_report_payload_marks_failed_results():
 
     assert payload["passed"] == 0
     assert payload["results"][0]["passed"] is False
+    assert "checks" not in payload["results"][0]
+    assert payload["results"][0]["failed_checks"]
+    assert all(
+        check["passed"] is False for check in payload["results"][0]["failed_checks"]
+    )
 
 
 def test_configure_deepeval_environment_uses_provider_neutral_settings(monkeypatch):

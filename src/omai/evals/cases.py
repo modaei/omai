@@ -87,7 +87,12 @@ def _case_from_dict(raw: Any, index: int) -> EvaluationCase:
             str(raw["current_date"]) if raw.get("current_date") is not None else None
         ),
         response_mode=response_mode,
-        required_tools=_tuple_of_strings(raw.get("required_tools", ()), raw["id"]),
+        expected_output=(
+            str(raw["expected_output"]) if raw.get("expected_output") is not None else None
+        ),
+        expected_tool_calls=_tuple_of_tool_call_expectations(
+            raw.get("expected_tool_calls", ()), raw["id"]
+        ),
         forbidden_tools=_tuple_of_strings(raw.get("forbidden_tools", ()), raw["id"]),
         required_phrases=_tuple_of_strings(raw.get("required_phrases", ()), raw["id"]),
         forbidden_phrases=_tuple_of_strings(raw.get("forbidden_phrases", ()), raw["id"]),
@@ -103,3 +108,33 @@ def _tuple_of_strings(value: Any, case_id: str) -> tuple[str, ...]:
     if not isinstance(value, list | tuple):
         raise EvaluationCaseError(f"Case {case_id!r} list field is invalid.")
     return tuple(str(item) for item in value)
+
+
+def _tuple_of_tool_call_expectations(
+    value: Any, case_id: str
+) -> tuple[dict[str, Any], ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list | tuple):
+        raise EvaluationCaseError(
+            f"Case {case_id!r} expected_tool_calls must be a list."
+        )
+    expectations = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise EvaluationCaseError(
+                f"Case {case_id!r} expected_tool_calls[{index}] must be an object."
+            )
+        if not item.get("tool"):
+            raise EvaluationCaseError(
+                f"Case {case_id!r} expected_tool_calls[{index}] must include tool."
+            )
+        arguments = item.get("arguments", {})
+        if arguments is None:
+            arguments = {}
+        if not isinstance(arguments, dict):
+            raise EvaluationCaseError(
+                f"Case {case_id!r} expected_tool_calls[{index}].arguments must be an object."
+            )
+        expectations.append({"tool": str(item["tool"]), "arguments": arguments})
+    return tuple(expectations)

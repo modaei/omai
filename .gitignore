@@ -8,4 +8,5 @@ omai.log
 build/
 docs/
 .idea/
+eval-results/
 
