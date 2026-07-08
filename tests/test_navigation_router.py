@@ -22,6 +22,11 @@ class EntryArguments(BaseModel):
     values: dict = Field(default_factory=dict)
 
 
+class CapabilityArguments(BaseModel):
+    query: str
+    limit: int = 3
+
+
 def make_tools(calls, *, view_status="ready", entry_status="ready"):
     def prepare_data_view(**arguments):
         calls.append(("prepare_data_view", arguments))
@@ -54,6 +59,29 @@ def make_tools(calls, *, view_status="ready", entry_status="ready"):
             }
         )
 
+    def search_ometrics_capabilities(**arguments):
+        calls.append(("search_ometrics_capabilities", arguments))
+        return json.dumps(
+            {
+                "ok": True,
+                "query": arguments["query"],
+                "count": 1,
+                "matches": [
+                    {
+                        "capability": "LACT reading",
+                        "summary": (
+                            'For a LACT reading, say "Use the Create LACT readings form, '
+                            'accessible from the dashboard or the Create LACT reading '
+                            'button in the LACT readings page." For a Flare reading, say '
+                            '"Use the Create Flare reading form, accessible from the '
+                            'dashboard or the Create Flare reading button in the flare '
+                            'readings page."'
+                        ),
+                    }
+                ],
+            }
+        )
+
     return [
         StructuredTool.from_function(
             prepare_data_view,
@@ -66,6 +94,12 @@ def make_tools(calls, *, view_status="ready", entry_status="ready"):
             name="prepare_data_entry",
             description="test",
             args_schema=EntryArguments,
+        ),
+        StructuredTool.from_function(
+            search_ometrics_capabilities,
+            name="search_ometrics_capabilities",
+            description="test",
+            args_schema=CapabilityArguments,
         ),
     ]
 
@@ -85,6 +119,52 @@ def test_show_me_report_routes_with_relative_dates_without_model():
     assert calls[0][1]["end_date"] == "2026-07-03"
     assert result[2]["model_calls"] == 0
     assert json.loads(result[1][0]["result"])["status"] == "ready"
+
+
+def test_how_do_i_register_lact_reading_routes_to_capability_help():
+    calls = []
+    result = try_answer_navigation_request(
+        tools=make_tools(calls),
+        question="How do I register a LACT reading?",
+        today=date(2026, 7, 4),
+    )
+
+    assert result is not None
+    assert calls[0][0] == "search_ometrics_capabilities"
+    assert calls[0][1]["query"] == "How do I register a LACT reading?"
+    assert "Create LACT readings" in result[0]
+    assert "dashboard" in result[0]
+    assert "Create LACT reading" in result[0]
+    assert "LACT readings page" in result[0]
+    assert result[2]["model_calls"] == 0
+
+
+def test_where_can_i_enter_lact_reading_routes_to_capability_help():
+    calls = []
+    result = try_answer_navigation_request(
+        tools=make_tools(calls),
+        question="Where can I enter a LACT reading?",
+        today=date(2026, 7, 4),
+    )
+
+    assert result is not None
+    assert calls[0][0] == "search_ometrics_capabilities"
+    assert "Create LACT readings" in result[0]
+
+
+def test_how_do_i_register_flare_reading_uses_matching_capability_guidance():
+    calls = []
+    result = try_answer_navigation_request(
+        tools=make_tools(calls),
+        question="How do I register a flare reading?",
+        today=date(2026, 7, 4),
+    )
+
+    assert result is not None
+    assert calls[0][0] == "search_ometrics_capabilities"
+    assert "Create Flare reading" in result[0]
+    assert "flare readings page" in result[0]
+    assert "Create LACT readings" not in result[0]
 
 
 def test_show_me_operational_view_extracts_search_text_before_month():
@@ -440,6 +520,17 @@ def test_generic_reading_infers_type_from_field_signature_without_equipment_mark
                 "tbgp": 100.0,
                 "csgp": 200.0,
                 "fluid_level": 300.0,
+                "runtime": 24.0,
+            },
+        ),
+        (
+            "create well test for 4048 oil 3 water 20 gas 6 run time 24",
+            "well_test",
+            "4048",
+            {
+                "oil": 3.0,
+                "water": 20.0,
+                "gas": 6.0,
                 "runtime": 24.0,
             },
         ),

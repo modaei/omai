@@ -6,6 +6,6 @@ Ometrics tracks well downtime with well shutdown records. Short downtime can be 
 
 Downtime codes describe why the well is down. They are used later by reports and timeline views to explain production loss and operating history.
 
-When answering workflow questions, point the user to the Well Shutdowns feature. Explain that hourly shutdowns are appropriate for a known number of downtime hours on a day, while long shutdowns are appropriate when the well is shut in for a continuous period or is still down.
+When answering workflow questions, point the user to the Well Shutdowns feature. Use the quoted guidance when the user asks how to register or create a well shutdown: "Use the Create Well Shutdown form, accessible from the dashboard or the Create Well Shutdown button in the well shutdowns page." If the user asks which shutdown type to use, explain that hourly shutdowns are appropriate for a known number of downtime hours on a day, while long shutdowns are appropriate when the well is shut in for a continuous period or is still down.
 
 Related tools in this assistant: get_well_shutdowns, get_current_long_shutdowns, list_downtime_codes, get_well_timeline.

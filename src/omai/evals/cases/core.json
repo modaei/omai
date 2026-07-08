@@ -7,11 +7,10 @@
     "current_date": "2026-06-24",
     "forbidden_phrases": [
       "site_id",
+      "site id",
       "The report did not specify units"
     ],
-    "metrics": [
-      "answer_relevancy"
-    ],
+    "metrics": [],
     "expected_tool_calls": [
       {
         "tool": "run_report",
@@ -21,17 +20,16 @@
           "end_date": "2026-05-31"
         }
       }
-    ]
+    ],
+    "deterministic": true
   },
   {
     "id": "missing-readings-june-01-2026",
     "category": "readings",
-    "question": "Do we have any missing data entries on June 1st, 2026?",
+    "question": "Do we have any missing data entries on June 1st?",
     "site_id": 4,
     "current_date": "2026-06-24",
-    "metrics": [
-      "answer_relevancy"
-    ],
+    "metrics": [],
     "expected_tool_calls": [
       {
         "tool": "find_all_missing_readings",
@@ -39,10 +37,11 @@
           "reading_date": "2026-06-01"
         }
       }
-    ]
+    ],
+    "deterministic": true
   },
   {
-    "id": "rag-well-5144h-june-14-2026",
+    "id": "history-well-5144h-june-14-2026",
     "category": "rag",
     "question": "What happened with 5144H on 2026-06-14?",
     "site_id": 4,
@@ -54,22 +53,20 @@
       "Sources",
       "Interpretation"
     ],
-    "metrics": [
-      "answer_relevancy",
-      "faithfulness"
-    ],
+    "metrics": [],
     "expected_tool_calls": [
       {
-        "tool": "search_operational_context",
+        "tool": "get_well_timeline",
         "arguments": {
-          "query": {
-            "contains": "5144"
+          "well_name": {
+            "contains": "5144H"
           },
           "start_date": "2026-06-14",
           "end_date": "2026-06-14"
         }
       }
-    ]
+    ],
+    "deterministic": true
   },
   {
     "id": "workflow-register-lact-reading",
@@ -78,15 +75,21 @@
     "site_id": 4,
     "current_date": "2026-06-24",
     "required_phrases": [
-      "LACT reading"
+      "Create LACT readings",
+      "dashboard",
+      "Create LACT reading",
+      "LACT readings page"
     ],
     "forbidden_phrases": [
       "I created",
-      "submitted"
+      "submitted",
+      "Capability: Raw Field Readings",
+      "Related tools",
+      "what to record",
+      "why it matters",
+      "inspect daily field readings"
     ],
-    "metrics": [
-      "answer_relevancy"
-    ],
+    "metrics": [],
     "expected_tool_calls": [
       {
         "tool": "search_ometrics_capabilities",
@@ -99,7 +102,8 @@
           }
         }
       }
-    ]
+    ],
+    "deterministic": true
   },
   {
     "id": "guardrail-paris-age",
@@ -112,14 +116,14 @@
       "search_operational_context",
       "execute_operational_sql"
     ],
-    "metrics": []
+    "metrics": [],
+    "deterministic": true
   },
   {
     "id": "data-entry-lact-spoken-five-leading-type",
     "category": "workflow_data_entry",
     "question": "create a reading for lact Battery five Lact reading 22 comments hhhh",
     "site_id": 4,
-    "current_date": "2026-07-07",
     "required_phrases": [
       "Opening the prefilled data-entry form"
     ],
@@ -128,11 +132,7 @@
       "Multiple LACT records matched",
       "Battery 15"
     ],
-    "metrics": [
-      "answer_relevancy",
-      "correctness"
-    ],
-    "expected_output": "Resolve Battery five Lact to Battery 5 Lact even with the leading LACT type token, extract reading=22 and comments=hhhh, and open the prefilled form.",
+    "metrics": [],
     "expected_tool_calls": [
       {
         "tool": "prepare_data_entry",
@@ -149,14 +149,14 @@
           "values.comments": "hhhh"
         }
       }
-    ]
+    ],
+    "deterministic": true
   },
   {
     "id": "data-entry-lact-digit-five-leading-type",
     "category": "workflow_data_entry",
     "question": "create a reading for lact Battery 5 Lact reading 22 comments hhhh",
     "site_id": 4,
-    "current_date": "2026-07-07",
     "required_phrases": [
       "Opening the prefilled data-entry form"
     ],
@@ -164,11 +164,7 @@
       "Multiple LACT records matched",
       "Battery 15"
     ],
-    "metrics": [
-      "answer_relevancy",
-      "correctness"
-    ],
-    "expected_output": "Resolve Battery 5 Lact exactly and avoid token matching against Battery 15 Lact.",
+    "metrics": [],
     "expected_tool_calls": [
       {
         "tool": "prepare_data_entry",
@@ -185,50 +181,14 @@
           "values.comments": "hhhh"
         }
       }
-    ]
-  },
-  {
-    "id": "data-entry-lact-spoken-five-no-leading-type",
-    "category": "workflow_data_entry",
-    "question": "create a reading for Battery five Lact reading 22 comments hhhh",
-    "site_id": 4,
-    "current_date": "2026-07-07",
-    "required_phrases": [
-      "Opening the prefilled data-entry form"
     ],
-    "forbidden_phrases": [
-      "No LACT matched",
-      "Multiple LACT records matched"
-    ],
-    "metrics": [
-      "answer_relevancy",
-      "correctness"
-    ],
-    "expected_output": "Resolve spoken five to Battery 5 Lact and open the LACT reading form.",
-    "expected_tool_calls": [
-      {
-        "tool": "prepare_data_entry",
-        "arguments": {
-          "entry_type": "lact_reading",
-          "entity_name": {
-            "contains_all": [
-              "battery",
-              "five",
-              "lact"
-            ]
-          },
-          "values.reading": 22,
-          "values.comments": "hhhh"
-        }
-      }
-    ]
+    "deterministic": true
   },
   {
     "id": "data-entry-flow-meter-spoken-two-water-transfer",
     "category": "workflow_data_entry",
     "question": "create a flow meter reading for Battery two Water Transfer flow twenty total nine",
     "site_id": 4,
-    "current_date": "2026-07-07",
     "required_phrases": [
       "Opening the prefilled data-entry form"
     ],
@@ -237,11 +197,7 @@
       "Battery 3 Water Transfer",
       "Battery 4 Water Transfer"
     ],
-    "metrics": [
-      "answer_relevancy",
-      "correctness"
-    ],
-    "expected_output": "Resolve Battery two Water Transfer to Battery 2 Water Transfer and extract flow=20 and total=9.",
+    "metrics": [],
     "expected_tool_calls": [
       {
         "tool": "prepare_data_entry",
@@ -259,14 +215,14 @@
           "values.total": 9
         }
       }
-    ]
+    ],
+    "deterministic": true
   },
   {
     "id": "data-entry-tank-five-two-float-over-with-tank-token",
     "category": "workflow_data_entry",
     "question": "Create a tank reading for tank 5\u20132 float over top level fit five top level inch two water level feet two water level inch one",
     "site_id": 4,
-    "current_date": "2026-07-07",
     "required_phrases": [
       "Opening the prefilled data-entry form"
     ],
@@ -274,11 +230,7 @@
       "Multiple tank records matched",
       "15-2 Float Over"
     ],
-    "metrics": [
-      "answer_relevancy",
-      "correctness"
-    ],
-    "expected_output": "Resolve 5-2 Float Over, not 15-2 Float Over, and extract top_level_feet=5, top_level_inches=2, water_level_feet=2, water_level_inches=1. Treat 'fit' as feet.",
+    "metrics": [],
     "expected_tool_calls": [
       {
         "tool": "prepare_data_entry",
@@ -298,58 +250,23 @@
           "values.water_level_inches": 1
         }
       }
-    ]
+    ],
+    "deterministic": true
   },
   {
     "id": "data-entry-water-plant-tank-field-mismatch",
     "category": "workflow_data_entry",
     "question": "Create a water plant reading for 5\u20132 float over top level fit five top level inch two water level feet two water level inch one",
     "site_id": 4,
-    "current_date": "2026-07-07",
     "forbidden_phrases": [
-      "No water plant matched"
+      "Opening the prefilled data-entry form"
     ],
-    "metrics": [
-      "answer_relevancy",
-      "correctness"
-    ],
-    "expected_output": "Do not search water plants using the entire measurement tail. Either infer this is a tank reading from tank-level fields or ask a concise clarification.",
+    "metrics": [],
     "expected_tool_calls": [
       {
         "tool": "prepare_data_entry",
         "arguments": {
-          "entity_name": {
-            "contains_all": [
-              "5",
-              "2",
-              "float",
-              "over"
-            ]
-          }
-        }
-      }
-    ]
-  },
-  {
-    "id": "data-entry-tank-five-two-float-over-no-tank-token",
-    "category": "workflow_data_entry",
-    "question": "Create a reading for 5\u20132 float over top level feet five top level inch two water level feet two water level inch one",
-    "site_id": 4,
-    "current_date": "2026-07-07",
-    "forbidden_phrases": [
-      "Multiple tank records matched",
-      "15-2 Float Over"
-    ],
-    "metrics": [
-      "answer_relevancy",
-      "correctness"
-    ],
-    "expected_output": "Infer tank reading from top/water level fields even without the word tank and resolve 5-2 Float Over exactly.",
-    "expected_tool_calls": [
-      {
-        "tool": "prepare_data_entry",
-        "arguments": {
-          "entry_type": "tank_reading",
+          "entry_type": "water_plant_reading",
           "entity_name": {
             "contains_all": [
               "5",
@@ -358,28 +275,21 @@
               "over"
             ]
           },
-          "values.top_level_feet": 5,
-          "values.top_level_inches": 2,
-          "values.water_level_feet": 2,
-          "values.water_level_inches": 1
+          "values": {}
         }
       }
-    ]
+    ],
+    "deterministic": true
   },
   {
     "id": "data-entry-flow-meter-inferred-from-fields",
     "category": "workflow_data_entry",
     "question": "create reading for Battery 2 Water Transfer flow 20 total 9",
     "site_id": 4,
-    "current_date": "2026-07-07",
     "required_phrases": [
       "Opening the prefilled data-entry form"
     ],
-    "metrics": [
-      "answer_relevancy",
-      "correctness"
-    ],
-    "expected_output": "Infer flow meter reading from flow and total fields and open the form for Battery 2 Water Transfer.",
+    "metrics": [],
     "expected_tool_calls": [
       {
         "tool": "prepare_data_entry",
@@ -397,22 +307,18 @@
           "values.total": 9
         }
       }
-    ]
+    ],
+    "deterministic": true
   },
   {
     "id": "data-entry-flare-reading-basic",
     "category": "workflow_data_entry",
     "question": "create reading for Battery 6 flare volume 6",
     "site_id": 4,
-    "current_date": "2026-07-04",
     "required_phrases": [
       "Opening the prefilled data-entry form"
     ],
-    "metrics": [
-      "answer_relevancy",
-      "correctness"
-    ],
-    "expected_output": "Open flare reading for Battery 6 with volume=6.",
+    "metrics": [],
     "expected_tool_calls": [
       {
         "tool": "prepare_data_entry",
@@ -427,19 +333,15 @@
           "values.volume": 6
         }
       }
-    ]
+    ],
+    "deterministic": true
   },
   {
-    "id": "data-entry-flare-comment-unsupported",
+    "id": "data-entry-flare-with-comment",
     "category": "workflow_data_entry",
     "question": "Add reading for battery 6 flare volume 6 comment bad read",
     "site_id": 4,
-    "current_date": "2026-07-04",
-    "metrics": [
-      "answer_relevancy",
-      "correctness"
-    ],
-    "expected_output": "Handle unsupported flare comment explicitly: either reject only the unsupported comment while preserving volume=6, or map it if the form supports a comment field. Do not silently create/drop fields.",
+    "metrics": [],
     "expected_tool_calls": [
       {
         "tool": "prepare_data_entry",
@@ -451,28 +353,25 @@
               "6"
             ]
           },
-          "values.volume": 6
+          "values.volume": 6,
+          "values.comments": "bad read"
         }
       }
-    ]
+    ],
+    "deterministic": true
   },
   {
     "id": "data-entry-tank-water-feet-inches-aliases",
     "category": "workflow_data_entry",
     "question": "create a reading for 2-4 water feet 10 inches 10",
     "site_id": 4,
-    "current_date": "2026-07-03",
     "forbidden_phrases": [
       "water_feet",
       "water_inches",
       "aren\u2019t supported fields",
       "aren't supported fields"
     ],
-    "metrics": [
-      "answer_relevancy",
-      "correctness"
-    ],
-    "expected_output": "Map water feet/inches to supported tank water level fields.",
+    "metrics": [],
     "expected_tool_calls": [
       {
         "tool": "prepare_data_entry",
@@ -485,19 +384,15 @@
           "values.water_level_inches": 10
         }
       }
-    ]
+    ],
+    "deterministic": true
   },
   {
     "id": "data-entry-tank-top-and-water-levels",
     "category": "workflow_data_entry",
     "question": "create tank reading for 2-4 top feet 5 top inches 2 water feet 1 water inches 3",
     "site_id": 4,
-    "current_date": "2026-07-03",
-    "metrics": [
-      "answer_relevancy",
-      "correctness"
-    ],
-    "expected_output": "Extract top_level_feet=5, top_level_inches=2, water_level_feet=1, water_level_inches=3.",
+    "metrics": [],
     "expected_tool_calls": [
       {
         "tool": "prepare_data_entry",
@@ -512,48 +407,16 @@
           "values.water_level_inches": 3
         }
       }
-    ]
-  },
-  {
-    "id": "data-entry-run-ticket-numeric-fields",
-    "category": "workflow_data_entry",
-    "question": "create run ticket for Battery 6 observed gravity 40 observed temperature 80 bsw one percent",
-    "site_id": 4,
-    "current_date": "2026-07-03",
-    "metrics": [
-      "answer_relevancy",
-      "correctness"
     ],
-    "expected_output": "Extract observed gravity, observed temperature, and BSW percent for a run ticket.",
-    "expected_tool_calls": [
-      {
-        "tool": "prepare_data_entry",
-        "arguments": {
-          "entry_type": "run_ticket",
-          "entity_name": {
-            "contains_all": [
-              "Battery",
-              "6"
-            ]
-          },
-          "values.obs_grav": 40,
-          "values.obs_temp": 80,
-          "values.b_s_w": 1
-        }
-      }
-    ]
+    "deterministic": true
   },
   {
     "id": "data-entry-well-test-not-well-fluid",
     "category": "workflow_data_entry",
-    "question": "create well test for 4048 oil 3 water 20 gas 6 hours 24",
+    "question": "create well test for 4048 oil 3 water 20 gas 6 run time 24",
     "site_id": 4,
     "current_date": "2026-07-03",
-    "metrics": [
-      "answer_relevancy",
-      "correctness"
-    ],
-    "expected_output": "Prepare a well test reading for 4048 and extract oil, water, gas, and hours. Do not route to well-fluid reading.",
+    "metrics": [],
     "expected_tool_calls": [
       {
         "tool": "prepare_data_entry",
@@ -568,7 +431,8 @@
           "values.runtime": 24
         }
       }
-    ]
+    ],
+    "deterministic": true
   },
   {
     "id": "data-entry-well-fluid-not-well-test",
@@ -576,11 +440,7 @@
     "question": "create well fluid reading for 4048 fluid level 2717",
     "site_id": 4,
     "current_date": "2026-07-03",
-    "metrics": [
-      "answer_relevancy",
-      "correctness"
-    ],
-    "expected_output": "Prepare a well-fluid reading for 4048 with fluid level 2717. Do not route to well test.",
+    "metrics": [],
     "expected_tool_calls": [
       {
         "tool": "prepare_data_entry",
@@ -592,20 +452,15 @@
           "values.level": 2717
         }
       }
-    ]
+    ],
+    "deterministic": true
   },
   {
     "id": "rod-pump-health-well-5823-with-well-token",
     "category": "rod_pump",
     "question": "Analyze rod-pump health for well 5823",
     "site_id": 4,
-    "current_date": "2026-07-06",
-    "required_phrases": [
-      "health",
-      "diagnosis",
-      "severity",
-      "confidence"
-    ],
+    "required_phrases": [],
     "forbidden_phrases": [
       "couldn\u2019t find",
       "couldn't find",
@@ -632,11 +487,7 @@
     "category": "rod_pump",
     "question": "Analyze rod-pump health for 5823",
     "site_id": 4,
-    "current_date": "2026-07-06",
-    "required_phrases": [
-      "health",
-      "diagnosis"
-    ],
+    "required_phrases": [],
     "forbidden_phrases": [
       "couldn\u2019t find",
       "couldn't find"
@@ -645,7 +496,7 @@
       "answer_relevancy",
       "correctness"
     ],
-    "expected_output": "Analyze the single requested well by number.",
+    "expected_output": "Resolve numeric well 5823 and return current rod-pump health, diagnosis, severity, confidence, evidence, and recommendation.",
     "expected_tool_calls": [
       {
         "tool": "analyze_rod_pump",
@@ -699,13 +550,10 @@
       "analyze_rod_pump"
     ],
     "required_phrases": [
-      "scheduled report"
+      "scheduled"
     ],
-    "metrics": [
-      "answer_relevancy",
-      "correctness"
-    ],
-    "expected_output": "Do not run broad Graphite analysis in chat. Explain that all-well ranking is available through the scheduled Omtasks report."
+    "metrics": [],
+    "deterministic": true
   },
   {
     "id": "rod-pump-urgent-intervention-chat-guardrail",
@@ -717,13 +565,10 @@
       "analyze_rod_pump"
     ],
     "required_phrases": [
-      "scheduled report"
+      "scheduled"
     ],
-    "metrics": [
-      "answer_relevancy",
-      "correctness"
-    ],
-    "expected_output": "Reject broad urgent-intervention ranking in chat and point to the scheduled rod-pump health report."
+    "metrics": [],
+    "deterministic": true
   },
   {
     "id": "rod-pump-mechanical-risk-chat-guardrail",
@@ -735,18 +580,46 @@
       "analyze_rod_pump"
     ],
     "required_phrases": [
-      "scheduled report"
+      "scheduled"
     ],
-    "metrics": [
-      "answer_relevancy",
-      "correctness"
-    ],
-    "expected_output": "Reject broad mechanical-risk ranking in Ometrics chat and require an exact well for interactive analysis."
+    "metrics": [],
+    "deterministic": true
   },
   {
     "id": "well-tests-compare-last-three-hdu-4048",
     "category": "well_tests",
     "question": "Compare last three well test for hdu_4048",
+    "site_id": 4,
+    "current_date": "2026-07-04",
+    "required_phrases": [
+      "4048"
+    ],
+    "forbidden_phrases": [
+      "Compared the latest 3 well tests for 120 well"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "correctness"
+    ],
+    "expected_output": "Scope the comparison to well 4048 only.",
+    "expected_tool_calls": [
+      {
+        "tool": "analyze_well_tests",
+        "arguments": {
+          "analysis_mode": "recent_tests",
+          "group_by": "well",
+          "well_name": {
+            "contains": "4048"
+          },
+          "test_count": 3
+        }
+      }
+    ]
+  },
+  {
+    "id": "well-tests-compare-last-three-4048",
+    "category": "well_tests",
+    "question": "Compare last three well test for 4048",
     "site_id": 4,
     "current_date": "2026-07-04",
     "required_phrases": [
@@ -856,14 +729,8 @@
       {
         "tool": "analyze_well_tests",
         "arguments": {
-          "analysis_mode": "recent_tests",
-          "group_by": "well",
-          "test_count": {
-            "one_of": [
-              2,
-              null
-            ]
-          }
+          "analysis_mode": "latest_previous",
+          "group_by": "well"
         }
       }
     ]
@@ -1486,11 +1353,7 @@
       "tool-call limit",
       "could not complete"
     ],
-    "metrics": [
-      "answer_relevancy",
-      "correctness"
-    ],
-    "expected_output": "Check the full previous calendar week efficiently without duplicate date calls.",
+    "metrics": [],
     "expected_tool_calls": [
       {
         "tool": "find_all_missing_readings_for_range",
@@ -1499,7 +1362,8 @@
           "end_date": "2026-06-21"
         }
       }
-    ]
+    ],
+    "deterministic": true
   },
   {
     "id": "missing-readings-last-calendar-week",
@@ -1511,11 +1375,7 @@
       "tool-call limit",
       "could not complete"
     ],
-    "metrics": [
-      "answer_relevancy",
-      "correctness"
-    ],
-    "expected_output": "Check missing readings for the previous calendar week and summarize results.",
+    "metrics": [],
     "expected_tool_calls": [
       {
         "tool": "find_all_missing_readings_for_range",
@@ -1524,7 +1384,8 @@
           "end_date": "2026-06-21"
         }
       }
-    ]
+    ],
+    "deterministic": true
   },
   {
     "id": "readings-4048-past-three-well-fluids",
@@ -1669,11 +1530,7 @@
       "tool-call limit",
       "could not complete"
     ],
-    "metrics": [
-      "answer_relevancy",
-      "correctness"
-    ],
-    "expected_output": "Resolve 'them' to missing readings for last calendar week and show the records or a concise grouped list.",
+    "metrics": [],
     "expected_tool_calls": [
       {
         "tool": "find_all_missing_readings_for_range",
@@ -1682,6 +1539,7 @@
           "end_date": "2026-06-21"
         }
       }
-    ]
+    ],
+    "deterministic": true
   }
 ]

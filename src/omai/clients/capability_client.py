@@ -144,7 +144,7 @@ def _phrase_bonus(query: str, content: str) -> int:
     return bonus
 
 
-def _summary(content: str, max_chars: int = 1_800) -> str:
+def _summary(content: str, max_chars: int = 5_000) -> str:
     # Return compact context for the LLM/tool result. Headings are metadata and the
     # cap prevents capability guidance from crowding out the user's actual request.
     lines = [

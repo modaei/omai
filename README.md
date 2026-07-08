@@ -5,12 +5,18 @@ report production data. It tracks field readings, tanks, wells, shutdowns,
 alarms, work orders, notes, emails, and production reports across a selected
 site.
 
-Omai is the read-only AI assistant service for Ometrics. It provides a
-LangChain-based chat agent that can answer operational questions by calling the
-existing Ometrics and Omreports data paths. The Laravel Ometrics application
-uses Omai through a local FastAPI `/chat` endpoint; a Streamlit UI is also
-available for local development and debugging. Omai is not intended to run
-independently; it is an AI service layer for an existing Ometrics deployment.
+Omai is the read-only AI agent for Ometrics. It is not just a chat wrapper: it
+interprets oil-field operations questions, chooses the appropriate tool or data
+path, retrieves the required operational context, and produces grounded answers
+from the retrieved data. The agent is built with LangChain and an
+OpenAI-compatible chat model, and it can call Ometrics, Omreports, RAG, and
+validated SQL tools depending on the user's request.
+
+The Laravel Ometrics application uses Omai through a local FastAPI `/chat`
+endpoint; a Streamlit UI is also available for local development and debugging.
+Omai is not intended to run independently. It is an AI agent layer for an
+existing Ometrics deployment, with Ometrics and Omreports remaining the systems
+of record.
 
 ## Responsibilities
 
@@ -21,6 +27,9 @@ Omai is responsible for:
 - Using an OpenAI-compatible chat API through LangChain. The model, API key, and
   base URL are configurable, so it can run with OpenAI directly or a compatible
   provider such as OpenRouter.
+- Acting as a tool-using operational agent: interpreting user intent, selecting
+  the best available tool, passing scoped arguments, and synthesizing the result
+  into a user-facing answer.
 - Running Omreports functions for report questions, including production,
   sales, gas, water, injection, allocation, and monthly battery summaries.
 - Reading Ometrics MySQL data for raw readings, missing readings, comparisons,
@@ -33,9 +42,12 @@ Omai is responsible for:
   documents in `knowledge/capabilities`.
 - Searching operational text with RAG. Source records are read from MySQL during
   indexing, embedded, and stored in a Postgres + pgvector index.
-- Enforcing read-only behavior. Omai can retrieve and summarize data, but it
-  does not create records, update records, send emails, acknowledge alarms,
-  control equipment, or export files.
+- Producing answers grounded in retrieved operational data, tool results, and
+  curated Ometrics capability guidance.
+- Enforcing read-only behavior. Omai can retrieve and summarize data, and it can
+  prepare navigation to existing Ometrics forms where supported, but it does not
+  create records, update records, send emails, acknowledge alarms, control
+  equipment, or export files.
 
 ## Runtime Dependencies
 
@@ -59,12 +71,34 @@ domain tools will be unavailable or return errors.
 
 - `FastAPI` serves `/health` and `/chat` for Ometrics. The API accepts only
   localhost clients.
-- `LangChain` handles model calls and tool calling.
+- `LangChain` runs the agent loop: understand the request, decide whether a
+  tool is needed, call the selected tool with scoped arguments, then compose the
+  final answer.
+- Deterministic routing handles common high-confidence workflows before a full
+  LLM tool-selection loop is needed.
 - `omreports` remains the source for calculated report results.
 - Ometrics MySQL remains the source of operational records.
 - Postgres + pgvector stores the derived operational-text vector index.
 - Conversation messages are stored in the Ometrics database through Omai's
   conversation repository.
+
+Typical flow:
+
+```text
+Ometrics chat request
+        │
+        ▼
+Omai AI agent
+        │
+        ├─ deterministic router, when a safe direct path exists
+        └─ LangChain LLM tool-selection loop
+                 │
+                 ▼
+        Ometrics / Omreports / RAG / validated SQL tools
+                 │
+                 ▼
+        grounded final answer returned to Ometrics
+```
 
 The public `/chat` response contains only:
 
@@ -283,9 +317,59 @@ Useful filters:
 omai-evaluate --limit 3
 omai-evaluate --category rag
 omai-evaluate --case-id report-gas-flared-may-2026
+omai-evaluate --failed-only
 ```
 
+Use `--current-date YYYY-MM-DD` to supply a default date for cases that do not
+define `current_date`. If a case defines `current_date`, the case value wins.
+
 Before running cases, the command validates local DB, vector DB, and Omreports
-connectivity. Results are written to `eval-results/omai-eval-*.json` with the
-answer, tool calls, timing stats, deterministic assertion results, and DeepEval
-metric results.
+connectivity. Results are written to `eval-results/omai-eval-*.json`. Each result
+contains only:
+
+- `case.id` and `case.question`
+- `passed`
+- `answer`
+- `tool_calls`
+- `failed_checks`
+- `failed_metrics`
+
+Passing deterministic checks and passing DeepEval metrics are omitted from the
+report to keep files small. Timing stats are intentionally not written to eval
+reports.
+
+Use `--failed-only` when running larger suites if the report file should include
+only failed cases. The top-level `passed` and `total` counts still refer to all
+evaluated cases; only the `results` array is filtered.
+
+Evaluation cases live in `src/omai/evals/cases/core.json`. Important fields:
+
+- `expected_tool_calls`: verifies both the tool name and selected argument
+  values. This replaces the older `required_tools` style check.
+- `forbidden_tools`, `required_phrases`, and `forbidden_phrases`: deterministic
+  answer/tool assertions.
+- `deterministic: true`: skips DeepEval judge calls for cases where tool calls,
+  arguments, and phrases fully define success. This reduces runtime and token
+  cost for data-entry and routing regressions.
+- `metrics`: DeepEval metrics to run for non-deterministic cases. Supported
+  values include `answer_relevancy`, `correctness`, `faithfulness`, and
+  `contextual_relevancy`.
+- `expected_output`: reference behavior used by LLM-judged correctness-style
+  metrics. It is ignored for `deterministic: true` cases.
+
+`expected_tool_calls[].arguments` supports dotted paths and simple matchers:
+
+```json
+{
+  "tool": "analyze_well_tests",
+  "arguments": {
+    "analysis_mode": "recent_tests",
+    "group_by": "well",
+    "well_name": {"contains": "4048"},
+    "test_count": 3
+  }
+}
+```
+
+Available matchers are `contains`, `contains_all`, `one_of`, `present`, and
+`absent`.

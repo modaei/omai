@@ -9,4 +9,4 @@ build/
 docs/
 .idea/
 eval-results/
-
+.deepeval/

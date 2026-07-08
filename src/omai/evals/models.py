@@ -14,6 +14,7 @@ class EvaluationCase:
     site_id: int
     current_date: str | None = None
     response_mode: str = "fast"
+    deterministic: bool = False
     expected_output: str | None = None
     expected_tool_calls: tuple[dict[str, Any], ...] = ()
     forbidden_tools: tuple[str, ...] = ()

@@ -250,6 +250,61 @@ def test_latest_three_tests_by_battery_routes_without_model():
     assert result[2]["model_calls"] == 0
 
 
+def test_latest_three_tests_extracts_bare_numeric_well_filter():
+    calls = []
+    result = try_answer_well_test_analysis(
+        tools=[make_tool(calls)],
+        question="Compare last three well test for 4048",
+        history=[],
+        today=date(2026, 7, 2),
+    )
+
+    assert result is not None
+    assert calls[0]["analysis_mode"] == "recent_tests"
+    assert calls[0]["group_by"] == "well"
+    assert calls[0]["test_count"] == 3
+    assert calls[0]["well_name"] == "4048"
+
+
+def test_latest_three_tests_extracts_hdu_shorthand_well_filters():
+    for question in (
+        "Compare last three well test for hdu_4048",
+        "Compare last three well test for hdu 4048",
+        "Compare last three well test for hdu-4048",
+        "For well 4048, compare last three well tests",
+        "Compare last three well tests for HARTZOG DRAW UNIT 4048",
+    ):
+        calls = []
+        result = try_answer_well_test_analysis(
+            tools=[make_tool(calls)],
+            question=question,
+            history=[],
+            today=date(2026, 7, 2),
+        )
+
+        assert result is not None
+        assert calls[0]["analysis_mode"] == "recent_tests"
+        assert calls[0]["group_by"] == "well"
+        assert calls[0]["test_count"] == 3
+        assert calls[0]["well_name"] == "4048"
+
+
+def test_latest_three_tests_on_all_wells_remains_unscoped():
+    calls = []
+    result = try_answer_well_test_analysis(
+        tools=[make_tool(calls)],
+        question="Are there any anomalies between last three well test on all wells",
+        history=[],
+        today=date(2026, 7, 2),
+    )
+
+    assert result is not None
+    assert calls[0]["analysis_mode"] == "recent_tests"
+    assert calls[0]["group_by"] == "well"
+    assert calls[0]["test_count"] == 3
+    assert calls[0].get("well_name") is None
+
+
 def test_compare_tests_in_month_routes_to_per_well_range_sequence():
     calls = []
     result = try_answer_well_test_analysis(

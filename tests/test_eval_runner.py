@@ -9,6 +9,7 @@ from omai.evals.checks import run_deterministic_checks
 from omai.evals.models import EvaluationCase, EvaluationResult, MetricResult
 from omai.evals.runner import (
     _configure_deepeval_environment,
+    _evaluate_case,
     _report_payload,
     _write_report,
 )
@@ -25,6 +26,7 @@ def test_load_cases_parses_json_file(tmp_path: Path):
                     "category": "reports",
                     "question": "How much gas was flared?",
                     "site_id": 4,
+                    "deterministic": True,
                     "expected_output": "The answer should include the May 2026 gas flared total.",
                     "expected_tool_calls": [
                         {
@@ -44,6 +46,7 @@ def test_load_cases_parses_json_file(tmp_path: Path):
 
     assert len(cases) == 1
     assert cases[0].id == "case-1"
+    assert cases[0].deterministic is True
     assert cases[0].expected_output == "The answer should include the May 2026 gas flared total."
     assert cases[0].expected_tool_calls == (
         {"tool": "run_report", "arguments": {"report_name": "gas_flared"}},
@@ -262,7 +265,7 @@ def test_write_report_outputs_json(tmp_path: Path):
     assert path.name.startswith("omai-eval-")
     assert payload["passed"] == 0
     assert payload["total"] == 1
-    assert payload["results"][0]["case"]["id"] == "case-1"
+    assert payload["results"][0]["case"] == {"id": "case-1", "question": "q"}
     assert "stats" not in payload["results"][0]
     assert "checks" not in payload["results"][0]
     assert "metrics" not in payload["results"][0]
@@ -301,6 +304,85 @@ def test_report_payload_marks_failed_results():
     assert all(
         check["passed"] is False for check in payload["results"][0]["failed_checks"]
     )
+
+
+def test_report_payload_can_include_only_failed_results():
+    passing = EvaluationResult(
+        case=EvaluationCase(id="pass-case", category="reports", question="ok", site_id=4),
+        answer="answer",
+        tool_calls=[],
+        stats={},
+        checks=[],
+        metrics=[],
+    )
+    failing = EvaluationResult(
+        case=EvaluationCase(id="fail-case", category="reports", question="bad", site_id=4),
+        answer="site_id 4",
+        tool_calls=[],
+        stats={},
+        checks=run_deterministic_checks(
+            EvaluationCase(id="fail-case", category="reports", question="bad", site_id=4),
+            "site_id 4",
+            [],
+        ),
+        metrics=[],
+    )
+
+    payload = _report_payload([passing, failing], failed_only=True)
+
+    assert payload["passed"] == 1
+    assert payload["total"] == 2
+    assert payload["failed_only"] is True
+    assert [item["case"]["id"] for item in payload["results"]] == ["fail-case"]
+
+
+def test_evaluate_case_skips_metrics_for_deterministic_case(monkeypatch):
+    settings = make_settings()
+
+    def fake_answer_chat(**_kwargs):
+        return "answer", [{"tool": "run_report", "arguments": {}}], {}
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("DeepEval metrics should not run for deterministic cases")
+
+    monkeypatch.setattr("omai.evals.runner.answer_chat", fake_answer_chat)
+    monkeypatch.setattr("omai.evals.runner.run_deepeval_metrics", fail_if_called)
+
+    result = _evaluate_case(
+        settings,
+        EvaluationCase(
+            id="case-1",
+            category="reports",
+            question="q",
+            site_id=4,
+            deterministic=True,
+        ),
+        current_date_override=None,
+    )
+
+    assert result.metrics == []
+
+
+def test_evaluate_case_runs_metrics_for_non_deterministic_case(monkeypatch):
+    settings = make_settings()
+    metric = MetricResult(name="answer_relevancy", score=1.0, passed=True)
+
+    def fake_answer_chat(**_kwargs):
+        return "answer", [{"tool": "run_report", "arguments": {}}], {}
+
+    def fake_metrics(*_args, **_kwargs):
+        return [metric]
+
+    monkeypatch.setattr("omai.evals.runner.answer_chat", fake_answer_chat)
+    monkeypatch.setattr("omai.evals.runner.run_deepeval_metrics", fake_metrics)
+
+    result = _evaluate_case(
+        settings,
+        EvaluationCase(id="case-1", category="reports", question="q", site_id=4),
+        current_date_override=None,
+    )
+
+    assert result.metrics == [metric]
 
 
 def test_configure_deepeval_environment_uses_provider_neutral_settings(monkeypatch):

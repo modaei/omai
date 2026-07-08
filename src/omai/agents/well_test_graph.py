@@ -250,9 +250,9 @@ def _classify_well_test_analysis(
             if battery_reference.isdigit()
             else battery_reference
         )
-    well_match = re.search(r"\bwell\s+([a-z0-9_-]*\d[a-z0-9_-]*)\b", current, re.IGNORECASE)
-    if well_match:
-        arguments["well_name"] = well_match.group(1)
+    well_name = _extract_well_name_filter(current)
+    if well_name:
+        arguments["well_name"] = well_name
 
     composite_terms = re.search(
         r"\b(shutdowns?|alarms?|notes?|work orders?|production|allocation|"
@@ -274,6 +274,31 @@ def _latest_well_test_user_question(history: list[dict[str, str]]) -> str:
         if re.search(r"\bwell[ -]?tests?\b", content):
             return content
     return ""
+
+
+def _extract_well_name_filter(current: str) -> str | None:
+    """Extract a specific well reference from common Hartzog shorthand."""
+    patterns = (
+        r"\bhartzog\s+draw\s+unit\s+([a-z0-9_-]*\d[a-z0-9_-]*)\b",
+        r"\bwell\s+(?:hdu[\s_-]*)?([a-z0-9_-]*\d[a-z0-9_-]*)\b",
+        r"\bhdu[\s_-]*([a-z0-9_-]*\d[a-z0-9_-]*)\b",
+        r"\bfor\s+([a-z]?\d{3,6}[a-z]?)\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, current, re.IGNORECASE)
+        if match:
+            return _normalize_well_name_filter(match.group(1))
+    return None
+
+
+def _normalize_well_name_filter(value: str) -> str:
+    """Return the DB-friendly fragment used by ReadingClient LIKE matching."""
+    normalized = value.strip(" ,.?").replace("_", " ").replace("-", " ")
+    normalized = " ".join(normalized.split())
+    hdu_match = re.fullmatch(r"hdu\s+(.+)", normalized, re.IGNORECASE)
+    if hdu_match:
+        normalized = hdu_match.group(1)
+    return normalized
 
 
 def _format_analysis_result(result: dict[str, Any]) -> str:

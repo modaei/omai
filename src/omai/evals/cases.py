@@ -87,6 +87,7 @@ def _case_from_dict(raw: Any, index: int) -> EvaluationCase:
             str(raw["current_date"]) if raw.get("current_date") is not None else None
         ),
         response_mode=response_mode,
+        deterministic=bool(raw.get("deterministic", False)),
         expected_output=(
             str(raw["expected_output"]) if raw.get("expected_output") is not None else None
         ),

@@ -47,7 +47,11 @@ def main(argv: list[str] | None = None) -> int:
             _evaluate_case(settings, case, args.current_date)
             for case in cases
         ]
-        report_path = _write_report(results, Path(args.output_dir))
+        report_path = _write_report(
+            results,
+            Path(args.output_dir),
+            failed_only=args.failed_only,
+        )
     except DeepEvalUnavailableError as exc:
         print(f"Evaluation setup failed: {exc}", file=sys.stderr)
         return 2
@@ -89,6 +93,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--output-dir",
         default=str(DEFAULT_OUTPUT_DIR),
         help="Directory for local JSON evaluation reports.",
+    )
+    parser.add_argument(
+        "--failed-only",
+        action="store_true",
+        help="Write only failed cases to the JSON report results array.",
     )
     return parser.parse_args(argv)
 
@@ -177,7 +186,7 @@ def _evaluate_case(
         current_date=case.current_date or current_date_override,
     )
     checks = run_deterministic_checks(case, answer, tool_calls)
-    metrics = run_deepeval_metrics(case, answer, tool_calls)
+    metrics = [] if case.deterministic else run_deepeval_metrics(case, answer, tool_calls)
     return EvaluationResult(
         case=case,
         answer=answer,
@@ -188,25 +197,46 @@ def _evaluate_case(
     )
 
 
-def _write_report(results: list[EvaluationResult], output_dir: Path) -> Path:
+def _write_report(
+    results: list[EvaluationResult],
+    output_dir: Path,
+    *,
+    failed_only: bool = False,
+) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     path = output_dir / f"omai-eval-{timestamp}.json"
     path.write_text(
-        json.dumps(_report_payload(results), indent=2, default=str),
+        json.dumps(
+            _report_payload(results, failed_only=failed_only),
+            indent=2,
+            default=str,
+        ),
         encoding="utf-8",
     )
     return path
 
 
-def _report_payload(results: list[EvaluationResult]) -> dict[str, Any]:
+def _report_payload(
+    results: list[EvaluationResult],
+    *,
+    failed_only: bool = False,
+) -> dict[str, Any]:
+    report_results = [
+        result for result in results
+        if not failed_only or not result.passed
+    ]
     return {
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "passed": sum(1 for result in results if result.passed),
         "total": len(results),
+        "failed_only": failed_only,
         "results": [
             {
-                "case": asdict(result.case),
+                "case": {
+                    "id": result.case.id,
+                    "question": result.case.question,
+                },
                 "passed": result.passed,
                 "answer": result.answer,
                 "tool_calls": result.tool_calls,
@@ -217,7 +247,7 @@ def _report_payload(results: list[EvaluationResult]) -> dict[str, Any]:
                     asdict(metric) for metric in result.metrics if not metric.passed
                 ],
             }
-            for result in results
+            for result in report_results
         ],
     }
 

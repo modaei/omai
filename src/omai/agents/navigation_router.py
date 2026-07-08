@@ -150,6 +150,7 @@ FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "initial_inches": ("initial inches", "initial inch"),
     "final_feet": ("final feet", "final foot", "final fit"),
     "final_inches": ("final inches", "final inch"),
+    "runtime": ("runtime", "run time"),
     "feet": ("feet", "foot", "fit"),
     "inches": ("inches", "inch"),
 }
@@ -190,6 +191,9 @@ def try_answer_navigation_request(
     current_date = today or date.today()
     route = _parse_view_request(question, current_date)
     tool_name = "prepare_data_view"
+    if route is None:
+        route = _parse_capability_help_request(question)
+        tool_name = "search_ometrics_capabilities"
     if route is None:
         route = _parse_data_entry_request(question, current_date)
         tool_name = "prepare_data_entry"
@@ -245,6 +249,63 @@ def _parse_view_request(question: str, today: date) -> dict[str, Any] | None:
         if status_match:
             arguments["status"] = status_match.group(1)
     return arguments
+
+
+def _parse_capability_help_request(question: str) -> dict[str, Any] | None:
+    """Parse explicit Ometrics workflow-help questions before form actions."""
+    normalized = _normalize(question)
+    help_prefix = re.match(
+        r"^(?:"
+        r"how\s+(?:do|can|should)\s+i|"
+        r"where\s+(?:do|can|should)\s+i|"
+        r"explain\s+how\s+(?:to|i)|"
+        r"show\s+me\s+how\s+(?:to|i)|"
+        r"what\s+is\s+the\s+process\s+(?:to|for)"
+        r")\b",
+        normalized,
+    )
+    if not help_prefix:
+        return None
+    if not _looks_like_ometrics_workflow_help(normalized):
+        return None
+    return {"query": question.strip(), "limit": 3}
+
+
+def _looks_like_ometrics_workflow_help(normalized: str) -> bool:
+    workflow_verbs = (
+        "register",
+        "create",
+        "add",
+        "enter",
+        "record",
+        "open",
+        "find",
+        "view",
+        "use",
+        "run",
+    )
+    workflow_nouns = (
+        "reading",
+        "well test",
+        "fluid level",
+        "injection",
+        "shutdown",
+        "water draw",
+        "run ticket",
+        "general note",
+        "work order",
+        "report",
+        "allocation",
+        "lact",
+        "tank",
+        "flare",
+        "flow meter",
+        "water plant",
+        "ometrics",
+    )
+    return any(re.search(rf"\b{re.escape(verb)}\b", normalized) for verb in workflow_verbs) and any(
+        re.search(rf"\b{re.escape(noun)}s?\b", normalized) for noun in workflow_nouns
+    )
 
 
 def _parse_data_entry_request(question: str, today: date) -> dict[str, Any] | None:
@@ -633,6 +694,8 @@ def _strip_entry_field_tail(candidate: str, entry_type: str) -> str:
 
 def _format_navigation_result(result: dict[str, Any], tool_name: str) -> str:
     """Convert validated client statuses into concise user-facing responses."""
+    if tool_name == "search_ometrics_capabilities":
+        return _format_capability_result(result)
     status = result.get("status")
     if status == "ready":
         if tool_name == "prepare_data_entry":
@@ -651,6 +714,66 @@ def _format_navigation_result(result: dict[str, Any], tool_name: str) -> str:
             labels.append(label)
         return f"{message} Candidates: {', '.join(labels)}"
     return message
+
+
+def _format_capability_result(result: dict[str, Any]) -> str:
+    if not result.get("ok", True):
+        return str(result.get("error") or "I could not search Ometrics capability guidance.")
+    matches = result.get("matches") or []
+    if not matches:
+        return "I could not find matching Ometrics capability guidance for that workflow."
+    first = matches[0]
+    capability = str(first.get("capability") or "Ometrics workflow")
+    summary = str(first.get("summary") or "").strip()
+    query = str(result.get("query") or "")
+    workflow_answer = _workflow_answer_from_capability_summary(summary, query)
+    if workflow_answer:
+        return workflow_answer
+    if not summary:
+        return capability
+    return f"{capability}: {summary}"
+
+
+def _workflow_answer_from_capability_summary(summary: str, query: str) -> str | None:
+    """Return curated workflow wording embedded in capability guidance."""
+    quoted_actions = re.findall(r'"([^"]+)"', summary)
+    normalized_query = _normalize(query)
+    query_terms = [
+        term for term in _workflow_entity_terms()
+        if re.search(rf"\b{re.escape(term)}s?\b", normalized_query)
+    ]
+    if query_terms:
+        for action in quoted_actions:
+            normalized_action = _normalize(action)
+            if any(term in normalized_action for term in query_terms):
+                return action.strip()
+    for action in quoted_actions:
+        if re.search(r"\bcreate\b|\buse\b", action, re.IGNORECASE):
+            return action.strip()
+    return None
+
+
+def _workflow_entity_terms() -> tuple[str, ...]:
+    return (
+        "lact",
+        "flare",
+        "tank",
+        "flow meter",
+        "pump",
+        "treater",
+        "knock out",
+        "knockout",
+        "water plant",
+        "well test",
+        "well fluid",
+        "fluid level",
+        "well injection",
+        "run ticket",
+        "water draw",
+        "general note",
+        "work order",
+        "shutdown",
+    )
 
 
 def _normalize(value: str) -> str:
