@@ -75,6 +75,20 @@ ENTRY_FIELDS: dict[str, tuple[str, ...]] = {
     "knockout_reading": ("inlet", "oil_off"),
     "water_plant_reading": ("flow_rate", "suction_pressure", "discharge_pressure"),
     "lact_reading": ("reading", "temperature", "bs_w"),
+    "tank_reading": (
+        "top_level_feet",
+        "top_level_inches",
+        "water_level_feet",
+        "water_level_inches",
+        "initial_feet",
+        "initial_inches",
+        "final_feet",
+        "final_inches",
+        "level",
+        "feet",
+        "inches",
+        "temperature",
+    ),
     "well_test": (
         "oil",
         "water",
@@ -90,6 +104,26 @@ ENTRY_FIELDS: dict[str, tuple[str, ...]] = {
     "well_fluid": ("level",),
     "well_injection": ("flow_rate", "total", "tbg", "csg"),
     "well_shutdown": ("hours",),
+    "water_draw": ("initial_feet", "initial_inches", "final_feet", "final_inches"),
+    "run_ticket": (
+        "number",
+        "obs_grav",
+        "obs_temp",
+        "b_s_w",
+        "corr_grav",
+        "gov",
+        "nsv",
+        "initial_feet",
+        "initial_inches",
+        "initial_qtr",
+        "final_feet",
+        "final_inches",
+        "final_qtr",
+        "initial_volume",
+        "final_volume",
+        "initial_meter_reading",
+        "final_meter_reading",
+    ),
     "work_order": ("cost_estimate", "final_cost", "priority"),
 }
 
@@ -104,6 +138,46 @@ READING_ENTITY_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("lact_reading", ("lact",)),
     ("tank_reading", ("tank",)),
 )
+
+FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+    "bs_w": ("bsw", "bs w", "b s w"),
+    "b_s_w": ("bsw", "bs w", "b s w"),
+    "top_level_feet": ("top level feet", "top level foot", "top level fit"),
+    "top_level_inches": ("top level inches", "top level inch"),
+    "water_level_feet": ("water level feet", "water level foot", "water level fit"),
+    "water_level_inches": ("water level inches", "water level inch"),
+    "initial_feet": ("initial feet", "initial foot", "initial fit"),
+    "initial_inches": ("initial inches", "initial inch"),
+    "final_feet": ("final feet", "final foot", "final fit"),
+    "final_inches": ("final inches", "final inch"),
+    "feet": ("feet", "foot", "fit"),
+    "inches": ("inches", "inch"),
+}
+
+SPOKEN_NUMBERS: dict[str, float] = {
+    "zero": 0,
+    "oh": 0,
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+    "thirteen": 13,
+    "fourteen": 14,
+    "fifteen": 15,
+    "sixteen": 16,
+    "seventeen": 17,
+    "eighteen": 18,
+    "nineteen": 19,
+    "twenty": 20,
+}
 
 
 def try_answer_navigation_request(
@@ -201,10 +275,13 @@ def _parse_data_entry_request(question: str, today: date) -> dict[str, Any] | No
     entity_name = _entry_entity_name(normalized, entry_type, today)
     if entry_type == "generic_reading" and entity_name:
         inferred_types = _reading_types_from_entity(entity_name)
+        if not inferred_types:
+            inferred_types = _reading_types_from_fields(normalized)
         if len(inferred_types) > 1:
             return None
         if inferred_types:
             entry_type = inferred_types[0]
+            entity_name = _strip_entry_field_tail(entity_name, entry_type)
 
     # Field extraction must happen after generic requests have been resolved to a
     # concrete reading type. Otherwise type-specific values remain unexplained.
@@ -238,6 +315,58 @@ def _reading_types_from_entity(entity_name: str) -> list[str]:
     return list(dict.fromkeys(matches))
 
 
+def _reading_types_from_fields(text: str) -> list[str]:
+    """Infer one reading form from distinctive field labels when no marker exists."""
+    field_hits = {
+        entry_type: {
+            field for field in fields
+            if _has_field_label(text, field)
+        }
+        for entry_type, fields in ENTRY_FIELDS.items()
+    }
+    matches = []
+    if field_hits["tank_reading"] & {
+        "top_level_feet", "top_level_inches", "water_level_feet",
+        "water_level_inches", "initial_feet", "initial_inches",
+        "final_feet", "final_inches",
+    }:
+        matches.append("tank_reading")
+    if field_hits["flow_meter_reading"] & {"flow", "total", "odometer"}:
+        matches.append("flow_meter_reading")
+    if (
+        "flow_rate" in field_hits["water_plant_reading"]
+        and field_hits["water_plant_reading"]
+        & {"suction_pressure", "discharge_pressure"}
+    ):
+        matches.append("water_plant_reading")
+    if field_hits["pump_reading"] >= {"suction_pressure", "discharge_pressure"}:
+        matches.append("pump_reading")
+    if field_hits["flare_reading"] >= {"pressure", "volume"}:
+        matches.append("flare_reading")
+    if field_hits["treater_reading"] & {"oil_intake"}:
+        matches.append("treater_reading")
+    if field_hits["knockout_reading"] & {"inlet", "oil_off"}:
+        matches.append("knockout_reading")
+    if field_hits["lact_reading"] & {"bs_w"}:
+        matches.append("lact_reading")
+    if field_hits["well_injection"] & {"tbg", "csg"}:
+        matches.append("well_injection")
+    if field_hits["well_fluid"] and not matches:
+        matches.append("well_fluid")
+    if "water_plant_reading" in matches and "pump_reading" in matches:
+        matches.remove("pump_reading")
+    if "well_injection" in matches and "flow_meter_reading" in matches:
+        matches.remove("flow_meter_reading")
+    return list(dict.fromkeys(matches))
+
+
+def _has_field_label(text: str, field: str) -> bool:
+    return any(
+        re.search(rf"\b{label}\s*(?:is|=|:)?\s*({_number_value_pattern()})\b", text)
+        for label in _field_labels(field)
+    )
+
+
 def _alias_matches(
     text: str,
     aliases: tuple[tuple[str, tuple[str, ...]], ...],
@@ -253,6 +382,8 @@ def _alias_matches(
         item in found for item in ("short_shutdowns", "long_shutdowns")
     ):
         found.remove("shutdowns")
+    if "well_test" in found and "well_fluid" in found:
+        found.remove("well_fluid")
     return list(dict.fromkeys(found))
 
 
@@ -389,11 +520,17 @@ def _entry_values(
     if date_range and date_range[0] == date_range[1]:
         values["time" if entry_type == "run_ticket" else "date"] = date_range[0].isoformat()
     for field in ENTRY_FIELDS.get(entry_type, ()):
-        label = field.replace("_", r"[ _-]")
-        match = re.search(rf"\b{label}\s*(?:is|=|:)?\s*([-+]?\d+(?:\.\d+)?)\b", text)
-        if match:
-            values[field] = float(match.group(1))
-            consumed.append(match.span(1))
+        for label in _field_labels(field):
+            match = re.search(
+                rf"\b{label}\s*(?:is|=|:)?\s*({_number_value_pattern()})\b",
+                text,
+            )
+            if match:
+                if _span_is_consumed(match.span(1), consumed):
+                    continue
+                values[field] = _parse_number_value(match.group(1))
+                consumed.append(match.span(1))
+                break
     comments = re.search(r"\bcomments?\s*(?:is|=|:)?\s*[\"']([^\"']+)[\"']", text)
     if not comments:
         comments = re.search(r"\bcomments?\s*(?:is|=|:)?\s+(.+)$", text)
@@ -428,6 +565,8 @@ def _entry_entity_name(text: str, entry_type: str, today: date) -> str | None:
         return None
     candidate = match.group(1).strip(" .?")
     candidate = re.split(r"\s+with\s+", candidate, maxsplit=1)[0]
+    if entry_type in ENTRY_FIELDS:
+        candidate = _strip_entry_field_tail(candidate, entry_type)
     candidate = re.split(
         r"\s+(?:on|at)\s+(?=(?:today|yesterday|\d{4}-\d{2}-\d{2}|"
         r"\d{1,2}/\d{1,2}/\d{4}))",
@@ -454,6 +593,42 @@ def _number_is_part_of_date(text: str, span: tuple[int, int]) -> bool:
             context,
         )
     )
+
+
+def _field_labels(field: str) -> tuple[str, ...]:
+    """Return regex labels for a form field, including voice-dictation aliases."""
+    aliases = FIELD_ALIASES.get(field, (field.replace("_", " "),))
+    return tuple(re.escape(alias).replace(r"\ ", r"[ _-]+") for alias in aliases)
+
+
+def _number_value_pattern() -> str:
+    """Match either a digit number or the small spoken numbers operators dictate."""
+    words = "|".join(sorted((re.escape(item) for item in SPOKEN_NUMBERS), key=len, reverse=True))
+    return rf"[-+]?\d+(?:\.\d+)?|{words}"
+
+
+def _parse_number_value(value: str) -> float:
+    """Convert a numeric token into the float shape already used by this router."""
+    normalized = value.strip().lower()
+    if normalized in SPOKEN_NUMBERS:
+        return float(SPOKEN_NUMBERS[normalized])
+    return float(normalized)
+
+
+def _strip_entry_field_tail(candidate: str, entry_type: str) -> str:
+    """Remove measurement text accidentally captured as part of an entity name."""
+    labels = [
+        label
+        for field in ENTRY_FIELDS.get(entry_type, ())
+        for label in _field_labels(field)
+    ]
+    if not labels:
+        return candidate
+    match = re.search(
+        rf"\b(?:{'|'.join(labels)})\s*(?:is|=|:)?\s*({_number_value_pattern()})\b",
+        candidate,
+    )
+    return candidate[:match.start()].strip(" .?") if match else candidate
 
 
 def _format_navigation_result(result: dict[str, Any], tool_name: str) -> str:
