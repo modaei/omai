@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "omai"
+version = "0.1.0"
+description = "Read-only Ometrics AI assistant."
+requires-python = ">=3.10"
+dependencies = [
+    "streamlit>=1.40,<2",
+    "langchain>=1.0,<2",
+    "langgraph>=1.0,<2",
+    "langchain-openai>=1.0,<2",
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.30,<1",
+    "httpx>=0.27,<1",
+    "pydantic>=2.10,<3",
+    "python-dotenv>=1.0,<2",
+    "SQLAlchemy>=2.0,<3",
+    "pymysql>=1.1,<2",
+    "psycopg[binary]>=3.2,<4",
+    "pgvector>=0.3,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8,<9",
+    "deepeval>=3,<4",
+]
+
+[project.scripts]
+omai-index-operational-text = "omai.rag.index_operational_text:main"
+omai-process-rag-index-events = "omai.rag.process_index_events:main"
+omai-vector-db-migrate = "omai.rag.migrate_vector_db:main"
+omai-evaluate = "omai.evals.runner:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+omai = ["evals/cases/*.json"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
