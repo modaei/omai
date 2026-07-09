@@ -195,6 +195,7 @@ SELECT_NON_COLUMN_IDENTIFIERS = {
     "true",
     "when",
 }
+DERIVED_TABLE_ALIAS = "__derived__"
 
 
 class OperationalSqlValidator:
@@ -217,7 +218,9 @@ class OperationalSqlValidator:
         normalized_sql = self._normalize_sql(sql)
         limit = self._validate_statement_shape(normalized_sql)
         aliases = self._extract_table_aliases(normalized_sql)
-        tables = sorted(set(aliases.values()))
+        tables = sorted(
+            table for table in set(aliases.values()) if table != DERIVED_TABLE_ALIAS
+        )
 
         self._validate_allowed_tables(tables)
         self._validate_known_tables(tables)
@@ -291,8 +294,47 @@ class OperationalSqlValidator:
                 alias_name = table
             aliases[alias_name] = table
 
+        aliases.update(self._extract_derived_table_aliases(sql))
+
         if not aliases:
             raise OperationalSqlValidationError("SQL draft must reference a table.")
+        return aliases
+
+    def _extract_derived_table_aliases(self, sql: str) -> dict[str, str]:
+        """Return aliases assigned to derived tables such as `FROM (...) d`.
+
+        Base tables inside the derived query are still discovered by
+        ``TABLE_PATTERN`` and validated normally. The derived alias itself is
+        accepted so outer references like ``d.month`` or ``r.total`` do not look
+        like unknown table aliases.
+        """
+        aliases: dict[str, str] = {}
+        for match in re.finditer(r"\b(?:from|join)\s*\(", sql, re.IGNORECASE):
+            depth = 0
+            close_index = None
+            for index in range(match.end() - 1, len(sql)):
+                char = sql[index]
+                if char == "(":
+                    depth += 1
+                elif char == ")":
+                    depth -= 1
+                    if depth == 0:
+                        close_index = index
+                        break
+            if close_index is None:
+                continue
+
+            alias_match = re.match(
+                r"\s+(?:as\s+)?`?([a-zA-Z_][\w]*)`?",
+                sql[close_index + 1 :],
+                re.IGNORECASE,
+            )
+            if not alias_match:
+                continue
+            alias = self._clean_identifier(alias_match.group(1))
+            if alias in RESERVED_ALIASES:
+                continue
+            aliases[alias] = DERIVED_TABLE_ALIAS
         return aliases
 
     @staticmethod
@@ -327,6 +369,8 @@ class OperationalSqlValidator:
                 raise OperationalSqlValidationError(
                     f"Unknown table alias used in column reference: {alias}."
                 )
+            if table == DERIVED_TABLE_ALIAS:
+                continue
             if column_name not in self.table_columns.get(table, set()):
                 raise OperationalSqlValidationError(
                     f"Unknown column reference: {alias}.{column}."
@@ -376,6 +420,7 @@ class OperationalSqlValidator:
         available_columns = {
             column
             for table in set(aliases.values())
+            if table != DERIVED_TABLE_ALIAS
             for column in self.table_columns.get(table, set())
         }
 
@@ -403,6 +448,8 @@ class OperationalSqlValidator:
         tables = set(aliases.values())
 
         for table in tables:
+            if table == DERIVED_TABLE_ALIAS:
+                continue
             if table in GLOBAL_REFERENCE_TABLES:
                 continue
             root = self._site_root_for_table(table, tables)

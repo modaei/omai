@@ -224,7 +224,7 @@ def _add_filter_condition(
     elif field == "onrr_code":
         _add_text_condition("oc.name", value, param_name, conditions, params)
     elif field == "battery":
-        _add_text_condition("b.name", value, param_name, conditions, params, partial=True)
+        _add_battery_condition("b.name", value, param_name, conditions, params)
     elif field == "lact":
         _add_text_condition("l.name", value, param_name, conditions, params, partial=True)
     elif field in {"wogcc_class", "wogcc_status", "direction", "prod_fm"}:
@@ -254,3 +254,22 @@ def _add_text_condition(
         return
     conditions.append(f"LOWER({column}) = LOWER(:{param_name})")
     params[param_name] = value
+
+
+def _add_battery_condition(
+    column: str,
+    value: Any,
+    param_name: str,
+    conditions: list[str],
+    params: dict[str, Any],
+) -> None:
+    text_value = "" if value is None else str(value).strip()
+    digits = "".join(ch for ch in text_value if ch.isdigit())
+    if digits and text_value.lower().replace(" ", "") in {digits, f"battery{digits}"}:
+        conditions.append(
+            f"LOWER(REPLACE({column}, ' ', '')) IN (:{param_name}_compact, :{param_name}_number)"
+        )
+        params[f"{param_name}_compact"] = f"battery{digits}"
+        params[f"{param_name}_number"] = digits
+        return
+    _add_text_condition(column, value, param_name, conditions, params, partial=True)

@@ -9,6 +9,11 @@ from sqlalchemy.engine import Engine, URL
 from sqlalchemy.exc import SQLAlchemyError
 
 from omai.config.settings import Settings
+from omai.clients.well_filter_client import (
+    WellFilterClientError,
+    _add_filter_condition,
+    _normalize_filters,
+)
 
 
 class ShutdownClientError(RuntimeError):
@@ -230,18 +235,26 @@ class ShutdownClient:
             exclude_injection_wells=False,
         )
 
-    def get_producing_wells(self, site_id: int, producing_date: str) -> dict[str, Any]:
+    def get_producing_wells(
+        self,
+        site_id: int,
+        producing_date: str,
+        filters: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         """Classify producing wells for one day, excluding ONRR injection wells."""
+        normalized_filters = self._normalize_well_filters(filters)
         result = self._classify_wells_by_onrr_and_shutdown(
             site_id,
             producing_date,
             result_type="producing",
             exclude_injection_wells=True,
+            filters=normalized_filters,
         )
         result["producing_count"] = result.pop("active_count")
         result["non_producing_count"] = result.pop("inactive_count")
         result["producing_wells"] = result.pop("active_wells")
         result["non_producing_wells"] = result.pop("inactive_wells")
+        result["filters"] = normalized_filters
         return result
 
     def get_producing_wells_for_range(
@@ -250,6 +263,7 @@ class ShutdownClient:
         start_date: str,
         end_date: str,
         range_mode: str = "any_day",
+        filters: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Return wells producing on at least one day in a bounded date range.
 
@@ -266,6 +280,7 @@ class ShutdownClient:
         day_count = (end_day - start_day).days + 1
         if day_count > 366:
             raise ShutdownClientError("Producing-well ranges are limited to 366 days.")
+        normalized_filters = self._normalize_well_filters(filters)
 
         date_values = [
             (start_day + timedelta(days=offset)).isoformat()
@@ -274,7 +289,11 @@ class ShutdownClient:
         with ThreadPoolExecutor(max_workers=min(4, day_count)) as executor:
             daily_results = list(
                 executor.map(
-                    lambda value: self.get_producing_wells(site_id, value),
+                    lambda value: self.get_producing_wells(
+                        site_id,
+                        value,
+                        filters=normalized_filters,
+                    ),
                     date_values,
                 )
             )
@@ -294,6 +313,7 @@ class ShutdownClient:
             "start_date": start_day.isoformat(),
             "end_date": end_day.isoformat(),
             "range_mode": range_mode,
+            "filters": normalized_filters,
             "day_count": day_count,
             "producing_count": len(producing_wells),
             "producing_wells": producing_wells,
@@ -311,10 +331,11 @@ class ShutdownClient:
         *,
         result_type: str,
         exclude_injection_wells: bool,
+        filters: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         day = self._parse_date(active_date)
         day_start, day_end = self._day_bounds(day)
-        wells = self._wells_with_onrr_state(site_id, day_end)
+        wells = self._wells_with_onrr_state(site_id, day_end, filters=filters)
         shutdowns_by_well = self._day_shutdown_state_by_well(site_id, day)
 
         active_wells = []
@@ -459,10 +480,22 @@ class ShutdownClient:
         return [self._compact_shutdown_row(row, "long") for row in rows]
 
     def _wells_with_onrr_state(
-        self, site_id: int, as_of_time: datetime
+        self,
+        site_id: int,
+        as_of_time: datetime,
+        filters: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
+        conditions = ["w.site_id = :site_id"]
+        params: dict[str, Any] = {"site_id": site_id, "as_of_time": as_of_time}
+        normalized_filters = filters or []
+        for index, filter_item in enumerate(normalized_filters):
+            _add_filter_condition(filter_item, index, conditions, params)
+        needs_battery_join = any(item["field"] == "battery" for item in normalized_filters)
+        needs_lact_join = any(item["field"] == "lact" for item in normalized_filters)
+        battery_join = "LEFT JOIN batteries b ON b.id = w.battery_id" if needs_battery_join else ""
+        lact_join = "LEFT JOIN lacts l ON l.id = w.lact_id" if needs_lact_join else ""
         query = text(
-            """
+            f"""
             SELECT
                 w.id AS well_id,
                 w.name AS well_name,
@@ -514,13 +547,24 @@ class ShutdownClient:
                     ),
                     w.onrr_code_id
                 )
-            WHERE w.site_id = :site_id
+            {battery_join}
+            {lact_join}
+            WHERE {" AND ".join(conditions)}
             ORDER BY w.name
             LIMIT :limit
             """
         )
-        rows = self._execute(query, site_id=site_id, as_of_time=as_of_time)
+        rows = self._execute(query, **params)
         return rows
+
+    @staticmethod
+    def _normalize_well_filters(
+        filters: list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]]:
+        try:
+            return _normalize_filters(filters or [])
+        except WellFilterClientError as exc:
+            raise ShutdownClientError(str(exc)) from exc
 
     def _day_shutdown_state_by_well(
         self, site_id: int, day: date
@@ -709,7 +753,12 @@ class UnavailableShutdownClient:
     def get_active_wells(self, site_id: int, active_date: str) -> dict[str, Any]:
         raise ShutdownClientError(self.reason)
 
-    def get_producing_wells(self, site_id: int, producing_date: str) -> dict[str, Any]:
+    def get_producing_wells(
+        self,
+        site_id: int,
+        producing_date: str,
+        filters: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         raise ShutdownClientError(self.reason)
 
 

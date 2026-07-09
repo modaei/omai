@@ -18,6 +18,8 @@ from omai.agents.producing_wells_graph import (
     prepare_well_population_dependency,
     try_answer_producing_well_question,
 )
+from omai.agents.production_context_graph import prepare_production_context_dependency
+from omai.agents.report_comparison_graph import prepare_report_comparison_dependency
 from omai.agents.well_test_graph import (
     prepare_well_test_analysis_dependency,
     try_answer_well_test_analysis,
@@ -87,6 +89,8 @@ def answer_chat(
     current_date: str | None = None,
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     settings.validate()
+    effective_today = date.fromisoformat(current_date) if current_date else date.today()
+    effective_current_date = effective_today.isoformat()
     if is_rod_pump_fleet_question(question):
         return ROD_PUMP_FLEET_CHAT_RESPONSE, [], {
             "total_seconds": 0.0,
@@ -153,12 +157,12 @@ def answer_chat(
         *build_data_entry_tools(
             data_entry_client,
             site_id,
-            current_date or date.today().isoformat(),
+            effective_current_date,
         ),
         *build_view_navigation_tools(
             view_navigation_client,
             site_id,
-            current_date or date.today().isoformat(),
+            effective_current_date,
         ),
         *build_capability_tools(capability_client),
         *build_database_schema_tools(
@@ -198,7 +202,7 @@ def answer_chat(
     navigation_answer = try_answer_navigation_request(
         tools=tools,
         question=question,
-        today=date.fromisoformat(current_date) if current_date else None,
+        today=effective_today,
     )
     if navigation_answer is not None:
         return navigation_answer
@@ -206,6 +210,7 @@ def answer_chat(
         tools=tools,
         question=question,
         history=history,
+        today=effective_today,
     )
     if deterministic_answer is not None:
         return deterministic_answer
@@ -219,6 +224,7 @@ def answer_chat(
         tools=tools,
         question=question,
         history=history,
+        today=effective_today,
     )
     if well_test_answer is not None:
         return well_test_answer
@@ -226,13 +232,31 @@ def answer_chat(
     population_dependency = prepare_well_population_dependency(
         tools=tools,
         question=question,
+        today=effective_today,
     )
     if population_dependency is not None:
         dependencies.append(population_dependency)
+    production_context_dependency = prepare_production_context_dependency(
+        tools=tools,
+        question=question,
+        site_id=site_id,
+        reading_client=reading_client,
+        well_filter_client=well_filter_client,
+    )
+    if production_context_dependency is not None:
+        dependencies.append(production_context_dependency)
+    report_comparison_dependency = prepare_report_comparison_dependency(
+        tools=tools,
+        question=question,
+        today=effective_today,
+    )
+    if report_comparison_dependency is not None:
+        dependencies.append(report_comparison_dependency)
     well_test_dependency = prepare_well_test_analysis_dependency(
         tools=tools,
         question=question,
         history=history,
+        today=effective_today,
     )
     if well_test_dependency is not None:
         dependencies.append(well_test_dependency)
@@ -256,6 +280,7 @@ def answer_chat(
         history=history,
         question=question,
         authoritative_context=authoritative_context,
+        today=effective_today,
     )
     if not dependencies:
         return answer, traces, stats

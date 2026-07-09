@@ -45,10 +45,11 @@ class FakeShutdownClient:
             "partial_shutdown_summary": "Partial shutdown wells: Well - 13-3-1 Oil",
         }
 
-    def get_producing_wells(self, site_id, producing_date):
+    def get_producing_wells(self, site_id, producing_date, filters=None):
         return {
             "site_id": site_id,
             "date": producing_date,
+            "filters": filters or [],
             "producing_count": 1,
             "non_producing_count": 1,
             "partial_shutdown_count": 0,
@@ -67,13 +68,14 @@ class FakeShutdownClient:
         }
 
     def get_producing_wells_for_range(
-        self, site_id, start_date, end_date, range_mode="any_day"
+        self, site_id, start_date, end_date, range_mode="any_day", filters=None
     ):
         return {
             "site_id": site_id,
             "start_date": start_date,
             "end_date": end_date,
             "range_mode": range_mode,
+            "filters": filters or [],
             "producing_count": 2,
             "producing_wells": [
                 {"well": "Well - 11-1-1 Oil"},
@@ -171,3 +173,19 @@ def test_get_producing_wells_tool_supports_any_day_range():
     assert result["ok"] is True
     assert result["producing_count"] == 2
     assert result["range_mode"] == "any_day"
+
+
+def test_get_producing_wells_tool_accepts_filters():
+    tools = build_shutdown_tools(FakeShutdownClient(), site_id=4)
+
+    result = json.loads(
+        tool_by_name(tools, "get_producing_wells").invoke(
+            {
+                "producing_date": "2026-06-21",
+                "filters": [{"field": "battery", "value": "Battery 6"}],
+            }
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["filters"] == [{"field": "battery", "value": "Battery 6"}]

@@ -154,6 +154,53 @@ def test_deterministic_checks_validate_expected_tool_call_arguments():
     assert all(check.passed for check in checks)
 
 
+def test_deterministic_checks_validate_one_of_expected_tool_calls():
+    case = EvaluationCase(
+        id="case-1",
+        category="readings",
+        question="q",
+        site_id=4,
+        expected_tool_calls=(
+            {
+                "one_of": [
+                    {
+                        "tool": "search_readings",
+                        "arguments": {
+                            "reading_type": "well_fluid",
+                            "entity_name": {"contains": "4048"},
+                        },
+                    },
+                    {
+                        "tool": "get_well_timeline",
+                        "arguments": {
+                            "well_name": {"contains": "4048"},
+                            "context_query": {"contains_all": ["well", "fluid"]},
+                        },
+                    },
+                ]
+            },
+        ),
+    )
+
+    checks = run_deterministic_checks(
+        case,
+        "Latest well fluids for 4048.",
+        [
+            {
+                "tool": "get_well_timeline",
+                "arguments": {
+                    "well_name": "4048",
+                    "start_date": "2026-04-03",
+                    "end_date": "2026-07-03",
+                    "context_query": "well fluid",
+                },
+            }
+        ],
+    )
+
+    assert all(check.passed for check in checks)
+
+
 def test_deterministic_checks_fail_expected_tool_call_argument_mismatch():
     case = EvaluationCase(
         id="case-1",
@@ -245,7 +292,13 @@ def test_write_report_outputs_json(tmp_path: Path):
     result = EvaluationResult(
         case=EvaluationCase(id="case-1", category="reports", question="q", site_id=4),
         answer="answer",
-        tool_calls=[{"tool": "run_report"}],
+        tool_calls=[
+            {
+                "tool": "run_report",
+                "arguments": {"report_name": "oil_production"},
+                "result": "{\"large\":\"payload\"}",
+            }
+        ],
         stats={"total_seconds": 1.0},
         checks=[],
         metrics=[
@@ -269,6 +322,12 @@ def test_write_report_outputs_json(tmp_path: Path):
     assert "stats" not in payload["results"][0]
     assert "checks" not in payload["results"][0]
     assert "metrics" not in payload["results"][0]
+    assert payload["results"][0]["tool_calls"] == [
+        {
+            "tool": "run_report",
+            "arguments": {"report_name": "oil_production"},
+        }
+    ]
     assert payload["results"][0]["failed_checks"] == []
     assert payload["results"][0]["failed_metrics"] == [
         {

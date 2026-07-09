@@ -506,6 +506,46 @@ def test_operational_sql_validator_allows_qualified_aggregate_functions():
     ]
 
 
+def test_operational_sql_validator_allows_site_scoped_derived_table_alias():
+    validator = OperationalSqlValidator(
+        {
+            "mixed_tank_readings": {
+                "tank_id",
+                "time",
+                "top_level_feet",
+                "top_level_inches",
+                "water_level_feet",
+                "water_level_inches",
+            },
+            "tanks": {"id", "site_id", "contents", "bbl_foot"},
+        }
+    )
+
+    result = validator.validate(
+        "SELECT d.month, ROUND(AVG(d.daily_oil_bbl), 2) AS avg_daily_oil_volume_bbl "
+        "FROM ("
+        "  SELECT DATE(m.time) AS reading_date, "
+        "         DATE_FORMAT(m.time, '%Y-%m') AS month, "
+        "         SUM(((COALESCE(m.top_level_feet, 0) + COALESCE(m.top_level_inches, 0) / 12.0) "
+        "         - (COALESCE(m.water_level_feet, 0) + COALESCE(m.water_level_inches, 0) / 12.0)) "
+        "         * t.bbl_foot) AS daily_oil_bbl "
+        "  FROM mixed_tank_readings m "
+        "  JOIN tanks t ON t.id = m.tank_id "
+        "  WHERE t.site_id = :site_id "
+        "    AND m.time >= '2026-01-01' "
+        "    AND m.time < '2027-01-01' "
+        "    AND t.contents IN ('oil', 'water-oil') "
+        "  GROUP BY DATE(m.time), DATE_FORMAT(m.time, '%Y-%m')"
+        ") d "
+        "GROUP BY d.month "
+        "ORDER BY d.month "
+        "LIMIT 100"
+    )
+
+    assert result.tables == ["mixed_tank_readings", "tanks"]
+    assert result.aliases["d"] == "__derived__"
+
+
 def test_operational_sql_validator_rejects_unqualified_joined_columns():
     validator = OperationalSqlValidator(
         {

@@ -390,7 +390,7 @@ def _reading_types_from_fields(text: str) -> list[str]:
         "top_level_feet", "top_level_inches", "water_level_feet",
         "water_level_inches", "initial_feet", "initial_inches",
         "final_feet", "final_inches",
-    }:
+    } or field_hits["tank_reading"] >= {"feet", "inches"}:
         matches.append("tank_reading")
     if field_hits["flow_meter_reading"] & {"flow", "total", "odometer"}:
         matches.append("flow_meter_reading")

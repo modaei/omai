@@ -239,7 +239,7 @@ def _report_payload(
                 },
                 "passed": result.passed,
                 "answer": result.answer,
-                "tool_calls": result.tool_calls,
+                "tool_calls": _report_tool_calls(result.tool_calls),
                 "failed_checks": [
                     asdict(check) for check in result.checks if not check.passed
                 ],
@@ -250,6 +250,17 @@ def _report_payload(
             for result in report_results
         ],
     }
+
+
+def _report_tool_calls(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return compact tool calls for reports without bulky tool results."""
+    return [
+        {
+            "tool": call.get("tool"),
+            "arguments": call.get("arguments", {}),
+        }
+        for call in tool_calls
+    ]
 
 
 if __name__ == "__main__":

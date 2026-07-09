@@ -59,6 +59,7 @@ def answer_chat_question(
     question: str,
     site_name: str | None = None,
     authoritative_context: str | None = None,
+    today: date | None = None,
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     """Answer one user question with tool calling and bounded agent control flow.
 
@@ -71,6 +72,7 @@ def answer_chat_question(
     answer instead of allowing more tool calls.
     """
     started_at = perf_counter()
+    effective_today = today or date.today()
     tool_map = {tool.name: tool for tool in tools}
     model_with_tools = model.bind_tools(tools, parallel_tool_calls=False)
 
@@ -80,7 +82,7 @@ def answer_chat_question(
                 "You are an oil-field reporting and data-entry navigation assistant. "
                 f"The selected site is {site_name or 'the selected site'}. "
                 f"The internal site_id is {site_id}; use it only for tool calls and never mention it in answers. "
-                f"Today is {date.today().isoformat()}. "
+                f"Today is {effective_today.isoformat()}. "
                 "If the user asks anything outside Ometrics, oil-field operations, "
                 "reports, readings, alarms, shutdowns, work orders, notes, "
                 "production, injection, or supported software workflows, do not "
@@ -100,7 +102,13 @@ def answer_chat_question(
                 "sales, gas, water, battery, injection, and allocation reports. "
                 "Use summarize_report_by_month for month-by-month or monthly "
                 "battery comparisons; do not call run_report separately for each "
-                "month. Use summarize_well_allocation for questions asking how "
+                "month. For questions asking why, reason, cause, or explanation "
+                "for production variation, drops, dips, increases, decreases, or "
+                "changes, use report data to establish the variation and "
+                "search_operational_context for supporting operational notes; do "
+                "not claim causal reasons from report numbers alone. If no "
+                "supporting operational notes are found, say that clearly. "
+                "Use summarize_well_allocation for questions asking how "
                 "much oil, water, gas, or injection a specific well or well group "
                 "contributed, produced, or injected. Use list_well_allocation for "
                 "questions asking for per-well allocation rows, top/bottom/ranked "
@@ -403,15 +411,25 @@ def answer_chat_question(
             return _clean_answer(_message_text(response.content)), traces, _rounded_stats(stats)
 
         for call in response.tool_calls:
-            tool_name = call["name"]
+            requested_tool_name = call["name"]
+            tool_name = requested_tool_name
             arguments = call.get("args", {})
-            trace = {"tool": tool_name, "arguments": arguments}
+            trace: dict[str, Any] = {"tool": tool_name, "arguments": arguments}
 
             tool_started_at = perf_counter()
+            if requested_tool_name == "execute_operational_sql" and "draft_operational_sql" in tool_map:
+                # Treat model-requested execution as a validation draft first.
+                # If validation succeeds, _execute_valid_sql_draft runs the SQL
+                # immediately below. If validation fails, the model receives
+                # repair feedback instead of burning a round on failed execution.
+                tool_name = "draft_operational_sql"
+                trace["tool"] = tool_name
+                trace["requested_tool"] = requested_tool_name
+                trace["validation_before_execute"] = True
             tool = tool_map.get(tool_name)
             if tool is None:
                 result = f"Unknown tool: {tool_name}"
-            elif block_coverage_sql and tool_name in {
+            elif block_coverage_sql and requested_tool_name in {
                 "draft_operational_sql",
                 "execute_operational_sql",
             }:
@@ -565,11 +583,10 @@ def _message_text(content: Any) -> str:
 
 def _is_successful_operational_sql_result(tool_name: str, result: Any) -> bool:
     """Return whether a tool result is a successful executed SQL payload."""
-    if tool_name != "execute_operational_sql" or not isinstance(result, str):
+    if tool_name != "execute_operational_sql":
         return False
-    try:
-        payload = json.loads(result)
-    except (TypeError, ValueError):
+    payload = _json_payload(result)
+    if payload is None:
         return False
     return payload.get("ok") is True and payload.get("executed") is True
 
@@ -578,24 +595,33 @@ def _is_failed_operational_sql_result(tool_name: str, result: Any) -> bool:
     """Return whether a SQL draft or execution tool returned structured failure."""
     if tool_name not in {"draft_operational_sql", "execute_operational_sql"}:
         return False
-    if not isinstance(result, str):
-        return False
-    try:
-        payload = json.loads(result)
-    except (TypeError, ValueError):
+    payload = _json_payload(result)
+    if payload is None:
         return False
     return payload.get("ok") is False
 
 
 def _is_valid_operational_sql_draft(tool_name: str, result: Any) -> bool:
     """Return whether a draft SQL tool call validated but did not execute SQL."""
-    if tool_name != "draft_operational_sql" or not isinstance(result, str):
+    if tool_name != "draft_operational_sql":
         return False
+    payload = _json_payload(result)
+    if payload is None:
+        return False
+    return payload.get("ok") is True and payload.get("executed") is False
+
+
+def _json_payload(result: Any) -> dict[str, Any] | None:
+    """Parse structured JSON tool output, preserving dict payloads."""
+    if isinstance(result, dict):
+        return result
+    if not isinstance(result, str):
+        return None
     try:
         payload = json.loads(result)
     except (TypeError, ValueError):
-        return False
-    return payload.get("ok") is True and payload.get("executed") is False
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def _is_repeated_sql_draft(
@@ -631,9 +657,8 @@ def _execute_valid_sql_draft(
     execute_tool = tool_map.get("execute_operational_sql")
     if execute_tool is None:
         return None
-    try:
-        payload = json.loads(draft_result)
-    except (TypeError, ValueError):
+    payload = _json_payload(draft_result)
+    if payload is None:
         return None
     arguments = {
         "question": payload.get("question") or "",

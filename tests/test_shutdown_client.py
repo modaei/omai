@@ -1,6 +1,7 @@
 from datetime import date, datetime
 
 from sqlalchemy import create_engine, text
+from sqlalchemy.pool import StaticPool
 
 from omai.clients.shutdown_client import (
     DOWNTIME_CODES,
@@ -11,7 +12,11 @@ from omai.clients.shutdown_client import (
 
 
 def make_shutdown_client() -> ShutdownClient:
-    engine = create_engine("sqlite:///:memory:")
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
     with engine.begin() as connection:
         connection.execute(
             text(
@@ -20,7 +25,32 @@ def make_shutdown_client() -> ShutdownClient:
                     id INTEGER PRIMARY KEY,
                     site_id INTEGER NOT NULL,
                     name TEXT NOT NULL,
-                    onrr_code_id INTEGER NOT NULL
+                    onrr_code_id INTEGER NOT NULL,
+                    pump_type TEXT,
+                    battery_id INTEGER,
+                    lact_id INTEGER
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE batteries (
+                    id INTEGER PRIMARY KEY,
+                    site_id INTEGER NOT NULL,
+                    name TEXT NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE lacts (
+                    id INTEGER PRIMARY KEY,
+                    site_id INTEGER NOT NULL,
+                    name TEXT NOT NULL
                 )
                 """
             )
@@ -83,16 +113,35 @@ def make_shutdown_client() -> ShutdownClient:
         connection.execute(
             text(
                 """
-                INSERT INTO wells (id, site_id, name, onrr_code_id)
+                INSERT INTO batteries (id, site_id, name)
                 VALUES
-                    (1, 1, '11-1-1 Oil', 1),
-                    (2, 1, '12-2-1 Oil', 1),
-                    (3, 2, 'Other Site Well', 1),
-                    (4, 1, '13-3-1 Oil', 2),
-                    (5, 1, '14-4-1 Oil', 1),
-                    (6, 1, '15-5-1 Oil', 2),
-                    (7, 1, '16-6-1 Oil', 1),
-                    (8, 1, '17-7-1 Injection', 3)
+                    (6, 1, 'Battery 6'),
+                    (16, 1, 'Battery 16')
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO lacts (id, site_id, name)
+                VALUES
+                    (6, 1, 'Battery 6 LACT')
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO wells (id, site_id, name, onrr_code_id, pump_type, battery_id, lact_id)
+                VALUES
+                    (1, 1, '11-1-1 Oil', 1, 'ROD', 6, 6),
+                    (2, 1, '12-2-1 Oil', 1, 'ESP', 6, 6),
+                    (3, 2, 'Other Site Well', 1, 'ROD', 6, NULL),
+                    (4, 1, '13-3-1 Oil', 2, 'ROD', 6, NULL),
+                    (5, 1, '14-4-1 Oil', 1, 'ROD', 16, NULL),
+                    (6, 1, '15-5-1 Oil', 2, NULL, 16, NULL),
+                    (7, 1, '16-6-1 Oil', 1, 'ROD', 6, NULL),
+                    (8, 1, '17-7-1 Injection', 3, 'ROD', 6, NULL)
                 """
             )
         )
@@ -238,6 +287,62 @@ def test_get_producing_wells_excludes_onrr_injection_wells():
     assert injection_well["onrr_code"] == "INJ"
     assert injection_well["onrr_code_description"] == "Active injection well"
     assert injection_well["onrr_injection_well"] is True
+
+
+def test_get_producing_wells_filters_by_battery_before_classification():
+    result = make_shutdown_client().get_producing_wells(
+        1,
+        "2026-06-23",
+        filters=[{"field": "battery", "value": "Battery 6"}],
+    )
+
+    assert result["filters"] == [{"field": "battery", "value": "Battery 6"}]
+    assert result["producing_count"] == 2
+    assert [row["well"] for row in result["producing_wells"]] == [
+        "Well - 11-1-1 Oil",
+        "Well - 16-6-1 Oil",
+    ]
+    assert all("14-4-1" not in row["well"] for row in result["producing_wells"])
+
+
+def test_get_producing_wells_numeric_battery_filter_does_not_match_battery_16():
+    result = make_shutdown_client().get_producing_wells(
+        1,
+        "2026-06-23",
+        filters=[{"field": "battery", "value": "6"}],
+    )
+
+    assert [row["well"] for row in result["producing_wells"]] == [
+        "Well - 11-1-1 Oil",
+        "Well - 16-6-1 Oil",
+    ]
+
+
+def test_get_producing_wells_filters_by_pump_type_case_insensitively():
+    result = make_shutdown_client().get_producing_wells(
+        1,
+        "2026-06-23",
+        filters=[{"field": "pump_type", "value": "rod"}],
+    )
+
+    assert result["filters"] == [{"field": "pump_type", "value": "ROD"}]
+    assert [row["well"] for row in result["producing_wells"]] == [
+        "Well - 11-1-1 Oil",
+        "Well - 14-4-1 Oil",
+        "Well - 16-6-1 Oil",
+    ]
+
+
+def test_get_producing_wells_range_preserves_filters():
+    result = make_shutdown_client().get_producing_wells_for_range(
+        1,
+        "2026-06-22",
+        "2026-06-23",
+        filters=[{"field": "pump_type", "value": "rod"}],
+    )
+
+    assert result["filters"] == [{"field": "pump_type", "value": "ROD"}]
+    assert "Well - 11-1-1 Oil" in [row["well"] for row in result["producing_wells"]]
 
 
 def test_serialize_row_handles_date_and_datetime_values():

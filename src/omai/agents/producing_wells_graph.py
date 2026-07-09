@@ -19,6 +19,7 @@ class ProducingWellGraphState(TypedDict, total=False):
     end_date: str
     is_single_date: bool
     output_mode: Literal["all", "list", "count"]
+    filters: list[dict[str, Any]]
     producing_result: dict[str, Any]
     well_test_result: dict[str, Any]
     answer: str
@@ -163,6 +164,8 @@ def _build_graph(tool_map: dict[str, BaseTool]):
                 "range_mode": "any_day",
             }
         )
+        if state.get("filters"):
+            arguments["filters"] = state["filters"]
         result, trace, timing = _invoke_json_tool(
             tool_map["get_producing_wells"], arguments
         )
@@ -195,7 +198,13 @@ def _build_graph(tool_map: dict[str, BaseTool]):
         if state["intent"] == "count":
             count = int(producing.get("producing_count", 0))
             qualifier = "on" if state["is_single_date"] else "during"
-            return {"answer": f"There were {count} producing wells {qualifier} {period}."}
+            scope = _filter_scope(state.get("filters", []))
+            return {
+                "answer": (
+                    f"There were {count} producing wells{scope} "
+                    f"{qualifier} {period}."
+                )
+            }
 
         tests = state.get("well_test_result", {})
         if not tests.get("ok", True):
@@ -294,12 +303,14 @@ def _classify_request(
     if date_range is None:
         return None
     start_date, end_date = date_range
+    filters = _extract_well_filters(normalized)
     return {
         "intent": intent,
         "start_date": start_date.isoformat(),
         "end_date": end_date.isoformat(),
         "is_single_date": start_date == end_date,
         "output_mode": _coverage_output_mode(normalized),
+        "filters": filters,
     }
 
 
@@ -405,6 +416,9 @@ def _classify_population_dependency(
                 "range_mode": "any_day",
             }
         )
+        filters = _extract_well_filters(normalized)
+        if filters:
+            arguments["filters"] = filters
         return {"tool_name": "get_producing_wells", "arguments": arguments}
     if start_date != end_date:
         # Active-well range semantics have not been defined. Leave these requests
@@ -442,8 +456,77 @@ def _compact_population_result(tool_name: str, result: dict[str, Any]) -> dict[s
             _normalize_well_name(name)
             for name in result.get("partial_shutdown_well_names", [])
         ],
+        "filters": result.get("filters", []),
         "rules": result.get("rules") or result.get("rule"),
     }
+
+
+def _extract_well_filters(text: str) -> list[dict[str, Any]]:
+    """Extract small, high-confidence well filters from producing-well questions."""
+    filters: list[dict[str, Any]] = []
+
+    for field, value in re.findall(
+        r"\b(battery|pump[_\s-]?type|onrr[_\s-]?code)\s*=\s*([a-z0-9 _-]+?)(?=\s+(?:on|in|during|for|yesterday|today|last|this|from|to)\b|[?.!,]|$)",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        normalized_field = field.lower().replace(" ", "_").replace("-", "_")
+        if normalized_field == "pump_type":
+            filters.append({"field": "pump_type", "value": value.strip()})
+        elif normalized_field == "onrr_code":
+            filters.append({"field": "onrr_code", "value": value.strip()})
+        else:
+            filters.append({"field": "battery", "value": _battery_filter_value(value)})
+
+    battery_match = re.search(
+        r"\bbattery\s+([a-z0-9_-]+)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if battery_match:
+        filters.append(
+            {"field": "battery", "value": _battery_filter_value(battery_match.group(1))}
+        )
+
+    pump_match = re.search(
+        r"\b(rod|esp|jet|flowing(?:\s+well(?:\s+no\s+lift)?)?)\s+"
+        r"(?:oil\s+)?(?:producing\s+)?(?:wells?|producers?)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if pump_match:
+        filters.append({"field": "pump_type", "value": pump_match.group(1)})
+
+    deduped: list[dict[str, Any]] = []
+    seen = set()
+    for item in filters:
+        key = (item["field"], str(item["value"]).casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def _battery_filter_value(value: str) -> str:
+    value = " ".join(str(value).strip().split())
+    return f"Battery {value}" if value.isdigit() else value
+
+
+def _filter_scope(filters: list[dict[str, Any]]) -> str:
+    if not filters:
+        return ""
+    parts = []
+    for item in filters:
+        field = str(item.get("field", ""))
+        value = str(item.get("value", "")).strip()
+        if field == "battery" and value:
+            parts.append(f"in {value}")
+        elif field == "pump_type" and value:
+            parts.append(f"with pump type {value.upper()}")
+        elif field and value:
+            parts.append(f"with {field.replace('_', ' ')} {value}")
+    return " " + " and ".join(parts) if parts else ""
 
 
 def _resolve_date_range(text: str, today: date) -> tuple[date, date] | None:

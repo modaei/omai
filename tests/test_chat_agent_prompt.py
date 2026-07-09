@@ -1,3 +1,5 @@
+from datetime import date
+
 from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 
@@ -199,6 +201,18 @@ def draft_operational_sql(question: str, sql: str) -> str:
     )
 
 
+@tool("draft_operational_sql")
+def draft_operational_sql_dict(question: str, sql: str) -> dict:
+    """Return a successful SQL draft payload as a dict."""
+    return {
+        "ok": True,
+        "executed": False,
+        "question": question,
+        "sql": sql,
+        "notes": None,
+    }
+
+
 def test_system_prompt_rejects_unsupported_actions():
     model = FakeModel()
 
@@ -224,10 +238,28 @@ def test_system_prompt_rejects_unsupported_actions():
     assert "Only run report tools" in system_prompt
     assert "Use summarize_report_by_month" in system_prompt
     assert "do not call run_report separately for each" in system_prompt
+    assert "do not claim causal reasons from report numbers alone" in system_prompt
     assert "Use summarize_well_allocation" in system_prompt
     assert "Do not use well tests for specific well or well-group" in system_prompt
     assert "Well-group filters are case-insensitive" in system_prompt
     assert "TA wells mean onrr_code = 'TA'" in system_prompt
+
+
+def test_system_prompt_uses_supplied_current_date():
+    model = FakeModel()
+
+    answer_chat_question(
+        model=model,
+        tools=[],
+        site_id=1,
+        site_name="HARTZOG DRAW",
+        history=[],
+        question="compare each battery oil production between yesterday and the day before",
+        today=date(2026, 7, 3),
+    )
+
+    system_prompt = model.messages[0].content
+    assert "Today is 2026-07-03." in system_prompt
     assert "Rod wells mean wells.pump_type = 'ROD'" in system_prompt
     assert "outside Ometrics" in system_prompt
     assert OUT_OF_DOMAIN_RESPONSE in system_prompt
@@ -335,6 +367,30 @@ def test_successful_sql_execution_forces_final_answer_without_more_tools():
     assert model.final_messages is not None
 
 
+def test_direct_sql_execution_request_is_validated_then_auto_executed():
+    model = FakeSqlStopModel()
+
+    answer, traces, stats = answer_chat_question(
+        model=model,
+        tools=[draft_operational_sql, execute_operational_sql],
+        site_id=1,
+        site_name="HARTZOG DRAW",
+        history=[],
+        question="Average downtime by code",
+    )
+
+    assert answer == "Final answer from SQL rows."
+    assert len(traces) == 2
+    assert traces[0]["tool"] == "draft_operational_sql"
+    assert traces[0]["requested_tool"] == "execute_operational_sql"
+    assert traces[0]["validation_before_execute"] is True
+    assert traces[1]["tool"] == "execute_operational_sql"
+    assert traces[1]["auto_executed"] is True
+    assert stats["model_calls"] == 2
+    assert model.bound_model.calls == 1
+    assert model.final_messages is not None
+
+
 def test_producing_well_test_coverage_sql_is_blocked_at_runtime():
     model = FakeSqlStopModel()
 
@@ -378,6 +434,27 @@ def test_valid_sql_draft_is_auto_executed_without_more_tool_rounds():
     assert stats["model_calls"] == 2
     assert model.bound_model.calls == 1
     assert model.final_messages is not None
+
+
+def test_valid_dict_sql_draft_is_auto_executed_without_more_tool_rounds():
+    model = FakeSqlDraftAutoExecuteModel()
+
+    answer, traces, stats = answer_chat_question(
+        model=model,
+        tools=[draft_operational_sql_dict, execute_operational_sql],
+        site_id=1,
+        site_name="HARTZOG DRAW",
+        history=[],
+        question="Average downtime by code",
+    )
+
+    assert answer == "Final answer from auto-executed SQL rows."
+    assert len(traces) == 2
+    assert traces[0]["tool"] == "draft_operational_sql"
+    assert traces[1]["tool"] == "execute_operational_sql"
+    assert traces[1]["auto_executed"] is True
+    assert stats["model_calls"] == 2
+    assert model.bound_model.calls == 1
 
 
 def test_last_round_successful_sql_still_gets_final_answer():

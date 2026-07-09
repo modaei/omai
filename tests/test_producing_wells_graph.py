@@ -15,6 +15,7 @@ class AnyArguments(BaseModel):
     start_date: str | None = None
     end_date: str | None = None
     range_mode: str = "any_day"
+    filters: list[dict] = []
 
 
 class WellTestArguments(BaseModel):
@@ -142,6 +143,38 @@ def test_routes_simple_current_producer_count_to_single_date_tool():
     assert calls[0][1]["producing_date"] == "2026-07-02"
     assert answer == "There were 3 producing wells on 07/02/2026."
     assert stats["model_calls"] == 0
+
+
+def test_routes_battery_filtered_producer_count_to_single_date_tool():
+    calls = []
+    result = try_answer_producing_well_question(
+        tools=make_tools(calls),
+        question="How many producing wells were in Battery 6 yesterday?",
+        today=date(2026, 7, 9),
+    )
+
+    assert result is not None
+    answer, _, stats = result
+    assert calls[0][0] == "get_producing_wells"
+    assert calls[0][1]["producing_date"] == "2026-07-08"
+    assert calls[0][1]["filters"] == [{"field": "battery", "value": "Battery 6"}]
+    assert answer == "There were 3 producing wells in Battery 6 on 07/08/2026."
+    assert stats["model_calls"] == 0
+
+
+def test_routes_pump_type_filtered_producer_count_to_single_date_tool():
+    calls = []
+    result = try_answer_producing_well_question(
+        tools=make_tools(calls),
+        question="How many rod producing wells were there yesterday?",
+        today=date(2026, 7, 9),
+    )
+
+    assert result is not None
+    answer, _, _ = result
+    assert calls[0][1]["producing_date"] == "2026-07-08"
+    assert calls[0][1]["filters"] == [{"field": "pump_type", "value": "rod"}]
+    assert "with pump type ROD" in answer
 
 
 def test_unrelated_question_falls_through_to_general_agent():

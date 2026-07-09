@@ -39,6 +39,23 @@ class ActiveWellsInput(BaseModel):
     active_date: str = Field(description="Date in YYYY-MM-DD format.")
 
 
+class WellFilterInput(BaseModel):
+    field: Literal[
+        "pump_type",
+        "onrr_code",
+        "wogcc_class",
+        "wogcc_status",
+        "direction",
+        "prod_fm",
+        "battery",
+        "lact",
+        "monitored",
+        "disable_reading",
+        "multiple_injection_form",
+    ] = Field(description="Allowlisted well attribute to filter by.")
+    value: Any = Field(description="Filter value, for example 'Battery 6' or 'rod'.")
+
+
 class ProducingWellsInput(BaseModel):
     producing_date: str | None = Field(
         default=None, description="Single date in YYYY-MM-DD format."
@@ -52,6 +69,14 @@ class ProducingWellsInput(BaseModel):
     range_mode: Literal["any_day"] = Field(
         default="any_day",
         description="For ranges, include wells producing on any day in the range.",
+    )
+    filters: list[WellFilterInput] = Field(
+        default_factory=list,
+        description=(
+            "Optional well filters. Use for scoped questions such as Battery 6 "
+            "or rod wells. Examples: [{'field':'battery','value':'Battery 6'}], "
+            "[{'field':'pump_type','value':'rod'}]."
+        ),
     )
 
     @model_validator(mode="after")
@@ -166,21 +191,35 @@ def build_shutdown_tools(
         start_date: str | None = None,
         end_date: str | None = None,
         range_mode: str = "any_day",
+        filters: list[dict[str, Any]] | None = None,
     ) -> str:
         """List producing wells for one day or any day in a date range."""
         logger.info(
-            "Getting producing wells site_id=%s date=%s start=%s end=%s",
+            "Getting producing wells site_id=%s date=%s start=%s end=%s filters=%s",
             site_id,
             producing_date,
             start_date,
             end_date,
+            filters,
         )
         try:
+            filter_payload = [
+                item.model_dump() if hasattr(item, "model_dump") else item
+                for item in (filters or [])
+            ]
             result = (
-                client.get_producing_wells(site_id, producing_date)
+                client.get_producing_wells(
+                    site_id,
+                    producing_date,
+                    filters=filter_payload,
+                )
                 if producing_date is not None
                 else client.get_producing_wells_for_range(
-                    site_id, str(start_date), str(end_date), range_mode
+                    site_id,
+                    str(start_date),
+                    str(end_date),
+                    range_mode,
+                    filters=filter_payload,
                 )
             )
             return _json_result(
@@ -275,6 +314,9 @@ def build_shutdown_tools(
                 "Count and list producing wells for one date or date range. For "
                 "ranges, any_day includes wells producing on at least one day. "
                 "Use this for questions asking how many wells are producing. "
+                "When the user scopes the population, pass filters such as "
+                "battery=Battery 6 or pump_type=rod; do not return a site-wide "
+                "count for a filtered question. "
                 "A well is producing only when its ONRR code is active_well=true "
                 "and injection_well=false as of that day, and it is not shut down "
                 "for the full day. ONRR code name and description are returned "

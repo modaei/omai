@@ -126,16 +126,45 @@ def _tuple_of_tool_call_expectations(
             raise EvaluationCaseError(
                 f"Case {case_id!r} expected_tool_calls[{index}] must be an object."
             )
-        if not item.get("tool"):
-            raise EvaluationCaseError(
-                f"Case {case_id!r} expected_tool_calls[{index}] must include tool."
-            )
-        arguments = item.get("arguments", {})
-        if arguments is None:
-            arguments = {}
-        if not isinstance(arguments, dict):
-            raise EvaluationCaseError(
-                f"Case {case_id!r} expected_tool_calls[{index}].arguments must be an object."
-            )
-        expectations.append({"tool": str(item["tool"]), "arguments": arguments})
+        if "one_of" in item:
+            alternatives = item["one_of"]
+            if not isinstance(alternatives, list | tuple) or not alternatives:
+                raise EvaluationCaseError(
+                    f"Case {case_id!r} expected_tool_calls[{index}].one_of must be a non-empty list."
+                )
+            parsed_alternatives = []
+            for alternative_index, alternative in enumerate(alternatives):
+                if not isinstance(alternative, dict):
+                    raise EvaluationCaseError(
+                        f"Case {case_id!r} expected_tool_calls[{index}].one_of[{alternative_index}] must be an object."
+                    )
+                parsed_alternatives.append(
+                    _tool_call_expectation(
+                        alternative,
+                        case_id,
+                        f"expected_tool_calls[{index}].one_of[{alternative_index}]",
+                    )
+                )
+            expectations.append({"one_of": parsed_alternatives})
+            continue
+        expectations.append(
+            _tool_call_expectation(item, case_id, f"expected_tool_calls[{index}]")
+        )
     return tuple(expectations)
+
+
+def _tool_call_expectation(
+    item: dict[str, Any], case_id: str, location: str
+) -> dict[str, Any]:
+    if not item.get("tool"):
+        raise EvaluationCaseError(
+            f"Case {case_id!r} {location} must include tool."
+        )
+    arguments = item.get("arguments", {})
+    if arguments is None:
+        arguments = {}
+    if not isinstance(arguments, dict):
+        raise EvaluationCaseError(
+            f"Case {case_id!r} {location}.arguments must be an object."
+        )
+    return {"tool": str(item["tool"]), "arguments": arguments}

@@ -50,42 +50,79 @@ def _expected_tool_call_checks(
 ) -> list[DeterministicCheckResult]:
     checks = []
     for index, expectation in enumerate(case.expected_tool_calls):
-        tool_name = str(expectation["tool"])
-        expected_arguments = expectation.get("arguments", {})
-        matching_tool_calls = [
-            call for call in tool_calls if str(call.get("tool")) == tool_name
-        ]
-        passed = False
-        failure_messages = []
-        for call in matching_tool_calls:
-            call_passed, message = _tool_arguments_match(
-                call.get("arguments") or {}, expected_arguments
-            )
-            if call_passed:
-                passed = True
-                break
-            failure_messages.append(message)
-        if passed:
-            message = f"Expected tool call #{index + 1} {tool_name!r} matched."
-        elif not matching_tool_calls:
-            used = [str(call.get("tool")) for call in tool_calls if call.get("tool")]
-            message = (
-                f"Expected tool call #{index + 1} {tool_name!r} was not used. "
-                f"Used: {used}"
-            )
-        else:
-            message = (
-                f"Expected tool call #{index + 1} {tool_name!r} argument mismatch: "
-                + "; ".join(failure_messages)
-            )
-        checks.append(
-            DeterministicCheckResult(
-                name=f"expected_tool_call:{index + 1}:{tool_name}",
-                passed=passed,
-                message=message,
-            )
-        )
+        if "one_of" in expectation:
+            checks.append(_one_of_expected_tool_call_check(index, expectation, tool_calls))
+            continue
+        checks.append(_single_expected_tool_call_check(index, expectation, tool_calls))
     return checks
+
+
+def _one_of_expected_tool_call_check(
+    index: int, expectation: dict[str, Any], tool_calls: list[dict[str, Any]]
+) -> DeterministicCheckResult:
+    alternatives = expectation.get("one_of", [])
+    failure_messages = []
+    labels = []
+    for alternative in alternatives:
+        passed, message, label = _expected_tool_call_matches(alternative, tool_calls)
+        labels.append(label)
+        if passed:
+            return DeterministicCheckResult(
+                name=f"expected_tool_call:{index + 1}:one_of",
+                passed=True,
+                message=f"Expected tool call #{index + 1} matched one of {labels}.",
+            )
+        failure_messages.append(message)
+    return DeterministicCheckResult(
+        name=f"expected_tool_call:{index + 1}:one_of",
+        passed=False,
+        message=(
+            f"Expected tool call #{index + 1} to match one of {labels}. "
+            + "; ".join(failure_messages)
+        ),
+    )
+
+
+def _single_expected_tool_call_check(
+    index: int, expectation: dict[str, Any], tool_calls: list[dict[str, Any]]
+) -> DeterministicCheckResult:
+    passed, message, label = _expected_tool_call_matches(expectation, tool_calls)
+    return DeterministicCheckResult(
+        name=f"expected_tool_call:{index + 1}:{label}",
+        passed=passed,
+        message=message,
+    )
+
+
+def _expected_tool_call_matches(
+    expectation: dict[str, Any], tool_calls: list[dict[str, Any]]
+) -> tuple[bool, str, str]:
+    tool_name = str(expectation["tool"])
+    expected_arguments = expectation.get("arguments", {})
+    matching_tool_calls = [
+        call for call in tool_calls if str(call.get("tool")) == tool_name
+    ]
+    passed = False
+    failure_messages = []
+    for call in matching_tool_calls:
+        call_passed, message = _tool_arguments_match(
+            call.get("arguments") or {}, expected_arguments
+        )
+        if call_passed:
+            passed = True
+            break
+        failure_messages.append(message)
+    if passed:
+        message = f"Expected tool call {tool_name!r} matched."
+    elif not matching_tool_calls:
+        used = [str(call.get("tool")) for call in tool_calls if call.get("tool")]
+        message = f"Expected tool call {tool_name!r} was not used. Used: {used}"
+    else:
+        message = (
+            f"Expected tool call {tool_name!r} argument mismatch: "
+            + "; ".join(failure_messages)
+        )
+    return passed, message, tool_name
 
 
 def _tool_arguments_match(

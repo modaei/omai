@@ -616,6 +616,21 @@ def test_generic_reading_and_client_clarification_are_deterministic():
     assert "LACT - LACT 1" in result[0]
 
 
+def test_generic_tank_reading_infers_water_tank_and_level_fields():
+    calls = []
+    result = try_answer_navigation_request(
+        tools=make_tools(calls),
+        question="create a reading for 2-4 water feet 10 inches 10",
+        today=date(2026, 7, 9),
+    )
+
+    assert result is not None
+    assert calls[0][1]["entry_type"] == "tank_reading"
+    assert calls[0][1]["entity_name"] == "2-4 water"
+    assert calls[0][1]["values"] == {"feet": 10.0, "inches": 10.0}
+    assert result[2]["model_calls"] == 0
+
+
 def test_unknown_numeric_entry_value_falls_through_to_model():
     calls = []
     result = try_answer_navigation_request(
