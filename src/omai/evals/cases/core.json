@@ -918,6 +918,57 @@
     ]
   },
   {
+    "id": "production-battery-6-lower-june-than-may-reason",
+    "category": "rag",
+    "question": "Why was Battery 6 oil production lower in June than in May?",
+    "site_id": 4,
+    "current_date": "2026-07-10",
+    "required_phrases": [
+      "Battery 6"
+    ],
+    "forbidden_phrases": [
+      "site_id"
+    ],
+    "metrics": [
+      "answer_relevancy",
+      "faithfulness",
+      "correctness"
+    ],
+    "expected_output": "Compare Battery 6 oil production in June 2026 against May 2026 and use operational context for any causal explanation.",
+    "expected_tool_calls": [
+      {
+        "tool": "summarize_report_by_month",
+        "arguments": {
+          "report_name": "oil_production",
+          "year": 2026,
+          "battery_name": {
+            "contains": "Battery 6"
+          }
+        }
+      },
+      {
+        "tool": "search_operational_context",
+        "arguments": {
+          "query": {
+            "contains_all": [
+              "Battery 6",
+              "production",
+              "lower",
+              "June",
+              "May",
+              "2026"
+            ]
+          },
+          "start_date": "2026-01-01",
+          "end_date": "2026-12-31",
+          "entity_name": {
+            "contains": "Battery 6"
+          }
+        }
+      }
+    ]
+  },
+  {
     "id": "production-oil-dip-reason-with-context",
     "category": "rag",
     "question": "Battery 6 oil production dropped on 06/21/2026. What was the reason for oil production dip?",

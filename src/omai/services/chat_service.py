@@ -240,6 +240,7 @@ def answer_chat(
         tools=tools,
         question=question,
         site_id=site_id,
+        today=effective_today,
         reading_client=reading_client,
         well_filter_client=well_filter_client,
     )

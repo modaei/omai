@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import date
 from time import perf_counter
 from typing import Any, TypedDict
 
@@ -25,12 +26,13 @@ def prepare_production_context_dependency(
     tools: list[BaseTool],
     question: str,
     site_id: int,
+    today: date | None = None,
     reading_client: Any | None = None,
     well_filter_client: Any | None = None,
     max_related_entities: int = 25,
 ) -> ProductionContextDependency | None:
     """Prefetch report trend and notes for production variation/reason questions."""
-    route = _classify_production_context(question)
+    route = _classify_production_context(question, today=today)
     if route is None:
         return None
     tool_map = {tool.name: tool for tool in tools}
@@ -63,6 +65,11 @@ def prepare_production_context_dependency(
             context_tool,
             arguments,
         )
+        context_result = _filter_context_result_for_battery_scope(
+            context_result,
+            related_entities,
+        )
+        context_trace = context_trace | {"result": context_result}
         traces.append(context_trace)
         timings.append(context_timing)
         context_results.append(
@@ -77,10 +84,14 @@ def prepare_production_context_dependency(
         "authoritative_data_type": "production_variation_context",
         "instruction": (
             "Use the production report to describe the variation. Use only the "
-            "operational-context results for causal explanations. If context has "
-            "no supporting records, say no supporting operational notes were found."
+            "filtered operational-context results for causal explanations. The "
+            "filtered results are scoped to the requested battery and verified "
+            "related wells/equipment. Do not infer causes from site-level notes "
+            "or unrelated well/tract notes. If context has no supporting records, "
+            "say no supporting battery-scoped operational notes were found."
         ),
         "related_entities": related_entities,
+        "focus_periods": route.get("focus_periods", []),
         "report": {
             "tool": "summarize_report_by_month",
             "arguments": route["report_arguments"],
@@ -106,11 +117,18 @@ def prepare_production_context_dependency(
     }
 
 
-def _classify_production_context(question: str) -> dict[str, Any] | None:
+def _classify_production_context(
+    question: str,
+    today: date | None = None,
+) -> dict[str, Any] | None:
     normalized = " ".join(question.lower().split())
     if not re.search(r"\b(why|reason|caus(?:e|ed|es)|explain)\b", normalized):
         return None
-    if not re.search(r"\b(variation|varied|vary|drop(?:ped)?|dip|increase|decrease|change)\b", normalized):
+    if not re.search(
+        r"\b(variation|varied|vary|drop(?:ped)?|dip|increase|decrease|change|"
+        r"lower|higher|less|more|below|above)\b",
+        normalized,
+    ):
         return None
     if not re.search(r"\b(oil production|production|oil)\b", normalized):
         return None
@@ -118,14 +136,35 @@ def _classify_production_context(question: str) -> dict[str, Any] | None:
     if battery_match is None:
         return None
     year_match = re.search(r"\b(20\d{2})\b", normalized)
-    if year_match is None:
+    month_pair = _month_pair(normalized)
+    if year_match is None and month_pair is None:
         return None
 
     battery_name = _battery_name(battery_match.group(1))
-    year = int(year_match.group(1))
+    year = int(year_match.group(1)) if year_match else (today or date.today()).year
+    focus_periods = (
+        [f"{year}-{month_pair[0]:02d}", f"{year}-{month_pair[1]:02d}"]
+        if month_pair
+        else []
+    )
+    comparison_terms = _comparison_terms(normalized)
+    query = " ".join(
+        item
+        for item in [
+            battery_name,
+            "oil production",
+            comparison_terms or "variation",
+            _month_name(month_pair[0]) if month_pair else "",
+            _month_name(month_pair[1]) if month_pair else "",
+            "reason",
+            str(year),
+        ]
+        if item
+    )
     return {
         "battery_name": battery_name,
         "year": year,
+        "focus_periods": focus_periods,
         "report_arguments": {
             "report_name": "oil_production",
             "year": year,
@@ -133,7 +172,7 @@ def _classify_production_context(question: str) -> dict[str, Any] | None:
             "value_key": None,
         },
         "context_arguments": {
-            "query": f"{battery_name} oil production variation reason {year}",
+            "query": query,
             "start_date": f"{year}-01-01",
             "end_date": f"{year}-12-31",
             "entity_name": battery_name,
@@ -145,6 +184,66 @@ def _classify_production_context(question: str) -> dict[str, Any] | None:
 def _battery_name(value: str) -> str:
     value = " ".join(str(value).strip().split())
     return f"Battery {value}" if value.isdigit() else value
+
+
+MONTHS = {
+    "january": 1,
+    "february": 2,
+    "march": 3,
+    "april": 4,
+    "may": 5,
+    "june": 6,
+    "july": 7,
+    "august": 8,
+    "september": 9,
+    "october": 10,
+    "november": 11,
+    "december": 12,
+}
+
+
+def _month_pair(text: str) -> tuple[int, int] | None:
+    month_pattern = "|".join(MONTHS)
+    match = re.search(
+        rf"\b({month_pattern})\b\s+"
+        rf"(?:than|vs|versus|compared\s+to|compared\s+with|and|with)\s+"
+        rf"(?:in\s+)?"
+        rf"\b({month_pattern})\b",
+        text,
+    )
+    if match is None:
+        return None
+    return MONTHS[match.group(1)], MONTHS[match.group(2)]
+
+
+def _month_name(month: int) -> str:
+    for name, value in MONTHS.items():
+        if value == month:
+            return name.title()
+    return ""
+
+
+def _comparison_terms(text: str) -> str | None:
+    terms = [
+        term
+        for term in (
+            "lower",
+            "higher",
+            "less",
+            "more",
+            "below",
+            "above",
+            "drop",
+            "dropped",
+            "dip",
+            "increase",
+            "decrease",
+            "change",
+            "variation",
+        )
+        if re.search(rf"\b{re.escape(term)}\b", text)
+    ]
+    return " ".join(terms) if terms else None
 
 
 def _resolve_related_battery_entities(
@@ -278,6 +377,100 @@ def _context_search_arguments(
             }
         )
     return arguments
+
+
+def _filter_context_result_for_battery_scope(
+    result: dict[str, Any],
+    related_entities: dict[str, Any],
+) -> dict[str, Any]:
+    """Keep only matches that explicitly reference the battery scope.
+
+    Broad general notes can mention unrelated wells/tracts while ranking well for
+    a battery query. The production-cause dependency is stricter than generic RAG:
+    a note must be tied to the requested battery, one of its verified wells, or
+    one of its verified pieces of equipment before the LLM can use it as causal
+    evidence.
+    """
+    matches = result.get("matches")
+    if not isinstance(matches, list):
+        return result
+
+    allowed_names = _battery_scope_allowed_names(related_entities)
+    kept = [
+        match
+        for match in matches
+        if isinstance(match, dict)
+        and _match_references_allowed_entity(match, allowed_names)
+    ]
+    return {
+        **result,
+        "count": len(kept),
+        "matches": kept,
+        "original_count": len(matches),
+        "filtered_count": len(kept),
+        "excluded_count": len(matches) - len(kept),
+    }
+
+
+def _battery_scope_allowed_names(related_entities: dict[str, Any]) -> list[str]:
+    names = [str(related_entities.get("battery_name") or "").strip()]
+    names.extend(str(name).strip() for name in related_entities.get("wells", []))
+    for equipment_names in related_entities.get("equipment", {}).values():
+        names.extend(str(name).strip() for name in equipment_names)
+
+    aliases = []
+    for name in names:
+        if not name:
+            continue
+        aliases.append(name)
+        aliases.extend(_entity_aliases(name))
+    return _dedupe_names(aliases)
+
+
+def _entity_aliases(name: str) -> list[str]:
+    normalized = " ".join(name.split())
+    well_match = re.search(r"\bhartzog\s+draw\s+unit\s+([a-z0-9-]+)\b", normalized, re.I)
+    if well_match:
+        return [well_match.group(1)]
+    return []
+
+
+def _match_references_allowed_entity(
+    match: dict[str, Any],
+    allowed_names: list[str],
+) -> bool:
+    entity_name = str(match.get("entity_name") or "")
+    text = str(match.get("text") or "")
+    return any(
+        _contains_entity_reference(entity_name, allowed_name)
+        or _contains_entity_reference(text, allowed_name)
+        for allowed_name in allowed_names
+    )
+
+
+def _contains_entity_reference(text: str, entity_name: str) -> bool:
+    normalized_text = _normalize_entity_text(text)
+    normalized_entity = _normalize_entity_text(entity_name)
+    if not normalized_text or not normalized_entity:
+        return False
+    pattern = rf"(?<![a-z0-9]){re.escape(normalized_entity)}(?![a-z0-9])"
+    return re.search(pattern, normalized_text) is not None
+
+
+def _normalize_entity_text(value: str) -> str:
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", value.lower()).split())
+
+
+def _dedupe_names(names: list[str]) -> list[str]:
+    deduped = []
+    seen = set()
+    for name in names:
+        key = _normalize_entity_text(name)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(name)
+    return deduped
 
 
 def _invoke_json_tool(
