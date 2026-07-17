@@ -56,3 +56,25 @@ class RodPumpHealthReportRequest(BaseModel):
         if any(well_id <= 0 for well_id in value):
             raise ValueError("well_ids must contain positive integers")
         return list(dict.fromkeys(value))
+
+
+class WeeklyOverviewRequest(BaseModel):
+    """Internal scheduled-email request for an Omai weekly overview section."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    site_id: int = Field(gt=0)
+    start_date: date
+    end_date: date
+
+    @field_validator("end_date")
+    @classmethod
+    def validate_end_date(cls, value: date, info) -> date:
+        start_date = info.data.get("start_date")
+        if start_date is not None and value < start_date:
+            raise ValueError("end_date must be on or after start_date")
+        return value
+
+
+class WeeklyOverviewResponse(BaseModel):
+    overview: str = Field(min_length=1)
