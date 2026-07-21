@@ -55,6 +55,8 @@ from omai.rag.vector_store import (
     UnavailableOperationalContextStore,
     VectorOperationalContextStore,
 )
+from omai.repositories.anomaly_repository import AnomalyRepository
+from omai.tools.anomaly_tools import build_anomaly_tools
 from omai.tools.capability_tools import build_capability_tools
 from omai.tools.database_schema_tools import build_database_schema_tools
 from omai.tools.data_point_tools import build_data_point_tools
@@ -151,6 +153,7 @@ def answer_chat(
         )
     except Exception as exc:
         database_schema_client = UnavailableDatabaseSchemaClient(str(exc))
+    anomaly_repository = AnomalyRepository.from_settings(settings)
     data_entry_client = DataEntryClient.from_settings(settings)
     view_navigation_client = ViewNavigationClient.from_settings(settings)
     tools = [
@@ -174,6 +177,7 @@ def answer_chat(
         # work-order context, shutdown explanations, alarms, and history.
         *build_operational_context_tools(operational_context_store, site_id),
         *build_data_point_tools(data_point_client, site_id),
+        *build_anomaly_tools(anomaly_repository, site_id),
         *build_report_tools(
             report_client,
             site_id,

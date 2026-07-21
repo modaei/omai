@@ -50,7 +50,9 @@ class Settings:
     vector_db_pool_recycle: int
     rag_embedding_model: str
     rag_embedding_dimensions: int
-    log_level: str
+    log_level: str = "INFO"
+    graphite_api_url: str = "http://metrics1.ultimatesys.com/render"
+    graphite_timeout_seconds: float = 30.0
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -121,6 +123,11 @@ class Settings:
                 "RAG_EMBEDDING_MODEL", "text-embedding-3-small"
             ).strip(),
             rag_embedding_dimensions=int(os.getenv("RAG_EMBEDDING_DIMENSIONS", "1536")),
+            graphite_api_url=os.getenv(
+                "GRAPHITE_API_URL",
+                os.getenv("MONITORING_DATA_API_URL", "http://metrics1.ultimatesys.com/render"),
+            ).strip(),
+            graphite_timeout_seconds=float(os.getenv("GRAPHITE_TIMEOUT_SECONDS", "30")),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
         )
 
@@ -167,6 +174,10 @@ class Settings:
             raise ValueError("RAG_EMBEDDING_MODEL is not configured.")
         if self.rag_embedding_dimensions <= 0:
             raise ValueError("RAG_EMBEDDING_DIMENSIONS must be positive.")
+        if not self.graphite_api_url:
+            raise ValueError("GRAPHITE_API_URL is not configured.")
+        if self.graphite_timeout_seconds <= 0:
+            raise ValueError("GRAPHITE_TIMEOUT_SECONDS must be positive.")
         if self.log_level not in LOG_LEVELS:
             allowed = ", ".join(LOG_LEVELS)
             raise ValueError(f"LOG_LEVEL must be one of: {allowed}.")
