@@ -43,6 +43,8 @@ DOMAIN_TERMS = {
     "injection",
     "knockout",
     "lact",
+    "length",
+    "load",
     "meter",
     "metrics",
     "missing",
@@ -78,6 +80,7 @@ DOMAIN_TERMS = {
     "ticket",
     "tickets",
     "treater",
+    "trend",
     "transfer",
     "transferred",
     "uptime",
@@ -171,8 +174,23 @@ def _looks_like_domain_identifier(question: str) -> bool:
     return bool(
         re.search(r"\b\d{1,2}-\d{1,2}-\d{1,2}\b", question)
         or re.search(r"\bwell\s*\d+\b", question, flags=re.IGNORECASE)
+        or _looks_like_data_point_trend_lookup(question)
         or _looks_like_operational_identifier_lookup(question)
         or _looks_like_bare_well_status_question(question, tokens)
+    )
+
+
+def _looks_like_data_point_trend_lookup(question: str) -> bool:
+    """Accept telemetry trend requests for numbered facilities or wells."""
+    if not re.search(r"\b(?:hdu[_\s-]?)?\d{3,6}[a-z]?\b", question, flags=re.IGNORECASE):
+        return False
+
+    return bool(
+        re.search(
+            r"\b(?:analy[sz]e|show|get|describe)\b.+\btrend\b.+\b(?:of|for|in)\s+(?:well\s+)?(?:hdu[_\s-]?)?\d{3,6}[a-z]?\b",
+            question,
+            flags=re.IGNORECASE,
+        )
     )
 
 

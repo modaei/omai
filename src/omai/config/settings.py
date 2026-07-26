@@ -51,6 +51,9 @@ class Settings:
     rag_embedding_model: str
     rag_embedding_dimensions: int
     log_level: str
+    monitoring_data_api_url: str = "http://metrics1.ultimatesys.com/render"
+    data_point_trend_timeout_seconds: float = 20
+    data_point_trend_max_data_points: int = 300
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -72,6 +75,15 @@ class Settings:
                 os.getenv("OMREPORTS_TIMEOUT_SECONDS", "30")
             ),
             max_report_days=int(os.getenv("MAX_REPORT_DAYS", "366")),
+            monitoring_data_api_url=os.getenv(
+                "MONITORING_DATA_API_URL", "http://metrics1.ultimatesys.com/render"
+            ).strip(),
+            data_point_trend_timeout_seconds=float(
+                os.getenv("DATA_POINT_TREND_TIMEOUT_SECONDS", "20")
+            ),
+            data_point_trend_max_data_points=int(
+                os.getenv("DATA_POINT_TREND_MAX_DATA_POINTS", "300")
+            ),
             db_host=os.getenv("DB_HOST", "127.0.0.1").strip(),
             db_port=int(os.getenv("DB_PORT", "3306")),
             db_user=os.getenv("DB_USER", "").strip(),
@@ -131,6 +143,12 @@ class Settings:
             raise ValueError("OMREPORTS_TIMEOUT_SECONDS must be positive.")
         if self.max_report_days <= 0:
             raise ValueError("MAX_REPORT_DAYS must be positive.")
+        if not self.monitoring_data_api_url:
+            raise ValueError("MONITORING_DATA_API_URL is not configured.")
+        if self.data_point_trend_timeout_seconds <= 0:
+            raise ValueError("DATA_POINT_TREND_TIMEOUT_SECONDS must be positive.")
+        if self.data_point_trend_max_data_points <= 0:
+            raise ValueError("DATA_POINT_TREND_MAX_DATA_POINTS must be positive.")
         if self.omai_max_concurrent <= 0:
             raise ValueError("OMAI_MAX_CONCURRENT must be positive.")
         if self.operational_sql_max_rows <= 0:
