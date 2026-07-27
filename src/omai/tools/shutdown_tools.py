@@ -173,7 +173,7 @@ def build_shutdown_tools(
             return _json_result({"ok": False, "error": str(exc)})
 
     def get_active_wells(active_date: str) -> str:
-        """Count wells active on one day using ONRR state and shutdown records."""
+        """Count wells active on one day using only effective ONRR state."""
         logger.info("Getting active wells site_id=%s date=%s", site_id, active_date)
         try:
             return _json_result(
@@ -299,11 +299,10 @@ def build_shutdown_tools(
             name="get_active_wells",
             description=(
                 "Count and list active wells for one date. Use this for questions "
-                "asking how many wells are active, inactive, online, producing, "
+                "asking how many wells are active, inactive, online, "
                 "or available on a specific day. A well is active only when its "
-                "ONRR code is active_well=true as of that day and it is not shut "
-                "down for the full day. Wells with partial shutdowns are returned "
-                "separately and excluded from active and inactive counts."
+                "ONRR code is active_well=true as of that day. Shutdown state is "
+                "not considered for active-well counts."
             ),
             args_schema=ActiveWellsInput,
         ),

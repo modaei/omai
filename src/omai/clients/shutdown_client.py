@@ -227,13 +227,48 @@ class ShutdownClient:
         }
 
     def get_active_wells(self, site_id: int, active_date: str) -> dict[str, Any]:
-        """Classify wells as active, inactive, or partial-shutdown for one day."""
-        return self._classify_wells_by_onrr_and_shutdown(
-            site_id,
-            active_date,
-            result_type="active",
-            exclude_injection_wells=False,
-        )
+        """Classify active wells for one day using only effective ONRR state."""
+        day = self._parse_date(active_date)
+        _, day_end = self._day_bounds(day)
+        wells = self._wells_with_onrr_state(site_id, day_end)
+
+        active_wells = []
+        inactive_wells = []
+        for well in wells:
+            well_result = {
+                "well": f"Well - {well['well_name']}",
+                "onrr_code": well.get("onrr_code_name"),
+                "onrr_code_description": well.get("onrr_code_description"),
+                "onrr_active_well": bool(well.get("active_well")),
+                "onrr_injection_well": bool(well.get("injection_well")),
+            }
+            if well.get("active_well"):
+                active_wells.append(well_result)
+            else:
+                inactive_wells.append(
+                    {
+                        **well_result,
+                        "status": "onrr_inactive",
+                        "reason": "ONRR code is not marked active for this date.",
+                    }
+                )
+
+        return {
+            "site_id": site_id,
+            "date": day.isoformat(),
+            "result_type": "active",
+            "active_count": len(active_wells),
+            "inactive_count": len(inactive_wells),
+            "active_wells": active_wells,
+            "inactive_wells": inactive_wells,
+            "rules": {
+                "onrr_code_as_of": day_end.isoformat(sep=" "),
+                "active_well_rule": (
+                    "Active wells must have active_well=true on the ONRR code "
+                    "as of that day."
+                ),
+            },
+        }
 
     def get_producing_wells(
         self,
