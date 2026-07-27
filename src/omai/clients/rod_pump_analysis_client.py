@@ -291,7 +291,7 @@ class RodPumpAnalysisClient:
         """Retrieve the same Graphite POC metrics used by OMetrics trend charts."""
         result: dict[str, list] = {label: [] for label in METRICS.values()}
         warnings: list[str] = []
-        prefix = f"MI3.{site_key}.POC.{well_key.replace(' ', '_')}."
+        prefix = f"MI3.{site_key}.{well_key.replace(' ', '_')}."
         target_to_label = {prefix + metric: label for metric, label in METRICS.items()}
         params = [("target", target) for target in target_to_label]
         params.extend([

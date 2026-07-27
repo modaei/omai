@@ -271,7 +271,13 @@ def test_system_prompt_uses_supplied_current_date():
     assert "Use get_producing_wells" in system_prompt
     assert "must exclude ONRR injection wells" in system_prompt
     assert "do not infer active wells from well-test activity" in system_prompt
-    assert "get_active_wells or get_producing_wells returns" in system_prompt
+    assert "Active wells are based only on the ONRR code as of that date" in system_prompt
+    assert "shutdown state is not considered" in system_prompt
+    assert "active well status is only one condition in a broader question" in system_prompt
+    assert "combine get_active_wells with the relevant domain tool" in system_prompt
+    assert "shutdown require both get_active_wells and shutdown tools" in system_prompt
+    assert "exclude wells shut down for the full day" in system_prompt
+    assert "If get_producing_wells returns" in system_prompt
     assert "partial_shutdown_wells or partial_shutdown_well_names" in system_prompt
     assert "If partial_shutdown_count is 0, do not mention partial shutdowns at all" in system_prompt
     assert "first prefer the most specific domain tool" in system_prompt
@@ -409,7 +415,7 @@ def test_producing_well_test_coverage_sql_is_blocked_at_runtime():
     assert answer == "Final answer from SQL rows."
     assert len(traces) == 1
     assert traces[0]["tool"] == "execute_operational_sql"
-    assert "cannot classify producing-well test coverage" in traces[0]["result"]
+    assert "cannot classify active/producing well test coverage" in traces[0]["result"]
     assert '"executed":false' in traces[0]["result"]
     assert stats["model_calls"] == 2
 

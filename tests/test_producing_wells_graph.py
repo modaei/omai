@@ -78,8 +78,12 @@ def make_tools(calls):
                     {"well": "Well - ALPHA"},
                     {"well": "Well - BRAVO"},
                 ],
-                "partial_shutdown_well_names": ["Well - CHARLIE"],
-                "rules": {"short_shutdown_full_day_hours": 24},
+                "rules": {
+                    "active_well_rule": (
+                        "Active wells must have active_well=true on the ONRR code "
+                        "as of that day."
+                    )
+                },
             }
         )
     return [
@@ -127,6 +131,69 @@ def test_routes_producer_well_test_coverage_without_model_call():
     ]
     assert stats["model_calls"] == 0
     assert stats["model_seconds"] == 0
+
+
+def test_routes_active_well_test_coverage_without_model_call():
+    calls = []
+    result = try_answer_producing_well_question(
+        tools=make_tools(calls),
+        question="Which active wells don't have a test in past 30 days?",
+        today=date(2026, 7, 27),
+    )
+
+    assert result is not None
+    answer, traces, stats = result
+    assert calls == [
+        ("get_active_wells", {"active_date": "2026-07-27"}),
+        (
+            "search_well_tests",
+            {"start_date": "2026-06-28", "end_date": "2026-07-27"},
+        ),
+    ]
+    assert "As of 07/27/2026, 1 of 2 active wells had no well test" in answer
+    assert "Active means ONRR-active as of 07/27/2026." in answer
+    assert "BRAVO" in answer
+    assert "ALPHA" not in answer
+    assert [trace["tool"] for trace in traces] == [
+        "get_active_wells",
+        "search_well_tests",
+    ]
+    assert stats["model_calls"] == 0
+    assert stats["model_seconds"] == 0
+
+
+def test_routes_active_well_test_coverage_with_explicit_active_date():
+    calls = []
+    result = try_answer_producing_well_question(
+        tools=make_tools(calls),
+        question="Which active wells on July 1 don't have tests in past 30 days?",
+        today=date(2026, 7, 27),
+    )
+
+    assert result is not None
+    answer, _, stats = result
+    assert calls[0] == ("get_active_wells", {"active_date": "2026-07-01"})
+    assert calls[1] == (
+        "search_well_tests",
+        {"start_date": "2026-06-28", "end_date": "2026-07-27"},
+    )
+    assert "As of 07/01/2026" in answer
+    assert stats["model_calls"] == 0
+
+
+def test_routes_active_well_test_coverage_count_only():
+    calls = []
+    result = try_answer_producing_well_question(
+        tools=make_tools(calls),
+        question="How many active wells don't have a test in past 30 days?",
+        today=date(2026, 7, 27),
+    )
+
+    assert result is not None
+    answer, _, stats = result
+    assert "1 of 2 active wells had no well test" in answer
+    assert "BRAVO" not in answer
+    assert stats["model_calls"] == 0
 
 
 def test_routes_simple_current_producer_count_to_single_date_tool():
@@ -190,6 +257,19 @@ def test_unrelated_question_falls_through_to_general_agent():
     assert calls == []
 
 
+def test_active_well_range_count_falls_through_to_general_agent():
+    calls = []
+
+    result = try_answer_producing_well_question(
+        tools=make_tools(calls),
+        question="How many active wells were there in June 2026?",
+        today=date(2026, 7, 2),
+    )
+
+    assert result is None
+    assert calls == []
+
+
 def test_prefetches_producing_population_for_broader_question():
     calls = []
 
@@ -220,7 +300,7 @@ def test_prefetches_active_population_for_single_day_broader_question():
     assert calls == [("get_active_wells", {"active_date": "2026-07-01"})]
     context = json.loads(dependency["context"])
     assert context["well_names"] == ["ALPHA", "BRAVO"]
-    assert context["partial_shutdown_well_names"] == ["CHARLIE"]
+    assert context["partial_shutdown_well_names"] == []
 
 
 def test_does_not_apply_undefined_active_well_range_semantics():

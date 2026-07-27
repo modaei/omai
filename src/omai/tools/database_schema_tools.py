@@ -34,7 +34,7 @@ MYSQL_SQL_DIALECT_GUIDANCE = {
 
 
 COMMON_AGGREGATE_HINTS = [
-    "ONRR well status: join wells w to onrr_codes oc on oc.id = w.onrr_code_id and filter w.site_id = :site_id. Active wells require oc.active_well = 1. Producing wells require oc.active_well = 1 and oc.injection_well = 0. Injection wells require oc.injection_well = 1.",
+    "ONRR well status: join wells w to onrr_codes oc on oc.id = w.onrr_code_id and filter w.site_id = :site_id. Active wells require oc.active_well = 1. Producing wells should use the dedicated producing-well tool because shutdown state also matters. Injection wells require oc.injection_well = 1.",
     "Well attributes: use case-insensitive comparisons for text attributes such as wells.pump_type, onrr_codes.name, wells.wogcc_class, wells.wogcc_status, wells.direction, and wells.prod_fm. Rod wells mean pump_type ROD; TA wells mean onrr_code TA.",
     "Well allocation totals: do not use SQL over well_tests for specific well or well-group production/injection contribution when the allocation report tool can answer it.",
     "Shutdown totals/reasons: join well_shutdowns ws to wells w, filter w.site_id = :site_id, use ws.date, SUM(ws.hours), and group by ws.downtime_code or w.name.",
@@ -255,7 +255,7 @@ SQL_RELATIONSHIP_GUIDANCE = {
         ],
         "pitfalls": [
             "Prefer get_active_wells/get_producing_wells for active/producing counts.",
-            "Producing wells require onrr_codes.active_well = 1 and onrr_codes.injection_well = 0.",
+            "Producing wells also require shutdown-aware classification; prefer get_producing_wells.",
         ],
     },
     "work_orders": {

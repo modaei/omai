@@ -15,11 +15,14 @@ class ProducingWellGraphState(TypedDict, total=False):
 
     question: str
     intent: Literal["count", "well_test_coverage"]
+    population_type: Literal["active", "producing"]
+    active_date: str
     start_date: str
     end_date: str
     is_single_date: bool
     output_mode: Literal["all", "list", "count"]
     filters: list[dict[str, Any]]
+    population_result: dict[str, Any]
     producing_result: dict[str, Any]
     well_test_result: dict[str, Any]
     answer: str
@@ -71,7 +74,11 @@ def try_answer_producing_well_question(
         return None
 
     tool_map = {tool.name: tool for tool in tools}
-    required = {"get_producing_wells"}
+    required = {
+        "get_active_wells"
+        if route.get("population_type") == "active"
+        else "get_producing_wells"
+    }
     if route["intent"] == "well_test_coverage":
         required.add("search_well_tests")
     if not required.issubset(tool_map):
@@ -154,23 +161,26 @@ def _build_graph(tool_map: dict[str, BaseTool]):
     """Compile the small workflow whose tool choices are fixed by intent."""
     graph = StateGraph(ProducingWellGraphState)
 
-    def fetch_producing_wells(state: ProducingWellGraphState) -> dict[str, Any]:
-        arguments = (
-            {"producing_date": state["start_date"]}
-            if state["is_single_date"]
-            else {
-                "start_date": state["start_date"],
-                "end_date": state["end_date"],
-                "range_mode": "any_day",
-            }
-        )
-        if state.get("filters"):
-            arguments["filters"] = state["filters"]
-        result, trace, timing = _invoke_json_tool(
-            tool_map["get_producing_wells"], arguments
-        )
+    def fetch_well_population(state: ProducingWellGraphState) -> dict[str, Any]:
+        if state.get("population_type") == "active":
+            tool_name = "get_active_wells"
+            arguments = {"active_date": state["active_date"]}
+        else:
+            tool_name = "get_producing_wells"
+            arguments = (
+                {"producing_date": state["start_date"]}
+                if state["is_single_date"]
+                else {
+                    "start_date": state["start_date"],
+                    "end_date": state["end_date"],
+                    "range_mode": "any_day",
+                }
+            )
+            if state.get("filters"):
+                arguments["filters"] = state["filters"]
+        result, trace, timing = _invoke_json_tool(tool_map[tool_name], arguments)
         return {
-            "producing_result": result,
+            "population_result": result,
             "traces": [*state.get("traces", []), trace],
             "tool_timings": [*state.get("tool_timings", []), timing],
         }
@@ -188,20 +198,29 @@ def _build_graph(tool_map: dict[str, BaseTool]):
         }
 
     def format_answer(state: ProducingWellGraphState) -> dict[str, str]:
-        producing = state["producing_result"]
-        if not producing.get("ok", True):
-            return {"answer": producing.get("error", "Producing-well lookup failed.")}
+        population = state["population_result"]
+        population_type = state.get("population_type", "producing")
+        if not population.get("ok", True):
+            fallback = (
+                "Active-well lookup failed."
+                if population_type == "active"
+                else "Producing-well lookup failed."
+            )
+            return {"answer": population.get("error", fallback)}
         start = _american_date(state["start_date"])
         end = _american_date(state["end_date"])
         period = start if start == end else f"{start} through {end}"
 
         if state["intent"] == "count":
-            count = int(producing.get("producing_count", 0))
+            count_key = (
+                "active_count" if population_type == "active" else "producing_count"
+            )
+            count = int(population.get(count_key, 0))
             qualifier = "on" if state["is_single_date"] else "during"
             scope = _filter_scope(state.get("filters", []))
             return {
                 "answer": (
-                    f"There were {count} producing wells{scope} "
+                    f"There were {count} {population_type} wells{scope} "
                     f"{qualifier} {period}."
                 )
             }
@@ -209,9 +228,11 @@ def _build_graph(tool_map: dict[str, BaseTool]):
         tests = state.get("well_test_result", {})
         if not tests.get("ok", True):
             return {"answer": tests.get("error", "Well-test lookup failed.")}
-        producing_names = {
+        wells_key = "active_wells" if population_type == "active" else "producing_wells"
+        count_key = "active_count" if population_type == "active" else "producing_count"
+        population_names = {
             _normalize_well_name(item.get("well", ""))
-            for item in producing.get("producing_wells", [])
+            for item in population.get(wells_key, [])
             if item.get("well")
         }
         tested_names = {
@@ -219,34 +240,54 @@ def _build_graph(tool_map: dict[str, BaseTool]):
             for item in tests.get("well_tests", [])
             if _well_test_display_name(item)
         }
-        missing = sorted(producing_names - tested_names)
-        tested_producing_count = len(producing_names & tested_names)
+        missing = sorted(population_names - tested_names)
+        tested_population_count = len(population_names & tested_names)
+        population_count = int(population.get(count_key, len(population_names)))
+        if population_type == "active":
+            active_date = _american_date(state["active_date"])
+            definition = f"\n\nActive means ONRR-active as of {active_date}."
+        else:
+            definition = ""
         if not missing:
+            if population_type == "active":
+                answer = (
+                    f"All {population_count} active wells as of {active_date} had "
+                    f"a well test from {period}."
+                )
+                return {"answer": answer + definition}
             return {
                 "answer": (
-                    f"All {len(producing_names)} wells that produced on at least one "
+                    f"All {len(population_names)} wells that produced on at least one "
                     f"day from {period} had a well test in that period."
                 )
             }
-        summary = (
-            f"For {period}, {len(missing)} of {len(producing_names)} wells that "
-            f"produced on at least one day had no well test. "
-            f"{tested_producing_count} producing wells had at least one test."
-        )
+        if population_type == "active":
+            summary = (
+                f"As of {active_date}, {len(missing)} of {population_count} "
+                f"active wells had no well test from {period}. "
+                f"{tested_population_count} active wells had at least one test."
+                f"{definition}"
+            )
+        else:
+            summary = (
+                f"For {period}, {len(missing)} of {len(population_names)} wells that "
+                f"produced on at least one day had no well test. "
+                f"{tested_population_count} producing wells had at least one test."
+            )
         if state.get("output_mode") == "count":
             return {"answer": summary}
         names = "\n".join(f"- {name}" for name in missing)
         return {"answer": f"{summary}\n\n{names}"}
 
-    graph.add_node("fetch_producing_wells", fetch_producing_wells)
+    graph.add_node("fetch_well_population", fetch_well_population)
     graph.add_node("fetch_well_tests", fetch_well_tests)
     graph.add_node("format_answer", format_answer)
-    graph.add_edge(START, "fetch_producing_wells")
+    graph.add_edge(START, "fetch_well_population")
     graph.add_conditional_edges(
-        "fetch_producing_wells",
+        "fetch_well_population",
         lambda state: (
             "format_answer"
-            if not state["producing_result"].get("ok", True)
+            if not state["population_result"].get("ok", True)
             else (
                 "fetch_well_tests"
                 if state["intent"] == "well_test_coverage"
@@ -279,17 +320,25 @@ def _classify_request(
     today: date,
     history: list[dict[str, str]] | None = None,
 ) -> dict[str, Any] | None:
-    """Recognize only explicit producer count and producer test-coverage requests."""
+    """Recognize explicit producing/active count and test-coverage requests."""
     normalized = " ".join(question.lower().split())
-    producer_terms = re.search(r"\b(producing wells?|oil producers?|active producers?)\b", normalized)
-    if not producer_terms:
+    has_producing_terms = bool(
+        re.search(r"\b(producing wells?|oil producers?|active producers?)\b", normalized)
+        or re.search(r"\bactive oil producing wells?\b", normalized)
+    )
+    has_active_terms = bool(re.search(r"\bactive wells?\b", normalized))
+    if not has_producing_terms and not has_active_terms:
         return _classify_coverage_follow_up(normalized, today, history or [])
     has_well_test = bool(
         re.search(r"\bwell[ -]?tests?\b", normalized)
         or re.search(r"\btests?\b", normalized)
     )
     coverage_terms = bool(
-        re.search(r"\b(missing|without|did not|does not|no |coverage|at least one|all)\b", normalized)
+        re.search(
+            r"\b(missing|without|did not|does not|do not|don't|dont|didn't|didnt|"
+            r"have not|haven't|havent|no |coverage|at least one|all)\b",
+            normalized,
+        )
     )
     intent: Literal["count", "well_test_coverage"]
     if has_well_test and coverage_terms:
@@ -303,9 +352,17 @@ def _classify_request(
     if date_range is None:
         return None
     start_date, end_date = date_range
+    population_type: Literal["active", "producing"] = (
+        "producing" if has_producing_terms else "active"
+    )
+    active_date = _resolve_active_population_date(normalized, today) or today
+    if population_type == "active" and intent == "count" and start_date != end_date:
+        return None
     filters = _extract_well_filters(normalized)
     return {
         "intent": intent,
+        "population_type": population_type,
+        "active_date": active_date.isoformat(),
         "start_date": start_date.isoformat(),
         "end_date": end_date.isoformat(),
         "is_single_date": start_date == end_date,
@@ -319,7 +376,7 @@ def is_producing_well_test_coverage_request(
     history: list[dict[str, str]] | None = None,
     today: date | None = None,
 ) -> bool:
-    """Return whether a turn belongs to deterministic producing-test coverage."""
+    """Return whether a turn belongs to deterministic well-test coverage."""
     route = _classify_request(question, today or date.today(), history or [])
     return bool(route and route.get("intent") == "well_test_coverage")
 
@@ -527,6 +584,35 @@ def _filter_scope(filters: list[dict[str, Any]]) -> str:
         elif field and value:
             parts.append(f"with {field.replace('_', ' ')} {value}")
     return " " + " and ".join(parts) if parts else ""
+
+
+def _resolve_active_population_date(text: str, today: date) -> date | None:
+    """Resolve explicit dates that qualify the active-well population."""
+    relative = re.search(r"\b(?:active wells?|online wells?|available wells?)\s+(today|now|yesterday)\b", text)
+    if relative:
+        value = relative.group(1)
+        return today - timedelta(days=1) if value == "yesterday" else today
+
+    iso_match = re.search(
+        r"\b(?:active wells?|online wells?|available wells?)\s+(?:on|as of)\s+(\d{4}-\d{2}-\d{2})\b",
+        text,
+    )
+    if iso_match:
+        return date.fromisoformat(iso_match.group(1))
+
+    month_day_match = re.search(
+        rf"\b(?:active wells?|online wells?|available wells?)\s+(?:on|as of)\s+({'|'.join(MONTHS)})\s+(\d{{1,2}})(?:,?\s+(\d{{4}}))?\b",
+        text,
+    )
+    if month_day_match:
+        month = MONTHS[month_day_match.group(1)]
+        day = int(month_day_match.group(2))
+        year = int(month_day_match.group(3) or today.year)
+        try:
+            return date(year, month, day)
+        except ValueError:
+            return None
+    return None
 
 
 def _resolve_date_range(text: str, today: date) -> tuple[date, date] | None:

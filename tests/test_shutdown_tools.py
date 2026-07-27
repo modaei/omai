@@ -37,12 +37,8 @@ class FakeShutdownClient:
             "date": active_date,
             "active_count": 2,
             "inactive_count": 1,
-            "partial_shutdown_count": 1,
             "active_wells": [{"well": "Well - 11-1-1 Oil"}],
             "inactive_wells": [{"well": "Well - 12-2-1 Oil"}],
-            "partial_shutdown_wells": [{"well": "Well - 13-3-1 Oil"}],
-            "partial_shutdown_well_names": ["Well - 13-3-1 Oil"],
-            "partial_shutdown_summary": "Partial shutdown wells: Well - 13-3-1 Oil",
         }
 
     def get_producing_wells(self, site_id, producing_date, filters=None):
@@ -140,7 +136,7 @@ def test_get_active_wells_tool_returns_counts():
     assert result["ok"] is True
     assert result["active_count"] == 2
     assert result["inactive_count"] == 1
-    assert result["partial_shutdown_count"] == 1
+    assert "partial_shutdown_count" not in result
 
 
 def test_get_producing_wells_tool_returns_counts():
