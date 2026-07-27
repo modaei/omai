@@ -144,6 +144,61 @@ def test_list_them_without_status_history_falls_through():
     assert calls == []
 
 
+def test_mixed_shutdown_status_question_falls_through_to_llm():
+    calls = []
+    result = try_answer_onrr_status_question(
+        tools=make_tools(calls),
+        question="How many active wells were shutdown yesterday?",
+        today=date(2026, 7, 27),
+    )
+
+    assert result is None
+    assert calls == []
+
+
+def test_mixed_alarm_status_question_falls_through_to_llm():
+    calls = []
+    result = try_answer_onrr_status_question(
+        tools=make_tools(calls),
+        question="Which active wells had alarms yesterday?",
+        today=date(2026, 7, 27),
+    )
+
+    assert result is None
+    assert calls == []
+
+
+def test_mixed_test_status_question_falls_through_to_llm():
+    calls = []
+    result = try_answer_onrr_status_question(
+        tools=make_tools(calls),
+        question="Which active wells had tests last month?",
+        today=date(2026, 7, 27),
+    )
+
+    assert result is None
+    assert calls == []
+
+
+def test_follow_up_after_mixed_status_question_falls_through_to_llm():
+    calls = []
+    result = try_answer_onrr_status_question(
+        tools=make_tools(calls),
+        question="list them",
+        history=[
+            {
+                "role": "user",
+                "content": "How many active wells were shutdown yesterday?",
+            },
+            {"role": "assistant", "content": "There were 4 matching wells."},
+        ],
+        today=date(2026, 7, 27),
+    )
+
+    assert result is None
+    assert calls == []
+
+
 def test_producing_status_uses_producing_wells_tool():
     calls = []
     result = try_answer_onrr_status_question(

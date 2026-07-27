@@ -302,7 +302,10 @@ def build_shutdown_tools(
                 "asking how many wells are active, inactive, online, "
                 "or available on a specific day. A well is active only when its "
                 "ONRR code is active_well=true as of that day. Shutdown state is "
-                "not considered for active-well counts."
+                "not considered for active-well counts. If the user asks for active "
+                "wells with another condition, such as shutdowns, alarms, readings, "
+                "tests, or production, use this tool only to get the active-well "
+                "population and combine it with the matching domain tool."
             ),
             args_schema=ActiveWellsInput,
         ),

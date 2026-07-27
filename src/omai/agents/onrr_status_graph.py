@@ -128,6 +128,8 @@ def _direct_status_route(
     today: date,
     output_mode: OutputMode | None,
 ) -> dict[str, Any] | None:
+    if _has_mixed_operational_intent(normalized):
+        return None
     status = _status_from_text(normalized)
     if status is None:
         return None
@@ -141,6 +143,28 @@ def _direct_status_route(
         "as_of_date": as_of_date.isoformat(),
         "output_mode": output_mode,
     }
+
+
+def _has_mixed_operational_intent(normalized: str) -> bool:
+    """Return true when status words are only one filter in a broader request.
+
+    The deterministic ONRR route is intentionally narrow. Questions such as
+    "active wells that were shutdown yesterday" require combining the ONRR
+    status tool with shutdown tooling, so they must continue to the normal LLM
+    tool-selection path instead of being answered as a plain active-well count.
+    """
+    return bool(
+        re.search(
+            r"\b("
+            r"shutdowns?|shut\s*downs?|shut-?ins?|downtime|down|"
+            r"alarms?|events?|tests?|well\s*tests?|readings?|reports?|"
+            r"production|produced|allocation|contributed|"
+            r"tanks?|flares?|flow\s*meters?|lacts?|treaters?|pumps?|"
+            r"notes?|work\s*orders?|timeline|history"
+            r")\b",
+            normalized,
+        )
+    )
 
 
 def _latest_status_anchor(
