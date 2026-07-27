@@ -240,7 +240,7 @@ def test_analyzes_rod_pump_trend_with_fuzzy_data_point_name():
     assert result["status"] == "found"
     assert result["data_point_name"] == "Pump Fillage"
     assert result["summary"]["trend"] == "rising"
-    assert "MI3.HARTZOG.POC.HDU_2510.pump_fillage" in fake_graphite_get.last_params["target"]
+    assert "MI3.HARTZOG.HDU_2510.pump_fillage" in fake_graphite_get.last_params["target"]
 
 
 def test_analyzes_equipment_trend_through_configured_facility_and_device():
@@ -285,6 +285,10 @@ def test_summary_describes_typical_band_and_zero_dropout():
     assert summary["typical_band"]["low"] > 0
     assert summary["typical_band"]["high"] > summary["typical_band"]["low"]
     assert summary["trend"] == "falling"
+    assert summary["variability"] in {"moderate", "high"}
+    assert summary["overall_shape"] in {"gradual_decrease", "highly_variable", "oscillating"}
+    assert summary["segments"][0]["label"] == "beginning"
+    assert any(change["direction"] == "drop" for change in summary["significant_changes"])
     assert any("Drop to zero" in anomaly for anomaly in summary["anomalies"])
 
 
@@ -313,6 +317,9 @@ def test_summary_classifies_flat_series_with_high_spike_plateau():
     summary = make_client()._summarize_samples(samples)
 
     assert summary["pattern"] == "mostly_flat"
+    assert summary["variability"] == "low"
+    assert summary["overall_shape"] == "mostly_flat"
+    assert any(change["direction"] == "spike" for change in summary["significant_changes"])
     assert summary["average_distorted_by_outliers"] is True
     assert any("Abnormal high spike/plateau" in anomaly for anomaly in summary["anomalies"])
     assert not any("point-to-point drop" in anomaly for anomaly in summary["anomalies"])

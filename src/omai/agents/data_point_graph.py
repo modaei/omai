@@ -459,7 +459,7 @@ def _format_result(result: dict[str, Any]) -> str:
 
 
 def _format_trend_result(result: dict[str, Any]) -> str:
-    """Render trend statistics in a short operator-readable answer."""
+    """Render trend evidence as a concise graph-style interpretation."""
     if not result.get("ok", True):
         return str(result.get("error") or "The data-point trend analysis failed.")
     status = result.get("status")
@@ -486,66 +486,164 @@ def _format_trend_result(result: dict[str, Any]) -> str:
 
     latest = summary.get("latest", {})
     first = summary.get("first", {})
-    change = _format_number(summary.get("change"))
-    change_percent = summary.get("change_percent")
-    change_text = f"{change}"
-    if change_percent is not None:
-        change_text += f" ({change_percent:.2f}%)"
     interval_label = result.get("interval_label") or f"the last {result.get('days')} day(s)"
     band = summary.get("typical_band") or {}
     band_low = band.get("low", summary.get("typical_low"))
     band_high = band.get("high", summary.get("typical_high"))
-    pattern = summary.get("pattern")
-    trend_phrase = {
-        "rising": "an overall upward drift",
-        "falling": "an overall downward drift",
-        "stable": "no clear overall drift",
-    }.get(str(summary.get("trend")), f"an overall {summary.get('trend')} pattern")
-    if band_low is not None and band_high is not None:
-        if pattern == "mostly_flat":
-            behavior = (
-                f"{point} on {target} was mostly flat over {interval_label}, "
-                f"usually staying between {_format_number(band_low)} and "
-                f"{_format_number(band_high)}, with {trend_phrase}."
-            )
-        elif abs(float(band_high) - float(band_low)) < 0.000001:
-            behavior = (
-                f"{point} on {target} stayed around {_format_number(band_low)} "
-                f"over {interval_label}, with {trend_phrase}."
-            )
-        else:
-            behavior = (
-                f"{point} on {target} mostly oscillated between "
-                f"{_format_number(band_low)} and {_format_number(band_high)} "
-                f"over {interval_label}, with {trend_phrase}."
-            )
-    else:
-        behavior = (
-            f"{point} on {target} showed {trend_phrase} over {interval_label}."
+    lines = [_trend_opening(point, target, interval_label, first, latest, summary)]
+    lines.append(
+        _trend_behavior(
+            point=point,
+            summary=summary,
+            band_low=band_low,
+            band_high=band_high,
         )
-    lines = [
-        behavior,
-        (
-            f"It moved from {_format_number(first.get('value'))} on {first.get('time')} "
-            f"to {_format_number(latest.get('value'))} on {latest.get('time')}, "
-            f"change {change_text}."
-        ),
-    ]
+    )
+    changes = summary.get("significant_changes") or _changes_from_legacy_anomalies(
+        summary.get("anomalies") or []
+    )
+    if changes:
+        lines.append(_change_sentence(changes))
+    else:
+        lines.append(_variability_sentence(summary))
     coverage_note = _coverage_note(result, first, latest)
     if coverage_note:
         lines.append(coverage_note)
-    anomalies = summary.get("anomalies") or []
-    if anomalies:
-        lines.append("Anomaly notes: " + "; ".join(str(item) for item in anomalies))
-    stats_line = (
-        f"Range: min {_format_number(summary.get('min'))}, max {_format_number(summary.get('max'))}, "
-        f"average {_format_number(summary.get('average'))}, median {_format_number(summary.get('median'))}; "
-        f"samples: {result.get('sample_count')}."
-    )
-    if summary.get("average_distorted_by_outliers"):
-        stats_line += " The average is distorted by the outlier(s); the median better represents the normal level."
-    lines.append(stats_line)
     return "\n".join(lines)
+
+
+def _trend_opening(
+    point: str,
+    target: str,
+    interval_label: str,
+    first: dict[str, Any],
+    latest: dict[str, Any],
+    summary: dict[str, Any],
+) -> str:
+    """Describe the first-to-last move without making it the only conclusion."""
+    change = _format_number(summary.get("change"))
+    change_percent = summary.get("change_percent")
+    change_text = change
+    if change_percent is not None:
+        change_text += f" ({change_percent:.2f}%)"
+    direction = {
+        "rising": "finished higher",
+        "falling": "finished lower",
+        "stable": "finished close to where it started",
+    }.get(str(summary.get("trend")), "changed")
+    return (
+        f"{point} on {target} over {interval_label} started at "
+        f"{_format_number(first.get('value'))} on {first.get('time')} and "
+        f"{direction} at {_format_number(latest.get('value'))} on {latest.get('time')}, "
+        f"a change of {change_text}."
+    )
+
+
+def _trend_behavior(
+    *,
+    point: str,
+    summary: dict[str, Any],
+    band_low: Any,
+    band_high: Any,
+) -> str:
+    """Describe the visible pattern and normal range of the graph."""
+    shape = str(summary.get("overall_shape") or summary.get("pattern") or "stable")
+    variability = str(summary.get("variability") or "moderate")
+    band_text = ""
+    if band_low is not None and band_high is not None:
+        if abs(float(band_high) - float(band_low)) < 0.000001:
+            band_text = f", usually staying around {_format_number(band_low)}"
+        else:
+            band_text = (
+                f", usually staying between {_format_number(band_low)} and "
+                f"{_format_number(band_high)}"
+            )
+
+    shape_text = {
+        "mostly_flat": "was mostly flat",
+        "oscillating": "mostly oscillated",
+        "gradual_increase": "showed a gradual increase",
+        "gradual_decrease": "showed a gradual decrease",
+        "step_increase": "showed a clear upward level shift",
+        "step_decrease": "showed a clear downward level shift",
+        "late_increase": "turned upward late in the period",
+        "late_decrease": "turned downward late in the period",
+        "decline_then_recovery": "showed an initial decline followed by recovery",
+        "increase_then_decline": "rose first and then declined",
+        "highly_variable": "was highly variable without one sustained direction",
+    }.get(shape, "showed no clear sustained direction")
+    variability_text = {
+        "low": "low short-term variability",
+        "moderate": "moderate short-term variability",
+        "high": "high short-term variability",
+    }.get(variability, "moderate short-term variability")
+    return f"Overall, {point} {shape_text}{band_text}, with {variability_text}."
+
+
+def _change_sentence(changes: list[dict[str, Any]]) -> str:
+    """Render the largest sudden changes inline instead of a separate anomaly section."""
+    parts = []
+    for change in changes[:3]:
+        direction = "rose" if change.get("direction") == "spike" else "dropped"
+        raw_magnitude = abs(float(change.get("change", 0) or 0))
+        percent = change.get("change_percent")
+        percent_text = f" ({abs(float(percent)):.2f}%)" if percent is not None else ""
+        detail = (
+            f"around {change.get('time')}, it {direction} from "
+            f"{_format_number(change.get('from'))} to {_format_number(change.get('to'))}"
+        )
+        if raw_magnitude > 0:
+            detail += f", a change of {_format_number(raw_magnitude)}{percent_text}"
+        parts.append(detail)
+    if len(parts) == 1:
+        return f"The largest sudden movement occurred {parts[0]}."
+    return "The largest sudden movements occurred " + "; ".join(parts) + "."
+
+
+def _variability_sentence(summary: dict[str, Any]) -> str:
+    """Close with variability when there are no specific spikes/drops to call out."""
+    variability = str(summary.get("variability") or "moderate")
+    if variability == "low":
+        return "No major sudden spike or drop is visible in the returned samples."
+    if variability == "high":
+        return "The graph has repeated short-term rises and falls, but no single sudden movement clearly dominates."
+    return "The graph has some short-term movement, but no major sudden spike or drop is visible in the returned samples."
+
+
+def _changes_from_legacy_anomalies(anomalies: list[Any]) -> list[dict[str, Any]]:
+    """Keep older tool-result test doubles readable until all callers return change evidence."""
+    changes = []
+    for anomaly in anomalies:
+        text = str(anomaly)
+        zero = re.search(r"Drop to zero at (.+?)(?:;|$)", text)
+        if zero:
+            changes.append(
+                {
+                    "direction": "drop",
+                    "time": zero.group(1),
+                    "from": "normal range",
+                    "to": 0,
+                    "change": 0,
+                    "change_percent": None,
+                }
+            )
+            continue
+        spike = re.search(
+            r"Abnormal high spike(?:/plateau)? (?:from|at) (.+?)(?: to .+?)?, peaking at ([\d,.\-]+)",
+            text,
+        )
+        if spike:
+            changes.append(
+                {
+                    "direction": "spike",
+                    "time": spike.group(1).rstrip("."),
+                    "from": "normal range",
+                    "to": spike.group(2).rstrip("."),
+                    "change": 0,
+                    "change_percent": None,
+                }
+            )
+    return changes
 
 
 def _format_number(value: Any) -> str:

@@ -461,11 +461,8 @@ class DataPointClient:
             raise DataPointClientError("The matched data point has no telemetry tag.")
         site_key = self._site_key(site_id)
         target_tag = self.ROD_PUMP_TAG_MAPPING.get(tag, tag)
-        graphite_type = "POC" if self._is_rod_pump_data_point(site_id, data_point) else None
         object_name = str(data_point["graphite_facility_name"]).replace(" ", "_")
         target = f"MI3.{site_key}.{object_name}.{target_tag}"
-        if graphite_type:
-            target = f"MI3.{site_key}.{graphite_type}.{object_name}.{target_tag}"
         response = self.http_get(
             self.monitoring_data_api_url,
             params={
@@ -552,6 +549,9 @@ class DataPointClient:
         typical_width = typical_high - typical_low
         center = median(values)
         pattern = _trend_pattern(typical_width, center)
+        variability = _variability_level(typical_width, center)
+        segments = _trend_segments(samples, values)
+        significant_changes = _significant_changes(samples, values)
         trend = "stable"
         if change_percent is not None and abs(change_percent) >= 5:
             trend = "rising" if change > 0 else "falling"
@@ -582,6 +582,17 @@ class DataPointClient:
             "change": change,
             "change_percent": change_percent,
             "trend": trend,
+            "variability": variability,
+            "segments": segments,
+            "significant_changes": significant_changes,
+            "overall_shape": _overall_shape(
+                trend=trend,
+                pattern=pattern,
+                variability=variability,
+                segments=segments,
+                change_percent=change_percent,
+                significant_changes=significant_changes,
+            ),
             "average_distorted_by_outliers": average_distorted,
             "anomalies": anomalies,
         }
@@ -760,6 +771,143 @@ def _trend_pattern(typical_width: float, center: float) -> str:
     if relative_width <= 0.05:
         return "mostly_flat"
     return "oscillating"
+
+
+def _variability_level(typical_width: float, center: float) -> str:
+    """Classify how wide the normal operating band is relative to its level."""
+    if center == 0:
+        return "low" if typical_width == 0 else "high"
+    relative_width = abs(typical_width) / abs(center)
+    if relative_width <= 0.03:
+        return "low"
+    if relative_width <= 0.12:
+        return "moderate"
+    return "high"
+
+
+def _trend_segments(
+    samples: list[dict[str, Any]],
+    values: list[float],
+) -> list[dict[str, Any]]:
+    """Summarize beginning/middle/end windows so answers read like a graph review."""
+    if not samples:
+        return []
+    if len(samples) < 3:
+        return [
+            {
+                "label": "period",
+                "start_time": samples[0].get("time"),
+                "end_time": samples[-1].get("time"),
+                "median": median(values),
+                "low": min(values),
+                "high": max(values),
+            }
+        ]
+    size = max(1, len(samples) // 3)
+    ranges = [
+        ("beginning", 0, size),
+        ("middle", size, size * 2),
+        ("end", size * 2, len(samples)),
+    ]
+    segments = []
+    for label, start, end in ranges:
+        segment_samples = samples[start:end]
+        segment_values = values[start:end]
+        if not segment_samples:
+            continue
+        segments.append(
+            {
+                "label": label,
+                "start_time": segment_samples[0].get("time"),
+                "end_time": segment_samples[-1].get("time"),
+                "median": median(segment_values),
+                "low": min(segment_values),
+                "high": max(segment_values),
+            }
+        )
+    return segments
+
+
+def _significant_changes(
+    samples: list[dict[str, Any]],
+    values: list[float],
+) -> list[dict[str, Any]]:
+    """Find the largest point-to-point changes worth mentioning in prose."""
+    if len(values) < 2:
+        return []
+    deltas = [values[index] - values[index - 1] for index in range(1, len(values))]
+    non_zero_deltas = [abs(delta) for delta in deltas if abs(delta) > 0]
+    if not non_zero_deltas:
+        return []
+    normal_delta = median(non_zero_deltas)
+    typical_low = _percentile(values, 10)
+    typical_high = _percentile(values, 90)
+    typical_width = max(typical_high - typical_low, 0)
+    threshold = max(normal_delta * 4, typical_width * 0.20)
+    if threshold <= 0:
+        return []
+
+    changes = []
+    for index, delta in enumerate(deltas, start=1):
+        if abs(delta) < threshold:
+            continue
+        previous_value = values[index - 1]
+        current_value = values[index]
+        percent = None if previous_value == 0 else (delta / abs(previous_value)) * 100
+        changes.append(
+            {
+                "direction": "spike" if delta > 0 else "drop",
+                "time": samples[index].get("time"),
+                "from": previous_value,
+                "to": current_value,
+                "change": delta,
+                "change_percent": percent,
+            }
+        )
+
+    changes.sort(key=lambda item: abs(float(item["change"])), reverse=True)
+    return changes[:3]
+
+
+def _overall_shape(
+    *,
+    trend: str,
+    pattern: str,
+    variability: str,
+    segments: list[dict[str, Any]],
+    change_percent: float | None,
+    significant_changes: list[dict[str, Any]],
+) -> str:
+    """Classify the visible graph shape from segment medians and major changes."""
+    if len(segments) >= 3:
+        early = float(segments[0]["median"])
+        middle = float(segments[1]["median"])
+        late = float(segments[2]["median"])
+        scale = max(abs(early), abs(middle), abs(late), 1.0)
+        early_to_mid = (middle - early) / scale
+        mid_to_late = (late - middle) / scale
+        early_to_late = (late - early) / scale
+        if early_to_mid <= -0.04 and mid_to_late >= 0.04:
+            return "decline_then_recovery"
+        if early_to_mid >= 0.04 and mid_to_late <= -0.04:
+            return "increase_then_decline"
+        if abs(early_to_mid) >= 0.04 and abs(mid_to_late) < 0.025:
+            return "step_increase" if early_to_mid > 0 else "step_decrease"
+        if abs(mid_to_late) >= 0.04 and abs(early_to_mid) < 0.025:
+            return "late_increase" if mid_to_late > 0 else "late_decrease"
+        if abs(early_to_late) >= 0.05:
+            return "gradual_increase" if early_to_late > 0 else "gradual_decrease"
+    if significant_changes and variability == "high":
+        return "highly_variable"
+    if pattern == "mostly_flat":
+        return "mostly_flat"
+    if trend == "rising" and (change_percent is None or abs(change_percent) >= 5):
+        return "gradual_increase"
+    if trend == "falling" and (change_percent is None or abs(change_percent) >= 5):
+        return "gradual_decrease"
+    if pattern == "oscillating":
+        return "oscillating"
+    return "mostly_flat"
 
 
 def _high_outlier_windows(

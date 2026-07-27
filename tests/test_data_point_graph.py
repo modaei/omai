@@ -157,9 +157,22 @@ def make_oscillating_trend_tool(calls):
                     "average": 19613.4,
                     "median": 20120.0,
                     "typical_band": {"low": 18050.0, "high": 22240.0},
+                    "pattern": "oscillating",
+                    "variability": "high",
+                    "overall_shape": "oscillating",
                     "change": -2789.5,
                     "change_percent": -13.47,
                     "trend": "falling",
+                    "significant_changes": [
+                        {
+                            "direction": "drop",
+                            "time": "07/12/2026 01:30:00 UTC",
+                            "from": 18200,
+                            "to": 0,
+                            "change": -18200,
+                            "change_percent": -100,
+                        }
+                    ],
                     "anomalies": [
                         "Drop to zero at 07/12/2026 01:30:00 UTC; this looks abnormal compared with the normal band."
                     ],
@@ -214,10 +227,22 @@ def make_flat_spike_trend_tool(calls):
                     "median": 15677.08,
                     "typical_band": {"low": 15504.5, "high": 15882.5},
                     "pattern": "mostly_flat",
+                    "variability": "low",
+                    "overall_shape": "mostly_flat",
                     "change": -433,
                     "change_percent": -2.72,
                     "trend": "stable",
                     "average_distorted_by_outliers": True,
+                    "significant_changes": [
+                        {
+                            "direction": "spike",
+                            "time": "06/14/2026 20:00:00 CEST",
+                            "from": 15800,
+                            "to": 65535,
+                            "change": 49735,
+                            "change_percent": 314.78,
+                        }
+                    ],
                     "anomalies": [
                         "Abnormal high spike/plateau from 06/14/2026 20:00:00 CEST to 06/15/2026 16:00:00 CEST, peaking at 65,535."
                     ],
@@ -432,10 +457,12 @@ def test_trend_answer_reads_like_graph_interpretation():
 
     assert result is not None
     answer = result[0]
-    assert "mostly oscillated between 18,050 and 22,240" in answer
-    assert "overall downward drift" in answer
-    assert "Drop to zero" in answer
-    assert "Range: min 0" in answer
+    assert "mostly oscillated, usually staying between 18,050 and 22,240" in answer
+    assert "high short-term variability" in answer
+    assert "dropped from 18,200 to 0" in answer
+    assert "a change of 18,200 (100.00%)" in answer
+    assert "Anomaly notes" not in answer
+    assert "Range: min" not in answer
 
 
 def test_flat_trend_answer_does_not_call_it_oscillation_and_mentions_high_spike():
@@ -450,8 +477,10 @@ def test_flat_trend_answer_does_not_call_it_oscillation_and_mentions_high_spike(
     answer = result[0]
     assert "mostly flat" in answer
     assert "mostly oscillated" not in answer
-    assert "Abnormal high spike/plateau" in answer
-    assert "average is distorted by the outlier" in answer
+    assert "rose from 15,800 to 65,535" in answer
+    assert "a change of 49,735 (314.78%)" in answer
+    assert "Anomaly notes" not in answer
+    assert "average is distorted by the outlier" not in answer
     assert "Returned samples cover 2026-06-11 to 2026-06-30" in answer
 
 
