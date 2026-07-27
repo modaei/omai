@@ -493,8 +493,41 @@ def test_routes_equipment_first_trend_question_without_model_call():
 
     assert result is not None
     assert calls[0]["facility_name"] == "10-1 Oil"
-    assert calls[0]["data_point_name"] == "level"
+    assert calls[0]["data_point_name"] == "Level"
     assert calls[0]["equipment_type"] == "tank"
+
+
+def test_routes_equipment_first_tank_level_with_past_months_without_model_call():
+    calls = []
+    result = try_answer_data_point_trend_question(
+        tools=[make_trend_tool(calls)],
+        question="analyze tank 10-5 Water Level in the past 6 months",
+        today=date(2026, 7, 27),
+    )
+
+    assert result is not None
+    assert calls[0]["facility_name"] == "10-5 Water"
+    assert calls[0]["data_point_name"] == "Level"
+    assert calls[0]["equipment_type"] == "tank"
+    assert calls[0]["start_date"] == "2026-01-27"
+    assert calls[0]["end_date"] == "2026-07-27"
+    assert result[2]["model_calls"] == 0
+
+
+def test_routes_equipment_first_tank_level_with_last_months_without_model_call():
+    calls = []
+    result = try_answer_data_point_trend_question(
+        tools=[make_trend_tool(calls)],
+        question="analyze tank 10-5 Water Level last 3 months",
+        today=date(2026, 7, 27),
+    )
+
+    assert result is not None
+    assert calls[0]["facility_name"] == "10-5 Water"
+    assert calls[0]["data_point_name"] == "Level"
+    assert calls[0]["equipment_type"] == "tank"
+    assert calls[0]["start_date"] == "2026-04-27"
+    assert calls[0]["end_date"] == "2026-07-27"
 
 
 def test_routes_tank_level_question_without_explicit_trend_word():
@@ -506,7 +539,7 @@ def test_routes_tank_level_question_without_explicit_trend_word():
 
     assert result is not None
     assert calls[0]["facility_name"] == "13-7 Water"
-    assert calls[0]["data_point_name"] == "level"
+    assert calls[0]["data_point_name"] == "Level"
     assert calls[0]["equipment_type"] == "tank"
 
 
@@ -519,7 +552,7 @@ def test_infers_tank_from_level_trend_location():
 
     assert result is not None
     assert calls[0]["facility_name"] == "13-7 Water"
-    assert calls[0]["data_point_name"] == "level"
+    assert calls[0]["data_point_name"] == "Level"
     assert calls[0]["equipment_type"] == "tank"
 
 
@@ -532,8 +565,25 @@ def test_strips_tank_prefix_from_point_first_trend_location():
 
     assert result is not None
     assert calls[0]["facility_name"] == "13-7 Water"
-    assert calls[0]["data_point_name"] == "level"
+    assert calls[0]["data_point_name"] == "Level"
     assert calls[0]["equipment_type"] == "tank"
+
+
+def test_routes_point_first_tank_level_with_past_months_without_model_call():
+    calls = []
+    result = try_answer_data_point_trend_question(
+        tools=[make_trend_tool(calls)],
+        question="analyze level trend of tank 10-5 Water in the past 6 months",
+        today=date(2026, 7, 27),
+    )
+
+    assert result is not None
+    assert calls[0]["facility_name"] == "10-5 Water"
+    assert calls[0]["data_point_name"] == "Level"
+    assert calls[0]["equipment_type"] == "tank"
+    assert calls[0]["start_date"] == "2026-01-27"
+    assert calls[0]["end_date"] == "2026-07-27"
+    assert result[2]["model_calls"] == 0
 
 
 def test_non_trend_question_falls_through():

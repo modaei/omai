@@ -262,7 +262,9 @@ def _parse_trend_question(question: str, today: date | None = None) -> dict[str,
             )
             return {
                 "facility_name": facility_name,
-                "data_point_name": data_point_name,
+                "data_point_name": _canonical_trend_data_point_name(
+                    equipment_type, data_point_name
+                ),
                 "days": days,
                 **date_range,
                 **({"equipment_type": equipment_type} if equipment_type else {}),
@@ -285,7 +287,9 @@ def _parse_trend_question(question: str, today: date | None = None) -> dict[str,
         )
         return {
             "facility_name": facility_name,
-            "data_point_name": data_point_name,
+            "data_point_name": _canonical_trend_data_point_name(
+                equipment_type, data_point_name
+            ),
             "days": days,
             **date_range,
             **({"equipment_type": equipment_type} if equipment_type else {}),
@@ -308,7 +312,31 @@ def _parse_trend_question(question: str, today: date | None = None) -> dict[str,
         facility_name, data_point_name = split
         return {
             "facility_name": facility_name,
-            "data_point_name": data_point_name,
+            "data_point_name": _canonical_trend_data_point_name(
+                equipment_type, data_point_name
+            ),
+            "equipment_type": equipment_type,
+            "days": days,
+            **date_range,
+        }
+
+    # Equipment-first without an explicit trailing "trend": "tank 10-5 Water Level".
+    equipment_match = re.fullmatch(
+        r"(tank|pump|treater)\s+(.+)",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    if equipment_match:
+        equipment_type = equipment_match.group(1).lower()
+        split = _split_equipment_and_point(equipment_match.group(2).strip())
+        if split is None:
+            return None
+        facility_name, data_point_name = split
+        return {
+            "facility_name": facility_name,
+            "data_point_name": _canonical_trend_data_point_name(
+                equipment_type, data_point_name
+            ),
             "equipment_type": equipment_type,
             "days": days,
             **date_range,
@@ -324,7 +352,9 @@ def _parse_trend_question(question: str, today: date | None = None) -> dict[str,
         if equipment_type:
             return {
                 "facility_name": facility_name,
-                "data_point_name": data_point_name,
+                "data_point_name": _canonical_trend_data_point_name(
+                    equipment_type, data_point_name
+                ),
                 "equipment_type": equipment_type,
                 "days": days,
                 **date_range,
@@ -346,7 +376,21 @@ def _parse_days(question: str) -> int:
 
 
 def _extract_date_range(question: str, today: date) -> tuple[dict[str, str], str]:
-    """Extract simple month phrases and remove them before selector parsing."""
+    """Extract explicit and rolling month ranges before selector parsing."""
+    rolling_month_match = re.search(
+        r"\b(?:in\s+)?(?:the\s+)?(?:past|last)\s+(\d+)\s+months?\b",
+        question,
+        flags=re.IGNORECASE,
+    )
+    if rolling_month_match:
+        months = max(1, min(120, int(rolling_month_match.group(1))))
+        start = _shift_months(today, -months)
+        cleaned = (
+            question[: rolling_month_match.start()]
+            + question[rolling_month_match.end() :]
+        ).strip()
+        return {"start_date": start.isoformat(), "end_date": today.isoformat()}, cleaned
+
     month_match = re.search(
         r"\b(?:in|during|for)\s+("
         + "|".join(MONTHS)
@@ -362,6 +406,15 @@ def _extract_date_range(question: str, today: date) -> tuple[dict[str, str], str
     end = date(year, month, monthrange(year, month)[1])
     cleaned = (question[: month_match.start()] + question[month_match.end() :]).strip()
     return {"start_date": start.isoformat(), "end_date": end.isoformat()}, cleaned
+
+
+def _shift_months(value: date, months: int) -> date:
+    """Move a date by whole months, clamping the day to the target month."""
+    month_index = value.month - 1 + months
+    year = value.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(value.day, monthrange(year, month)[1])
+    return date(year, month, day)
 
 
 def _strip_trend_tail(value: str) -> str:
@@ -402,6 +455,16 @@ def _split_equipment_and_point(value: str) -> tuple[str, str] | None:
     if len(parts) != 2:
         return None
     return parts[0].strip(), parts[1].strip()
+
+
+def _canonical_trend_data_point_name(
+    equipment_type: str | None,
+    data_point_name: str,
+) -> str:
+    """Use DB-facing capitalization for common equipment telemetry names."""
+    if equipment_type == "tank" and _normalize_tokens(data_point_name) == "level":
+        return "Level"
+    return data_point_name
 
 
 def _normalize_tokens(value: str) -> str:
