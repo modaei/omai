@@ -88,11 +88,8 @@ def make_shutdown_client() -> ShutdownClient:
                 CREATE TABLE well_shutdowns (
                     id INTEGER PRIMARY KEY,
                     well_id INTEGER NOT NULL,
-                    date TEXT,
-                    hours REAL,
-                    long_shutdown INTEGER NOT NULL DEFAULT 0,
-                    long_shutdown_start TEXT,
-                    long_shutdown_end TEXT,
+                    start TEXT NOT NULL,
+                    `end` TEXT,
                     downtime_code TEXT,
                     comments TEXT
                 )
@@ -149,23 +146,13 @@ def make_shutdown_client() -> ShutdownClient:
             text(
                 """
                 INSERT INTO well_shutdowns
-                    (
-                        id,
-                        well_id,
-                        date,
-                        hours,
-                        long_shutdown,
-                        long_shutdown_start,
-                        long_shutdown_end,
-                        downtime_code,
-                        comments
-                    )
+                    (id, well_id, start, `end`, downtime_code, comments)
                 VALUES
-                    (10, 1, '2026-05-09', 4.5, 0, NULL, NULL, 'PRF', 'paraffin cleanout'),
-                    (11, 2, NULL, NULL, 1, '2026-05-01 08:00:00', NULL, 'DH', 'downhole issue'),
-                    (12, 3, '2026-05-09', 24, 0, NULL, NULL, 'PRF', 'other site'),
-                    (13, 5, '2026-06-21', 24, 0, NULL, NULL, 'SIB', 'full day short shutdown'),
-                    (14, 7, NULL, NULL, 1, '2026-06-21 12:00:00', '2026-06-21 18:00:00', 'DH', 'partial long shutdown')
+                    (10, 1, '2026-05-09 00:00:00', '2026-05-09 04:30:00', 'PRF', 'paraffin cleanout'),
+                    (11, 2, '2026-05-01 08:00:00', NULL, 'DH', 'downhole issue'),
+                    (12, 3, '2026-05-09 00:00:00', '2026-05-10 00:00:00', 'PRF', 'other site'),
+                    (13, 5, '2026-06-21 00:00:00', '2026-06-22 00:00:00', 'SIB', 'full day shutdown'),
+                    (14, 7, '2026-06-21 12:00:00', '2026-06-21 18:00:00', 'DH', 'partial shutdown')
                 """
             )
         )
@@ -182,43 +169,38 @@ def make_shutdown_client() -> ShutdownClient:
     return ShutdownClient(engine)
 
 
-def test_get_shutdowns_returns_short_and_long_shutdowns_for_site():
+def test_get_shutdowns_returns_shutdown_intervals_for_site():
     result = make_shutdown_client().get_shutdowns(
         1, "2026-05-01", "2026-05-10"
     )
 
-    assert result["short_count"] == 1
-    assert result["long_count"] == 1
-    assert result["short_total_hours"] == 4.5
-    assert result["short_shutdowns"] == [
-        {
-            "well": "Well - 11-1-1 Oil",
-            "type": "short",
-            "date": "2026-05-09",
-            "hours": 4.5,
-            "downtime_code": "PRF",
-            "downtime_reason": "Paraffin",
-            "comments": "paraffin cleanout",
-        }
-    ]
-    assert result["long_shutdowns"] == [
+    assert result["count"] == 2
+    assert result["total_hours"] == 236.5
+    assert result["shutdowns"] == [
         {
             "well": "Well - 12-2-1 Oil",
-            "type": "long",
             "start": "2026-05-01 08:00:00",
             "end": None,
             "downtime_code": "DH",
             "downtime_reason": "Downhole Problems",
             "comments": "downhole issue",
+        },
+        {
+            "well": "Well - 11-1-1 Oil",
+            "start": "2026-05-09 00:00:00",
+            "end": "2026-05-09 04:30:00",
+            "downtime_code": "PRF",
+            "downtime_reason": "Paraffin",
+            "comments": "paraffin cleanout",
         }
     ]
 
 
-def test_get_current_long_shutdowns():
-    result = make_shutdown_client().get_current_long_shutdowns(1, "2026-05-10")
+def test_get_current_shutdowns():
+    result = make_shutdown_client().get_current_shutdowns(1, "2026-05-10")
 
     assert result["count"] == 1
-    assert result["long_shutdowns"][0]["well"] == "Well - 12-2-1 Oil"
+    assert result["shutdowns"][0]["well"] == "Well - 12-2-1 Oil"
 
 
 def test_summarize_shutdown_causes_ranks_by_total_hours():
@@ -229,10 +211,10 @@ def test_summarize_shutdown_causes_ranks_by_total_hours():
     assert result["cause_count"] == 2
     assert result["main_cause"]["downtime_code"] == "DH"
     assert result["main_cause"]["downtime_reason"] == "Downhole Problems"
-    assert result["main_cause"]["long_count"] == 1
-    assert result["main_cause"]["long_overlap_hours"] == 232.0
+    assert result["main_cause"]["event_count"] == 1
+    assert result["main_cause"]["total_hours"] == 232.0
     assert result["causes"][1]["downtime_code"] == "PRF"
-    assert result["causes"][1]["short_hours"] == 4.5
+    assert result["causes"][1]["total_hours"] == 4.5
 
 
 def test_list_downtime_codes():
@@ -379,7 +361,7 @@ def test_unavailable_shutdown_client_lists_codes_but_rejects_queries():
 
     assert client.list_downtime_codes()["downtime_codes"]["PRF"] == "Paraffin"
     try:
-        client.get_current_long_shutdowns(1, "2026-05-10")
+        client.get_current_shutdowns(1, "2026-05-10")
     except ShutdownClientError as exc:
         assert "DB settings missing" in str(exc)
     else:

@@ -91,7 +91,7 @@ Use analysis_mode='range_sequence' for requests to compare all tests in a date r
 <well_status_and_shutdown_rules>
 Use ONRR tools for questions asking what an ONRR code means, whether a well is active/producing/injection by ONRR code, or for ONRR-only well counts.
 ONRR code status must be resolved as of the requested date using well history before falling back to the current well code.
-Use shutdown tools for well shutdown, downtime, shut-in, current long shutdown, downtime-code, and shutdown-cause summary questions.
+Use shutdown tools for well shutdown, downtime, shut-in, current shutdown, downtime-code, and shutdown-cause summary questions.
 Use get_active_wells for questions asking how many wells are active, inactive, online, or available on a date; do not infer active wells from well-test activity.
 Active wells are based only on the ONRR code as of that date; shutdown state is not considered.
 If active well status is only one condition in a broader question, combine get_active_wells with the relevant domain tool instead of answering with a plain active-well count.

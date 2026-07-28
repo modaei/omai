@@ -36,7 +36,7 @@ ENTRY_DEFINITIONS: dict[str, EntryDefinition] = {
     "well_test": EntryDefinition("well", "wells", "well_id", "well_tests", "time", frozenset({"date", "oil", "water", "gas", "pip", "m_temp", "amps", "tbgp", "csgp", "fluid_level", "runtime", "comments"})),
     "well_fluid": EntryDefinition("well", "wells", "well_id", "well_fluids", "time", frozenset({"date", "level", "comments"})),
     "well_injection": EntryDefinition("well", "wells", "well_id", "well_injections", "time", frozenset({"date", "flow_rate", "total", "tbg", "csg", "type", "comments"})),
-    "well_shutdown": EntryDefinition("well", "wells", "well_id", "well_shutdowns", "date", frozenset({"date", "hours", "long_shutdown", "downtime_code", "comments"})),
+    "well_shutdown": EntryDefinition("well", "wells", "well_id", "well_shutdowns", "start", frozenset({"start", "end", "downtime_code", "comments"})),
     "water_draw": EntryDefinition("tank", "tanks", "tank_id", "water_draws", "time", frozenset({"date", "initial_feet", "initial_inches", "final_feet", "final_inches", "comments"})),
     "run_ticket": EntryDefinition("tank", "tanks", "tank_id", "run_tickets", "time", frozenset({"time", "number", "measurement_method", "obs_grav", "obs_temp", "b_s_w", "corr_grav", "gov", "nsv", "initial_feet", "initial_inches", "initial_qtr", "final_feet", "final_inches", "final_qtr", "initial_volume", "final_volume", "initial_meter_reading", "final_meter_reading", "comments"})),
     "general_note": EntryDefinition(None, None, None, "general_notes", "date", frozenset({"date", "comments"})),
@@ -239,7 +239,9 @@ class DataEntryClient:
             sql = "SELECT 1 FROM general_notes WHERE site_id=:site_id AND date=:date LIMIT 1"
             params = {"site_id": site_id, "date": values.get("date")}
         elif definition.entity_column and definition.date_column and entity:
-            value_key = "time" if entry_type == "run_ticket" else "date"
+            value_key = "time" if entry_type == "run_ticket" else definition.date_column
+            if value_key not in values:
+                value_key = "date"
             date_value = values.get(value_key)
             if not date_value:
                 return None
@@ -250,8 +252,6 @@ class DataEntryClient:
                     "mixed-water-oil": "mixed_tank_readings",
                     "non-linear-volume": "non_linear_tank_readings",
                 }.get(entity.get("tank_type"), "linear_tank_readings")
-            if entry_type == "well_shutdown" and values.get("long_shutdown"):
-                date_column = "long_shutdown_start"
             sql = f"SELECT 1 FROM {record_table} WHERE {definition.entity_column}=:entity_id AND DATE({date_column})=DATE(:entry_date) LIMIT 1"
             params = {"entity_id": entity["id"], "entry_date": date_value}
         else:

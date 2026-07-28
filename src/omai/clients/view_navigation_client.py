@@ -40,8 +40,7 @@ OPERATIONAL_VIEWS: dict[str, OperationalView] = {
     "well_tests": OperationalView("well_tests r JOIN wells e ON e.id=r.well_id", "r.time", "e.name", "well_test"),
     "well_fluids": OperationalView("well_fluids r JOIN wells e ON e.id=r.well_id", "r.time", "e.name", "well_fluid"),
     "well_injections": OperationalView("well_injections r JOIN wells e ON e.id=r.well_id", "r.time", "e.name", "well_injection"),
-    "short_shutdowns": OperationalView("well_shutdowns r JOIN wells e ON e.id=r.well_id", "r.date", "e.name", "short_shutdown", "r.long_shutdown=0"),
-    "long_shutdowns": OperationalView("well_shutdowns r JOIN wells e ON e.id=r.well_id", "r.long_shutdown_start", "e.name", "long_shutdown", "r.long_shutdown=1"),
+    "shutdowns": OperationalView("well_shutdowns r JOIN wells e ON e.id=r.well_id", "r.`start`", "e.name", "shutdown"),
     "general_notes": OperationalView("general_notes r", "r.date", "r.comments", "general_note"),
     "work_orders": OperationalView("work_orders r", "r.time", "r.subject", "work_order", default_status="open"),
     "run_tickets": OperationalView("run_tickets r JOIN tanks e ON e.id=r.tank_id", "r.time", "e.name", "run_ticket"),
@@ -76,11 +75,6 @@ class ViewNavigationClient:
                 search_text: str | None = None,
                 status: str | None = None) -> dict[str, Any]:
         """Return a validated navigation intent or a user-facing stop reason."""
-        if view_type == "shutdowns":
-            return {
-                "status": "needs_clarification",
-                "message": "Do you want short shutdowns or long shutdowns?",
-            }
         if view_type in REPORT_VIEWS:
             end = _parse_date(end_date or current_date, "end_date")
             start = _parse_date(start_date, "start_date") if start_date else end - timedelta(days=6)

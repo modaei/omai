@@ -120,13 +120,11 @@ class WeeklyOverviewService:
             site_id,
             start_date.isoformat(),
             end_date.isoformat(),
-            "all",
         )
         shutdown_causes = self.shutdown_client.summarize_shutdown_causes(
             site_id,
             start_date.isoformat(),
             end_date.isoformat(),
-            "all",
         )
         operational_context = self.operational_context_store.search(
             query=(
@@ -409,24 +407,22 @@ def _compact_shutdowns(
     start_date: date,
     end_date: date,
 ) -> dict[str, Any]:
-    short_shutdowns = result.get("short_shutdowns") or []
-    long_shutdowns = result.get("long_shutdowns") or []
-    new_long_shutdowns = [
-        row for row in long_shutdowns
+    shutdowns = result.get("shutdowns") or []
+    new_shutdowns = [
+        row for row in shutdowns
         if _date_in_range(_row_date(row.get("start")), start_date, end_date)
     ]
-    reactivated_long_shutdowns = [
-        row for row in long_shutdowns
+    ended_shutdowns = [
+        row for row in shutdowns
         if _date_in_range(_row_date(row.get("end")), start_date, end_date)
     ]
     return {
-        "short_count": result.get("short_count", 0),
-        "long_count": result.get("long_count", 0),
-        "short_total_hours": result.get("short_total_hours", 0),
-        "new_long_shutdowns": new_long_shutdowns[:20],
-        "reactivated_long_shutdowns": reactivated_long_shutdowns[:20],
-        "common_shutdown_comments": _common_comments(short_shutdowns + long_shutdowns),
-        "short_shutdowns": short_shutdowns[:30],
+        "count": result.get("count", 0),
+        "total_hours": result.get("total_hours", 0),
+        "new_shutdowns": new_shutdowns[:20],
+        "ended_shutdowns": ended_shutdowns[:20],
+        "common_shutdown_comments": _common_comments(shutdowns),
+        "shutdowns": shutdowns[:30],
     }
 
 
@@ -488,13 +484,10 @@ def _executive_snapshot(
         "oil_production": _metric_snapshot(weekly.get("oil_production")),
         "oil_sale": _metric_snapshot(weekly.get("oil_sale")),
         "shutdown_summary": {
-            "hourly_shutdown_count": shutdowns.get("short_count", 0),
-            "hourly_shutdown_hours": shutdowns.get("short_total_hours", 0),
-            "long_shutdown_count": shutdowns.get("long_count", 0),
-            "new_long_shutdown_count": len(shutdowns.get("new_long_shutdowns") or []),
-            "reactivated_long_shutdown_count": len(
-                shutdowns.get("reactivated_long_shutdowns") or []
-            ),
+            "shutdown_count": shutdowns.get("count", 0),
+            "shutdown_hours": shutdowns.get("total_hours", 0),
+            "new_shutdown_count": len(shutdowns.get("new_shutdowns") or []),
+            "ended_shutdown_count": len(shutdowns.get("ended_shutdowns") or []),
             "main_cause": shutdown_causes.get("main_cause"),
         },
     }
@@ -582,25 +575,25 @@ def _exceptions(
             }
         )
 
-    if _to_float(shutdowns.get("short_total_hours")) >= 24:
+    if _to_float(shutdowns.get("total_hours")) >= 24:
         exceptions.append(
             {
-                "type": "high_hourly_shutdown_hours",
-                "hours": shutdowns.get("short_total_hours"),
+                "type": "high_shutdown_hours",
+                "hours": shutdowns.get("total_hours"),
             }
         )
-    if shutdowns.get("new_long_shutdowns"):
+    if shutdowns.get("new_shutdowns"):
         exceptions.append(
             {
-                "type": "new_long_shutdowns",
-                "count": len(shutdowns.get("new_long_shutdowns") or []),
+                "type": "new_shutdowns",
+                "count": len(shutdowns.get("new_shutdowns") or []),
             }
         )
-    if shutdowns.get("reactivated_long_shutdowns"):
+    if shutdowns.get("ended_shutdowns"):
         exceptions.append(
             {
-                "type": "reactivated_long_shutdowns",
-                "count": len(shutdowns.get("reactivated_long_shutdowns") or []),
+                "type": "ended_shutdowns",
+                "count": len(shutdowns.get("ended_shutdowns") or []),
             }
         )
     for theme in _repeated_context_themes(operational_context):

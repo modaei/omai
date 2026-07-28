@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import logging
+import json
 from typing import Any, Literal
 
 from langchain_core.tools import StructuredTool
@@ -16,19 +16,12 @@ from omai.tools.rag_enrichment import (
 
 logger = logging.getLogger(__name__)
 
-ShutdownType = Literal["all", "short", "long"]
-
-
 class GetShutdownsInput(BaseModel):
     start_date: str = Field(description="Start date in YYYY-MM-DD format.")
     end_date: str = Field(description="End date in YYYY-MM-DD format.")
-    shutdown_type: ShutdownType = Field(
-        default="all",
-        description="Which shutdowns to return: all, short, or long.",
-    )
 
 
-class CurrentLongShutdownsInput(BaseModel):
+class CurrentShutdownsInput(BaseModel):
     as_of_date: str | None = Field(
         default=None,
         description="Optional date in YYYY-MM-DD format. Defaults to today.",
@@ -94,10 +87,6 @@ class ProducingWellsInput(BaseModel):
 class ShutdownCauseSummaryInput(BaseModel):
     start_date: str = Field(description="Start date in YYYY-MM-DD format.")
     end_date: str = Field(description="End date in YYYY-MM-DD format.")
-    shutdown_type: ShutdownType = Field(
-        default="all",
-        description="Which shutdowns to summarize: all, short, or long.",
-    )
 
 
 def _json_result(value: Any) -> str:
@@ -116,26 +105,24 @@ def build_shutdown_tools(
     def get_well_shutdowns(
         start_date: str,
         end_date: str,
-        shutdown_type: str = "all",
     ) -> str:
         """Get well shutdowns for the selected site and date range."""
         logger.info(
-            "Getting well shutdowns site_id=%s start=%s end=%s type=%s",
+            "Getting well shutdowns site_id=%s start=%s end=%s",
             site_id,
             start_date,
             end_date,
-            shutdown_type,
         )
         try:
             result = {
                 "ok": True,
-                **client.get_shutdowns(site_id, start_date, end_date, shutdown_type),
+                **client.get_shutdowns(site_id, start_date, end_date),
             }
             enriched = add_operational_context(
                 result,
                 operational_context_store,
                 site_id=site_id,
-                query=f"shutdown downtime context {shutdown_type}",
+                query="shutdown downtime context",
                 start_date=start_date,
                 end_date=end_date,
                 limit=8,
@@ -145,31 +132,31 @@ def build_shutdown_tools(
             logger.warning("Well shutdown lookup failed: %s", exc)
             return _json_result({"ok": False, "error": str(exc)})
 
-    def get_current_long_shutdowns(as_of_date: str | None = None) -> str:
-        """Get ongoing long shutdowns for the selected site."""
+    def get_current_shutdowns(as_of_date: str | None = None) -> str:
+        """Get ongoing shutdowns for the selected site."""
         logger.info(
-            "Getting current long shutdowns site_id=%s as_of=%s",
+            "Getting current shutdowns site_id=%s as_of=%s",
             site_id,
             as_of_date,
         )
         try:
             result = {
                 "ok": True,
-                **client.get_current_long_shutdowns(site_id, as_of_date),
+                **client.get_current_shutdowns(site_id, as_of_date),
             }
             as_of = result.get("as_of_date")
             enriched = add_operational_context(
                 result,
                 operational_context_store,
                 site_id=site_id,
-                query="current ongoing long shutdown context",
+                query="current ongoing shutdown context",
                 start_date=as_of,
                 end_date=as_of,
                 limit=8,
             )
             return _json_result(enriched)
         except ShutdownClientError as exc:
-            logger.warning("Current long shutdown lookup failed: %s", exc)
+            logger.warning("Current shutdown lookup failed: %s", exc)
             return _json_result({"ok": False, "error": str(exc)})
 
     def get_active_wells(active_date: str) -> str:
@@ -235,22 +222,18 @@ def build_shutdown_tools(
     def summarize_shutdown_causes(
         start_date: str,
         end_date: str,
-        shutdown_type: str = "all",
     ) -> str:
         """Summarize and rank shutdown causes for the selected site and date range."""
         logger.info(
-            "Summarizing shutdown causes site_id=%s start=%s end=%s type=%s",
+            "Summarizing shutdown causes site_id=%s start=%s end=%s",
             site_id,
             start_date,
             end_date,
-            shutdown_type,
         )
         try:
             result = {
                 "ok": True,
-                **client.summarize_shutdown_causes(
-                    site_id, start_date, end_date, shutdown_type
-                ),
+                **client.summarize_shutdown_causes(site_id, start_date, end_date),
             }
             main_cause = result.get("main_cause") or {}
             query = "shutdown downtime causes context"
@@ -280,19 +263,19 @@ def build_shutdown_tools(
             func=get_well_shutdowns,
             name="get_well_shutdowns",
             description=(
-                "Get short/hourly and long-term well shutdowns for a date range. "
+                "Get well shutdowns for a date range. "
                 "Use this for downtime, shutdown, shut-in, or reactivation questions."
             ),
             args_schema=GetShutdownsInput,
         ),
         StructuredTool.from_function(
-            func=get_current_long_shutdowns,
-            name="get_current_long_shutdowns",
+            func=get_current_shutdowns,
+            name="get_current_shutdowns",
             description=(
-                "Get wells currently on long shutdown as of a date. "
-                "Use this for current or ongoing long shutdown questions."
+                "Get wells currently on shutdown as of a date. "
+                "Use this for current or ongoing shutdown questions."
             ),
-            args_schema=CurrentLongShutdownsInput,
+            args_schema=CurrentShutdownsInput,
         ),
         StructuredTool.from_function(
             func=get_active_wells,

@@ -35,7 +35,7 @@ def make_tools(calls, *, view_status="ready", entry_status="ready"):
                 "status": view_status,
                 "destination": "index",
                 "view_type": arguments["view_type"],
-                "message": "Do you want short shutdowns or long shutdowns?",
+                "message": "Prepared view.",
             }
         )
 
@@ -547,10 +547,10 @@ def test_generic_reading_infers_type_from_field_signature_without_equipment_mark
             {"flow_rate": 10.0, "total": 20.0, "tbg": 30.0, "csg": 40.0},
         ),
         (
-            "Create a well shutdown for 4048 with hours 6",
+            "Create a well shutdown for 4048",
             "well_shutdown",
             "4048",
-            {"hours": 6.0, "long_shutdown": False},
+            {},
         ),
         (
             "Create a water draw for 5-2 Float Over with initial feet five initial inch two final feet four final inch one",
@@ -629,6 +629,74 @@ def test_generic_tank_reading_infers_water_tank_and_level_fields():
     assert calls[0][1]["entity_name"] == "2-4 water"
     assert calls[0][1]["values"] == {"feet": 10.0, "inches": 10.0}
     assert result[2]["model_calls"] == 0
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_values"),
+    [
+        (
+            "create a shutdown for 6344 start yesterday 14:30",
+            {"start": "2026-07-27 14:30"},
+        ),
+        (
+            "create a shutdown for 6344 start yesterday 14:30 reason paraffin",
+            {"start": "2026-07-27 14:30", "downtime_code": "PRF"},
+        ),
+        (
+            "create a shutdown for 6344 start yesterday 14:30 downtime reason PRF",
+            {"start": "2026-07-27 14:30", "downtime_code": "PRF"},
+        ),
+        (
+            "create a shutdown for 6344 start yesterday 14:30 end today 09:00",
+            {
+                "start": "2026-07-27 14:30",
+                "end": "2026-07-28 09:00",
+            },
+        ),
+        (
+            "create a shutdown for 6344 starting yesterday at 2:30 pm due to paraffin",
+            {"start": "2026-07-27 14:30", "downtime_code": "PRF"},
+        ),
+    ],
+)
+def test_shutdown_create_prefill_is_deterministic(question, expected_values):
+    calls = []
+    result = try_answer_navigation_request(
+        tools=make_tools(calls),
+        question=question,
+        today=date(2026, 7, 28),
+    )
+
+    assert result is not None
+    assert calls[0][0] == "prepare_data_entry"
+    assert calls[0][1]["entry_type"] == "well_shutdown"
+    assert calls[0][1]["entity_name"] == "6344"
+    assert calls[0][1]["values"] == expected_values
+    assert result[2]["model_calls"] == 0
+
+
+def test_shutdown_create_with_unknown_reason_does_not_guess_code():
+    calls = []
+    result = try_answer_navigation_request(
+        tools=make_tools(calls),
+        question="create a shutdown for 6344 start yesterday 14:30 reason pumped off",
+        today=date(2026, 7, 28),
+    )
+
+    assert result is not None
+    assert calls[0][1]["values"] == {"start": "2026-07-27 14:30"}
+
+
+def test_shutdown_create_with_unsupported_hours_falls_through_to_model():
+    calls = []
+    result = try_answer_navigation_request(
+        tools=make_tools(calls),
+        question="Create a well shutdown for 4048 with hours 6",
+        today=date(2026, 7, 3),
+    )
+
+    assert result is None
+    assert calls == []
 
 
 def test_unknown_numeric_entry_value_falls_through_to_model():

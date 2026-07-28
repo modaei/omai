@@ -513,21 +513,20 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         required_tables={"well_shutdowns", "wells"},
         query=f"""
             SELECT ws.id, w.site_id, ws.well_id, w.name AS well_name,
-                ws.date AS event_date, ws.hours, ws.long_shutdown,
-                ws.long_shutdown_start, ws.long_shutdown_end,
+                DATE(ws.`start`) AS event_date,
+                ws.`start` AS start, ws.`end` AS end,
                 ws.downtime_code, ws.comments, ws.updated_at
             FROM well_shutdowns ws
             JOIN wells w ON w.id = ws.well_id
             WHERE w.site_id = :site_id
-            {DATE_FILTER.format(field="ws.date")}
+            {DATE_FILTER.format(field="DATE(ws.`start`)")}
         """,
         text_fields=(
             "well_name",
-            "hours",
             "downtime_code",
             "comments",
-            "long_shutdown_start",
-            "long_shutdown_end",
+            "start",
+            "end",
         ),
         event_date_field="event_date",
         entity_type="well",

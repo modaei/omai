@@ -91,11 +91,8 @@ def make_timeline_client(
                 CREATE TABLE well_shutdowns (
                     id INTEGER PRIMARY KEY,
                     well_id INTEGER NOT NULL,
-                    date TEXT,
-                    hours REAL,
-                    long_shutdown INTEGER NOT NULL DEFAULT 0,
-                    long_shutdown_start TEXT,
-                    long_shutdown_end TEXT,
+                    start TEXT NOT NULL,
+                    `end` TEXT,
                     downtime_code TEXT,
                     comments TEXT
                 )
@@ -184,8 +181,8 @@ def make_timeline_client(
             text(
                 """
                 INSERT INTO well_shutdowns
-                    (well_id, date, hours, long_shutdown, downtime_code, comments)
-                VALUES (1, '2026-05-10', 4.5, 0, 'PRF', 'paraffin')
+                    (well_id, start, `end`, downtime_code, comments)
+                VALUES (1, '2026-05-10 00:00:00', '2026-05-10 04:30:00', 'PRF', 'paraffin')
                 """
             )
         )
@@ -193,8 +190,8 @@ def make_timeline_client(
             text(
                 """
                 INSERT INTO well_shutdowns
-                    (well_id, date, hours, long_shutdown, downtime_code, comments)
-                VALUES (2, '2026-06-01', 8, 0, 'DH', '4048 shutdown')
+                    (well_id, start, `end`, downtime_code, comments)
+                VALUES (2, '2026-06-01 00:00:00', '2026-06-01 08:00:00', 'DH', '4048 shutdown')
                 """
             )
         )
@@ -229,13 +226,13 @@ def test_get_well_timeline_returns_chronological_events():
         "well_test",
         "well_fluid",
         "chart_note",
-        "shutdown",
         "general_note",
+        "shutdown",
         "work_order",
     ]
     assert result["events"][0]["details"]["oil"] == 10
     assert result["events"][2]["details"]["note"] == "Hot watering 1 load"
-    assert result["events"][3]["details"]["downtime_reason"] == "Paraffin"
+    assert result["events"][4]["details"]["downtime_reason"] == "Paraffin"
     assert result["events"][3]["time"] == "2026-05-10"
     assert result["events"][5]["details"]["subject"] == "Repair 11-1-1 Oil"
 
@@ -273,16 +270,15 @@ def test_numeric_well_name_resolves_hartzog_draw_unit_prefix():
     assert result["well"] == "Well - HARTZOG DRAW UNIT 4048"
     assert result["events"] == [
         {
-            "time": "2026-06-01",
+                "time": "2026-06-01 00:00:00",
             "source": "shutdown",
             "label": "Well shutdown",
             "details": {
-                "type": "short",
                 "downtime_code": "DH",
                 "downtime_reason": "Downhole Problems",
                 "comments": "4048 shutdown",
-                "date": "2026-06-01",
-                "hours": 8.0,
+                "start": "2026-06-01 00:00:00",
+                "end": "2026-06-01 08:00:00",
             },
         }
     ]

@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 import re
 from calendar import monthrange
-from datetime import date
+from datetime import date, timedelta
 from time import perf_counter
 from typing import Any
 
 from langchain_core.tools import BaseTool
 
 from omai.agents.producing_wells_graph import MONTHS, _resolve_date_range
+from omai.clients.shutdown_client import DOWNTIME_CODES
 
 
 DeterministicAnswer = tuple[str, list[dict[str, Any]], dict[str, Any]]
@@ -37,8 +38,6 @@ VIEW_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("well_tests", ("well test",)),
     ("well_fluids", ("well fluid level", "well fluid", "fluid level")),
     ("well_injections", ("well injection", "injection reading")),
-    ("short_shutdowns", ("short shutdown", "hourly shutdown")),
-    ("long_shutdowns", ("long shutdown",)),
     ("shutdowns", ("shutdown",)),
     ("general_notes", ("general note",)),
     ("work_orders", ("work order",)),
@@ -59,7 +58,7 @@ ENTRY_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("well_test", ("well test",)),
     ("well_fluid", ("well fluid level", "fluid level")),
     ("well_injection", ("well injection", "injection reading")),
-    ("well_shutdown", ("well shutdown", "long shutdown", "short shutdown", "shutdown")),
+    ("well_shutdown", ("well shutdown", "shutdown")),
     ("water_draw", ("water draw",)),
     ("run_ticket", ("run ticket",)),
     ("general_note", ("general note",)),
@@ -329,6 +328,8 @@ def _parse_data_entry_request(question: str, today: date) -> dict[str, Any] | No
         entry_type = "generic_reading"
     else:
         entry_type = matches[0]
+    if entry_type == "well_shutdown":
+        return _parse_shutdown_entry_request(normalized, today)
 
     date_range = _safe_date_range(normalized, today)
     if _contains_date_marker(normalized) and date_range is None:
@@ -362,9 +363,183 @@ def _parse_data_entry_request(question: str, today: date) -> dict[str, Any] | No
     arguments: dict[str, Any] = {"entry_type": entry_type, "values": values}
     if entity_name:
         arguments["entity_name"] = entity_name
-    if entry_type == "well_shutdown":
-        values["long_shutdown"] = "long shutdown" in normalized
     return arguments
+
+
+def _parse_shutdown_entry_request(text: str, today: date) -> dict[str, Any] | None:
+    """Parse explicit shutdown form requests into the current interval fields."""
+    entity_name = _shutdown_entity_name(text, today)
+    values: dict[str, Any] = {}
+    consumed: list[tuple[int, int]] = []
+
+    start_value = _shutdown_datetime_value(
+        text,
+        today,
+        ("start", "starting", "starts", "from"),
+    )
+    if start_value:
+        values["start"] = start_value[0]
+        consumed.append(start_value[1])
+
+    end_value = _shutdown_datetime_value(
+        text,
+        today,
+        ("end", "ending", "ends", "until", "to"),
+    )
+    if end_value:
+        values["end"] = end_value[0]
+        consumed.append(end_value[1])
+
+    reason_value = _shutdown_reason_value(text)
+    if reason_value:
+        code, span = reason_value
+        if code:
+            values["downtime_code"] = code
+        consumed.append(span)
+
+    entity_numbers = set(re.findall(r"[-+]?\d+(?:\.\d+)?", entity_name or ""))
+    for numeric_match in re.finditer(r"(?<![a-z])[-+]?\d+(?:\.\d+)?", text):
+        if _span_is_consumed(numeric_match.span(), consumed):
+            continue
+        if numeric_match.group() in entity_numbers:
+            continue
+        if _number_is_part_of_date(text, numeric_match.span()):
+            continue
+        return None
+
+    arguments: dict[str, Any] = {"entry_type": "well_shutdown", "values": values}
+    if entity_name:
+        arguments["entity_name"] = entity_name
+    return arguments
+
+
+def _shutdown_entity_name(text: str, today: date) -> str | None:
+    """Extract the well name from a shutdown command without swallowing clauses."""
+    match = re.search(r"\bfor\s+(.+)$", text)
+    if not match:
+        return None
+    candidate = match.group(1).strip(" .?")
+    candidate = re.split(
+        r"\s+(?:start|starting|starts|from|end|ending|ends|until|to|"
+        r"downtime\s+reason|reason|because|due\s+to|comments?|with)\b",
+        candidate,
+        maxsplit=1,
+    )[0].strip(" .?")
+    return None if _safe_date_range(candidate, today) else candidate or None
+
+
+def _shutdown_datetime_value(
+    text: str,
+    today: date,
+    keywords: tuple[str, ...],
+) -> tuple[str, tuple[int, int]] | None:
+    """Resolve a labelled shutdown date/time clause into Ometrics form format."""
+    keyword_pattern = "|".join(re.escape(keyword) for keyword in keywords)
+    date_pattern = _shutdown_date_pattern()
+    time_pattern = r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?"
+    match = re.search(
+        rf"\b(?:{keyword_pattern})\s+({date_pattern})"
+        rf"(?:\s+(?:at\s+)?{time_pattern})?",
+        text,
+    )
+    if not match:
+        return None
+
+    resolved_date = _parse_shutdown_date_token(match.group(1), today)
+    if resolved_date is None:
+        return None
+
+    hour = 0
+    minute = 0
+    if match.group(2) is not None:
+        parsed_time = _parse_shutdown_time_parts(
+            match.group(2),
+            match.group(3),
+            match.group(4),
+        )
+        if parsed_time is None:
+            return None
+        hour, minute = parsed_time
+
+    return (
+        f"{resolved_date.isoformat()} {hour:02d}:{minute:02d}",
+        match.span(),
+    )
+
+
+def _shutdown_date_pattern() -> str:
+    """Date tokens supported by the deterministic shutdown create route."""
+    months = "|".join(MONTHS)
+    return (
+        r"today|yesterday|"
+        r"\d{4}-\d{2}-\d{2}|"
+        r"\d{1,2}/\d{1,2}/\d{4}|"
+        rf"(?:{months})\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s+\d{{4}})?"
+    )
+
+
+def _parse_shutdown_date_token(value: str, today: date) -> date | None:
+    """Parse one deterministic shutdown date token."""
+    normalized = value.strip(" ,.").lower()
+    if normalized == "today":
+        return today
+    if normalized == "yesterday":
+        return today - timedelta(days=1)
+    return _parse_date_endpoint(normalized, today, "start")
+
+
+def _parse_shutdown_time_parts(
+    hour_text: str,
+    minute_text: str | None,
+    meridiem: str | None,
+) -> tuple[int, int] | None:
+    """Parse a deterministic time token with optional am/pm."""
+    hour = int(hour_text)
+    minute = int(minute_text or "0")
+    if minute > 59:
+        return None
+    if meridiem:
+        if hour < 1 or hour > 12:
+            return None
+        hour = hour % 12
+        if meridiem == "pm":
+            hour += 12
+    elif hour > 23:
+        return None
+    return hour, minute
+
+
+def _shutdown_reason_value(text: str) -> tuple[str | None, tuple[int, int]] | None:
+    """Resolve an explicit shutdown reason to a known downtime code if exact."""
+    match = re.search(
+        r"\b(?:downtime\s+reason|reason|because|due\s+to)\s+(.+?)"
+        r"(?=\s+(?:start|starting|starts|from|end|ending|ends|until|to|"
+        r"comments?|with)\b|$)",
+        text,
+    )
+    if not match:
+        return None
+    reason = match.group(1).strip(" .?")
+    return _downtime_code_for_reason(reason), match.span()
+
+
+def _downtime_code_for_reason(reason: str) -> str | None:
+    """Map exact downtime codes or exact reason labels to a form code."""
+    normalized = _normalize_reason(reason)
+    if not normalized:
+        return None
+    upper_reason = reason.strip().upper()
+    if upper_reason in DOWNTIME_CODES:
+        return upper_reason
+    for code, label in DOWNTIME_CODES.items():
+        if normalized == _normalize_reason(label):
+            return code
+    return None
+
+
+def _normalize_reason(value: str) -> str:
+    """Normalize a downtime reason for exact deterministic matching."""
+    return " ".join(re.findall(r"[a-z0-9]+", value.lower()))
 
 
 def _reading_types_from_entity(entity_name: str) -> list[str]:
@@ -437,12 +612,6 @@ def _alias_matches(
     for canonical, variants in aliases:
         if any(re.search(rf"\b{re.escape(alias)}s?\b", text) for alias in variants):
             found.append(canonical)
-    # A specific alias also contains broader words such as "shutdowns". Keep the
-    # first, most-specific mapping declared for the same concept.
-    if "shutdowns" in found and any(
-        item in found for item in ("short_shutdowns", "long_shutdowns")
-    ):
-        found.remove("shutdowns")
     if "well_test" in found and "well_fluid" in found:
         found.remove("well_fluid")
     return list(dict.fromkeys(found))

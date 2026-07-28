@@ -83,39 +83,30 @@ class ShutdownClient:
         site_id: int,
         start_date: str,
         end_date: str,
-        shutdown_type: str = "all",
     ) -> dict[str, Any]:
         start_day = self._parse_date(start_date)
         end_day = self._parse_date(end_date)
         if start_day > end_day:
             raise ShutdownClientError("start_date cannot be after end_date.")
-        if shutdown_type not in {"all", "short", "long"}:
-            raise ShutdownClientError("shutdown_type must be all, short, or long.")
 
-        short_shutdowns = []
-        long_shutdowns = []
-        if shutdown_type in {"all", "short"}:
-            short_shutdowns = self._short_shutdowns(site_id, start_day, end_day)
-        if shutdown_type in {"all", "long"}:
-            long_shutdowns = self._long_shutdowns(site_id, start_day, end_day)
+        shutdowns = self._shutdowns(site_id, start_day, end_day)
+        range_start = datetime.combine(start_day, time.min)
+        range_end = datetime.combine(end_day, time.min) + timedelta(days=1)
 
         total_hours = round(
-            sum(row.get("hours") or 0 for row in short_shutdowns),
+            sum(self._shutdown_overlap_hours(row, range_start, range_end) for row in shutdowns),
             3,
         )
         return {
             "site_id": site_id,
             "start_date": start_day.isoformat(),
             "end_date": end_day.isoformat(),
-            "shutdown_type": shutdown_type,
-            "short_count": len(short_shutdowns),
-            "long_count": len(long_shutdowns),
-            "short_total_hours": total_hours,
-            "short_shutdowns": [_without_internal_ids(row) for row in short_shutdowns],
-            "long_shutdowns": [_without_internal_ids(row) for row in long_shutdowns],
+            "count": len(shutdowns),
+            "total_hours": total_hours,
+            "shutdowns": [_without_internal_ids(row) for row in shutdowns],
         }
 
-    def get_current_long_shutdowns(
+    def get_current_shutdowns(
         self, site_id: int, as_of_date: str | None = None
     ) -> dict[str, Any]:
         as_of = self._parse_date(as_of_date) if as_of_date else date.today()
@@ -123,20 +114,19 @@ class ShutdownClient:
         query = text(
             """
             SELECT wells.name AS well_name,
-                well_shutdowns.long_shutdown_start,
-                well_shutdowns.long_shutdown_end,
+                well_shutdowns.`start` AS start,
+                well_shutdowns.`end` AS end,
                 well_shutdowns.downtime_code,
                 well_shutdowns.comments
             FROM well_shutdowns
             JOIN wells ON well_shutdowns.well_id = wells.id
             WHERE wells.site_id = :site_id
-                AND well_shutdowns.long_shutdown = 1
-                AND well_shutdowns.long_shutdown_start < :end_time
+                AND well_shutdowns.`start` < :end_time
                 AND (
-                    well_shutdowns.long_shutdown_end IS NULL
-                    OR well_shutdowns.long_shutdown_end >= :start_time
+                    well_shutdowns.`end` IS NULL
+                    OR well_shutdowns.`end` >= :start_time
                 )
-            ORDER BY well_shutdowns.long_shutdown_start, wells.name
+            ORDER BY well_shutdowns.`start`, wells.name
             LIMIT :limit
             """
         )
@@ -146,12 +136,12 @@ class ShutdownClient:
             start_time=start,
             end_time=end,
         )
-        shutdowns = [self._compact_shutdown_row(row, "long") for row in rows]
+        shutdowns = [self._compact_shutdown_row(row) for row in rows]
         return {
             "site_id": site_id,
             "as_of_date": as_of.isoformat(),
             "count": len(shutdowns),
-            "long_shutdowns": [_without_internal_ids(row) for row in shutdowns],
+            "shutdowns": [_without_internal_ids(row) for row in shutdowns],
         }
 
     def summarize_shutdown_causes(
@@ -159,49 +149,22 @@ class ShutdownClient:
         site_id: int,
         start_date: str,
         end_date: str,
-        shutdown_type: str = "all",
     ) -> dict[str, Any]:
         start_day = self._parse_date(start_date)
         end_day = self._parse_date(end_date)
         if start_day > end_day:
             raise ShutdownClientError("start_date cannot be after end_date.")
-        if shutdown_type not in {"all", "short", "long"}:
-            raise ShutdownClientError("shutdown_type must be all, short, or long.")
-
-        short_shutdowns = []
-        long_shutdowns = []
-        if shutdown_type in {"all", "short"}:
-            short_shutdowns = self._short_shutdowns(site_id, start_day, end_day)
-        if shutdown_type in {"all", "long"}:
-            long_shutdowns = self._long_shutdowns(site_id, start_day, end_day)
+        shutdowns = self._shutdowns(site_id, start_day, end_day)
 
         cause_map: dict[str, dict[str, Any]] = {}
-        for shutdown in short_shutdowns:
-            cause = self._cause_bucket(cause_map, shutdown)
-            cause["short_count"] += 1
-            cause["event_count"] += 1
-            cause["short_hours"] = round(
-                cause["short_hours"] + float(shutdown.get("hours") or 0),
-                3,
-            )
-            cause["total_hours"] = round(
-                cause["short_hours"] + cause["long_overlap_hours"],
-                3,
-            )
-
         range_start = datetime.combine(start_day, time.min)
         range_end = datetime.combine(end_day, time.min) + timedelta(days=1)
-        for shutdown in long_shutdowns:
+        for shutdown in shutdowns:
             cause = self._cause_bucket(cause_map, shutdown)
-            cause["long_count"] += 1
             cause["event_count"] += 1
-            cause["long_overlap_hours"] = round(
-                cause["long_overlap_hours"]
-                + self._long_shutdown_overlap_hours(shutdown, range_start, range_end),
-                3,
-            )
             cause["total_hours"] = round(
-                cause["short_hours"] + cause["long_overlap_hours"],
+                cause["total_hours"]
+                + self._shutdown_overlap_hours(shutdown, range_start, range_end),
                 3,
             )
 
@@ -210,8 +173,6 @@ class ShutdownClient:
             key=lambda item: (
                 item["total_hours"],
                 item["event_count"],
-                item["short_count"],
-                item["long_count"],
                 item["downtime_reason"],
             ),
             reverse=True,
@@ -220,7 +181,6 @@ class ShutdownClient:
             "site_id": site_id,
             "start_date": start_day.isoformat(),
             "end_date": end_day.isoformat(),
-            "shutdown_type": shutdown_type,
             "cause_count": len(causes),
             "main_cause": causes[0] if causes else None,
             "causes": causes,
@@ -440,7 +400,6 @@ class ShutdownClient:
                     if exclude_injection_wells
                     else None
                 ),
-                "short_shutdown_full_day_hours": 24,
                 "partial_shutdown_note": (
                     "Partially shutdown wells are excluded from both producing "
                     "and non-producing counts."
@@ -451,36 +410,7 @@ class ShutdownClient:
             },
         }
 
-    def _short_shutdowns(
-        self, site_id: int, start_day: date, end_day: date
-    ) -> list[dict[str, Any]]:
-        query = text(
-            """
-            SELECT well_shutdowns.well_id,
-                wells.name AS well_name,
-                well_shutdowns.date,
-                well_shutdowns.hours,
-                well_shutdowns.downtime_code,
-                well_shutdowns.comments
-            FROM well_shutdowns
-            JOIN wells ON well_shutdowns.well_id = wells.id
-            WHERE wells.site_id = :site_id
-                AND well_shutdowns.long_shutdown = 0
-                AND well_shutdowns.date >= :start_date
-                AND well_shutdowns.date <= :end_date
-            ORDER BY well_shutdowns.date, wells.name
-            LIMIT :limit
-            """
-        )
-        rows = self._execute(
-            query,
-            site_id=site_id,
-            start_date=start_day,
-            end_date=end_day,
-        )
-        return [self._compact_shutdown_row(row, "short") for row in rows]
-
-    def _long_shutdowns(
+    def _shutdowns(
         self, site_id: int, start_day: date, end_day: date
     ) -> list[dict[str, Any]]:
         start_time = datetime.combine(start_day, time.min)
@@ -489,20 +419,19 @@ class ShutdownClient:
             """
             SELECT well_shutdowns.well_id,
                 wells.name AS well_name,
-                well_shutdowns.long_shutdown_start,
-                well_shutdowns.long_shutdown_end,
+                well_shutdowns.`start` AS start,
+                well_shutdowns.`end` AS end,
                 well_shutdowns.downtime_code,
                 well_shutdowns.comments
             FROM well_shutdowns
             JOIN wells ON well_shutdowns.well_id = wells.id
             WHERE wells.site_id = :site_id
-                AND well_shutdowns.long_shutdown = 1
-                AND well_shutdowns.long_shutdown_start < :end_time
+                AND well_shutdowns.`start` < :end_time
                 AND (
-                    well_shutdowns.long_shutdown_end IS NULL
-                    OR well_shutdowns.long_shutdown_end >= :start_time
+                    well_shutdowns.`end` IS NULL
+                    OR well_shutdowns.`end` >= :start_time
                 )
-            ORDER BY well_shutdowns.long_shutdown_start, wells.name
+            ORDER BY well_shutdowns.`start`, wells.name
             LIMIT :limit
             """
         )
@@ -512,7 +441,7 @@ class ShutdownClient:
             start_time=start_time,
             end_time=end_time,
         )
-        return [self._compact_shutdown_row(row, "long") for row in rows]
+        return [self._compact_shutdown_row(row) for row in rows]
 
     def _wells_with_onrr_state(
         self,
@@ -604,45 +533,27 @@ class ShutdownClient:
     def _day_shutdown_state_by_well(
         self, site_id: int, day: date
     ) -> dict[int, dict[str, Any]]:
-        short_shutdowns = self._short_shutdowns(site_id, day, day)
-        long_shutdowns = self._long_shutdowns(site_id, day, day)
+        shutdowns = self._shutdowns(site_id, day, day)
         day_start, day_end = self._day_bounds(day)
 
         states: dict[int, dict[str, Any]] = {}
-        for shutdown in short_shutdowns:
+        for shutdown in shutdowns:
             well_id = int(shutdown["well_id"])
-            hours = float(shutdown.get("hours") or 0)
+            hours = self._shutdown_overlap_hours(shutdown, day_start, day_end)
             state = states.setdefault(
                 well_id,
                 {
-                    "short_shutdown_hours": 0.0,
-                    "long_shutdown_hours": 0.0,
+                    "shutdown_hours": 0.0,
                     "shutdowns": [],
                 },
             )
-            state["short_shutdown_hours"] += hours
-            state["shutdowns"].append(shutdown)
-
-        for shutdown in long_shutdowns:
-            well_id = int(shutdown["well_id"])
-            hours = self._long_shutdown_overlap_hours(shutdown, day_start, day_end)
-            state = states.setdefault(
-                well_id,
-                {
-                    "short_shutdown_hours": 0.0,
-                    "long_shutdown_hours": 0.0,
-                    "shutdowns": [],
-                },
-            )
-            state["long_shutdown_hours"] += hours
+            state["shutdown_hours"] += hours
             state["shutdowns"].append(shutdown)
 
         classified = {}
         for well_id, state in states.items():
-            short_hours = round(state["short_shutdown_hours"], 3)
-            long_hours = round(state["long_shutdown_hours"], 3)
-            total_hours = round(short_hours + long_hours, 3)
-            if short_hours >= 24 or long_hours >= 24 or total_hours >= 24:
+            total_hours = round(state["shutdown_hours"], 3)
+            if total_hours >= 24:
                 status = "full_day_shutdown"
                 reason = "Shutdown covers the full day."
             else:
@@ -654,8 +565,7 @@ class ShutdownClient:
             classified[well_id] = {
                 "status": status,
                 "reason": reason,
-                "short_shutdown_hours": short_hours,
-                "long_shutdown_hours": long_hours,
+                "shutdown_hours": total_hours,
                 "total_shutdown_hours": total_hours,
                 "shutdowns": state["shutdowns"],
             }
@@ -683,18 +593,13 @@ class ShutdownClient:
         return serialized
 
     @staticmethod
-    def _compact_shutdown_row(row: dict[str, Any], shutdown_type: str) -> dict[str, Any]:
+    def _compact_shutdown_row(row: dict[str, Any]) -> dict[str, Any]:
         compact = {
             "well": f"Well - {row['well_name']}",
             "well_id": row.get("well_id"),
-            "type": shutdown_type,
+            "start": row.get("start"),
+            "end": row.get("end"),
         }
-        if shutdown_type == "short":
-            compact["date"] = row.get("date")
-            compact["hours"] = row.get("hours")
-        else:
-            compact["start"] = row.get("long_shutdown_start")
-            compact["end"] = row.get("long_shutdown_end")
 
         code = row.get("downtime_code")
         if code:
@@ -705,7 +610,7 @@ class ShutdownClient:
         return compact
 
     @staticmethod
-    def _long_shutdown_overlap_hours(
+    def _shutdown_overlap_hours(
         row: dict[str, Any],
         range_start: datetime,
         range_end: datetime,
@@ -734,10 +639,6 @@ class ShutdownClient:
                     code, "Unknown" if code == "UNKNOWN" else code
                 ),
                 "event_count": 0,
-                "short_count": 0,
-                "long_count": 0,
-                "short_hours": 0.0,
-                "long_overlap_hours": 0.0,
                 "total_hours": 0.0,
             }
         return cause_map[code]
@@ -767,11 +668,10 @@ class UnavailableShutdownClient:
         site_id: int,
         start_date: str,
         end_date: str,
-        shutdown_type: str = "all",
     ) -> dict[str, Any]:
         raise ShutdownClientError(self.reason)
 
-    def get_current_long_shutdowns(
+    def get_current_shutdowns(
         self, site_id: int, as_of_date: str | None = None
     ) -> dict[str, Any]:
         raise ShutdownClientError(self.reason)
@@ -781,7 +681,6 @@ class UnavailableShutdownClient:
         site_id: int,
         start_date: str,
         end_date: str,
-        shutdown_type: str = "all",
     ) -> dict[str, Any]:
         raise ShutdownClientError(self.reason)
 

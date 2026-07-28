@@ -235,26 +235,15 @@ class WellTimelineClient:
         end_time = datetime.combine(end_day, time.min) + timedelta(days=1)
         query = text(
             """
-            SELECT date, hours, long_shutdown, long_shutdown_start,
-                long_shutdown_end, downtime_code, comments
+            SELECT `start` AS start, `end` AS end, downtime_code, comments
             FROM well_shutdowns
             WHERE well_id = :well_id
+                AND `start` < :end_time
                 AND (
-                    (
-                        long_shutdown = 0
-                        AND date >= :start_date
-                        AND date <= :end_date
-                    )
-                    OR (
-                        long_shutdown = 1
-                        AND long_shutdown_start < :end_time
-                        AND (
-                            long_shutdown_end IS NULL
-                            OR long_shutdown_end >= :start_time
-                        )
-                    )
+                    `end` IS NULL
+                    OR `end` >= :start_time
                 )
-            ORDER BY COALESCE(long_shutdown_start, date)
+            ORDER BY `start`
             LIMIT :limit
             """
         )
@@ -262,31 +251,21 @@ class WellTimelineClient:
         for row in self._execute(
             query,
             well_id=well_id,
-            start_date=start_day,
-            end_date=end_day,
             start_time=start_time,
             end_time=end_time,
         ):
-            is_long = bool(row["long_shutdown"])
             code = row.get("downtime_code")
             details = {
-                "type": "long" if is_long else "short",
                 "downtime_code": code,
                 "downtime_reason": DOWNTIME_CODES.get(code, code) if code else None,
                 "comments": row.get("comments"),
+                "start": row.get("start"),
+                "end": row.get("end"),
             }
-            if is_long:
-                event_time = row["long_shutdown_start"]
-                details["start"] = row.get("long_shutdown_start")
-                details["end"] = row.get("long_shutdown_end")
-            else:
-                event_time = row["date"]
-                details["date"] = row.get("date")
-                details["hours"] = row.get("hours")
 
             events.append(
                 self._event(
-                    event_time,
+                    row["start"],
                     "shutdown",
                     "Well shutdown",
                     {k: v for k, v in details.items() if v is not None},

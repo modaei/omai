@@ -13,8 +13,7 @@ def test_search_finds_well_shutdown_guidance():
 
     assert result["count"] >= 1
     assert result["matches"][0]["capability"] == "Capability: Well Shutdowns"
-    assert "hourly shutdowns" in result["matches"][0]["summary"]
-    assert "long shutdowns" in result["matches"][0]["summary"]
+    assert "shutdowns" in result["matches"][0]["summary"]
 
 
 def test_search_finds_production_allocation_guidance():

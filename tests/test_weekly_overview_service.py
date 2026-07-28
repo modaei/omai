@@ -36,21 +36,18 @@ class FakeReportClient:
 
 
 class FakeShutdownClient:
-    def get_shutdowns(self, site_id, start_date, end_date, shutdown_type):
+    def get_shutdowns(self, site_id, start_date, end_date):
         return {
-            "short_count": 2,
-            "long_count": 1,
-            "short_total_hours": 18,
-            "short_shutdowns": [
+            "count": 2,
+            "total_hours": 30,
+            "shutdowns": [
                 {
                     "well": "Well - HDU 1",
-                    "date": start_date,
-                    "hours": 12,
+                    "start": start_date,
+                    "end": end_date,
                     "downtime_code": "ESP",
                     "comments": "Well pumped off",
-                }
-            ],
-            "long_shutdowns": [
+                },
                 {
                     "well": "Well - HDU 2",
                     "start": start_date,
@@ -60,7 +57,7 @@ class FakeShutdownClient:
             ],
         }
 
-    def summarize_shutdown_causes(self, site_id, start_date, end_date, shutdown_type):
+    def summarize_shutdown_causes(self, site_id, start_date, end_date):
         return {
             "main_cause": {
                 "downtime_code": "ESP",
@@ -128,8 +125,8 @@ def test_generate_weekly_overview_builds_weekly_and_month_context():
         "end_date": "2026-07-01",
     }
     assert model.payload["month_comparison"] is not None
-    assert model.payload["shutdowns"]["short_total_hours"] == 18
-    assert model.payload["shutdowns"]["new_long_shutdowns"][0]["well"] == "Well - HDU 2"
+    assert model.payload["shutdowns"]["total_hours"] == 30
+    assert model.payload["shutdowns"]["new_shutdowns"][0]["well"] == "Well - HDU 1"
     assert model.payload["shutdowns"]["common_shutdown_comments"][0]["comment"] == "Well pumped off"
     assert model.payload["operational_context"][0]["source_type"] == "general_note"
     assert set(model.payload["weekly_report_comparisons"]) == {"oil_production", "oil_sale"}
@@ -138,11 +135,10 @@ def test_generate_weekly_overview_builds_weekly_and_month_context():
     assert model.payload["executive_snapshot"]["oil_production"]["current_total"] == 220
     assert model.payload["executive_snapshot"]["oil_sale"]["current_total"] == 180
     assert model.payload["executive_snapshot"]["shutdown_summary"] == {
-        "hourly_shutdown_count": 2,
-        "hourly_shutdown_hours": 18,
-        "long_shutdown_count": 1,
-        "new_long_shutdown_count": 1,
-        "reactivated_long_shutdown_count": 0,
+        "shutdown_count": 2,
+        "shutdown_hours": 30,
+        "new_shutdown_count": 2,
+        "ended_shutdown_count": 1,
         "main_cause": {
             "downtime_code": "ESP",
             "downtime_reason": "ESP Downhole Problems",
@@ -160,7 +156,7 @@ def test_generate_weekly_overview_builds_weekly_and_month_context():
         "comment": "Well pumped off",
         "count": 1,
     }
-    assert {"type": "new_long_shutdowns", "count": 1} in model.payload["exceptions"]
+    assert {"type": "new_shutdowns", "count": 2} in model.payload["exceptions"]
     assert any(
         item.get("type") == "production_sales_gap"
         for item in model.payload["exceptions"]

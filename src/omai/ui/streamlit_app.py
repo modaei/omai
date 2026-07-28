@@ -107,7 +107,7 @@ def main() -> None:
             "- Compare linear tank readings on 2026-06-09 and 2026-06-10.\n"
             "- Which water plant readings are missing for 2026-06-10?\n"
             "- Show well shutdowns from 2026-05-01 to 2026-05-10.\n"
-            "- Which wells are currently on long shutdown?\n"
+            "- Which wells are currently on shutdown?\n"
             "- Build a timeline for Well 11-1-1 Oil from 2026-05-01 to 2026-05-10.\n"
             "- A well is down. How can I register that?\n"
             "- How can I know how much Well 6243 contributed to oil production?\n"

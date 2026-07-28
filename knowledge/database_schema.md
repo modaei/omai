@@ -321,16 +321,14 @@ ONRR code status:
 
 Common shutdown columns:
 
-- `well_shutdowns.date`
-- `well_shutdowns.hours`
-- `well_shutdowns.long_shutdown`
-- `well_shutdowns.long_shutdown_start`
-- `well_shutdowns.long_shutdown_end`
+- `well_shutdowns.start`
+- `well_shutdowns.end`
 - `well_shutdowns.downtime_code`
 - `well_shutdowns.comments`
 
-For "total shutdown hours", sum `well_shutdowns.hours` and group by
-`wells.name`.
+For "total shutdown hours", compute the overlap between
+`well_shutdowns.start`/`well_shutdowns.end` and the requested
+date range, then group by `wells.name` or `well_shutdowns.downtime_code`.
 
 For shutdown reason aggregations, group by `well_shutdowns.downtime_code`.
 There is no `shutdown_codes` table in the curated SQL allowlist.
@@ -472,14 +470,14 @@ WHERE work_orders.site_id = :site_id
 The exact available columns should still be validated by the SQL tool before
 execution, but the current operational conventions are:
 
-- Daily notes and shutdowns often use `date`.
+- Daily notes often use `date`.
+- Shutdowns use `start` and `end`.
 - Reading and work-order records often use `time`.
 - Alarm events often use `happened_on`.
 - Alarm logs commonly use `created_at`; they do not normally have
   `alarm_date`, `alarm_time`, or `happened_on` columns.
 - Current data-point values are stored in `data_point_data.data` as JSON, with
   `data_point_data.last_update` as an epoch timestamp.
-- Long shutdowns use `long_shutdown_start` and `long_shutdown_end`.
 - Well history uses `changed_at`.
 - Standard Laravel tables may have `created_at` and `updated_at`.
 

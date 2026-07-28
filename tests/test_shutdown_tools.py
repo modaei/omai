@@ -4,31 +4,28 @@ from omai.tools.shutdown_tools import build_shutdown_tools
 
 
 class FakeShutdownClient:
-    def summarize_shutdown_causes(self, site_id, start_date, end_date, shutdown_type):
+    def summarize_shutdown_causes(self, site_id, start_date, end_date):
         return {
             "site_id": site_id,
             "start_date": start_date,
             "end_date": end_date,
-            "shutdown_type": shutdown_type,
             "main_cause": {"downtime_reason": "Paraffin"},
             "causes": [],
         }
 
-    def get_shutdowns(self, site_id, start_date, end_date, shutdown_type):
+    def get_shutdowns(self, site_id, start_date, end_date):
         return {
             "site_id": site_id,
             "start_date": start_date,
             "end_date": end_date,
-            "shutdown_type": shutdown_type,
-            "short_shutdowns": [],
-            "long_shutdowns": [],
+            "shutdowns": [],
         }
 
-    def get_current_long_shutdowns(self, site_id, as_of_date=None):
+    def get_current_shutdowns(self, site_id, as_of_date=None):
         return {
             "site_id": site_id,
             "as_of_date": as_of_date or "2026-06-24",
-            "long_shutdowns": [],
+            "shutdowns": [],
         }
 
     def get_active_wells(self, site_id, active_date):
@@ -113,7 +110,6 @@ def test_summarize_shutdown_causes_tool_adds_operational_context():
             {
                 "start_date": "2026-05-01",
                 "end_date": "2026-05-31",
-                "shutdown_type": "all",
             }
         )
     )
