@@ -241,26 +241,26 @@ def test_list_downtime_codes():
     assert result["downtime_codes"]["PRF"] == DOWNTIME_CODES["PRF"]
 
 
-def test_get_active_wells_uses_onrr_state_and_shutdown_rules():
+def test_get_active_wells_uses_only_onrr_state():
     result = make_shutdown_client().get_active_wells(1, "2026-06-21")
 
-    assert result["active_count"] == 3
+    assert result["active_count"] == 6
     assert [row["well"] for row in result["active_wells"]] == [
         "Well - 11-1-1 Oil",
+        "Well - 12-2-1 Oil",
+        "Well - 14-4-1 Oil",
         "Well - 15-5-1 Oil",
+        "Well - 16-6-1 Oil",
         "Well - 17-7-1 Injection",
     ]
-    assert result["inactive_count"] == 3
+    assert result["inactive_count"] == 1
     assert [row["well"] for row in result["inactive_wells"]] == [
-        "Well - 12-2-1 Oil",
         "Well - 13-3-1 Oil",
-        "Well - 14-4-1 Oil",
     ]
-    assert result["partial_shutdown_count"] == 1
-    assert result["partial_shutdown_wells"][0]["well"] == "Well - 16-6-1 Oil"
-    assert result["partial_shutdown_wells"][0]["long_shutdown_hours"] == 6.0
-    assert result["partial_shutdown_well_names"] == ["Well - 16-6-1 Oil"]
-    assert result["partial_shutdown_summary"] == "Partial shutdown wells: Well - 16-6-1 Oil"
+    assert "partial_shutdown_count" not in result
+    assert result["rules"]["active_well_rule"] == (
+        "Active wells must have active_well=true on the ONRR code as of that day."
+    )
 
 
 def test_get_active_wells_uses_current_onrr_when_no_history_exists():
@@ -287,6 +287,12 @@ def test_get_producing_wells_excludes_onrr_injection_wells():
     assert injection_well["onrr_code"] == "INJ"
     assert injection_well["onrr_code_description"] == "Active injection well"
     assert injection_well["onrr_injection_well"] is True
+    full_day_shutdown_well = next(
+        row
+        for row in result["non_producing_wells"]
+        if row["well"] == "Well - 12-2-1 Oil"
+    )
+    assert full_day_shutdown_well["status"] == "full_day_shutdown"
 
 
 def test_get_producing_wells_filters_by_battery_before_classification():

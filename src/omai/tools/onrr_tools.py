@@ -128,7 +128,10 @@ def build_onrr_tools(client: OnrrClient, site_id: int) -> list[StructuredTool]:
             description=(
                 "Count wells by ONRR-derived status as of a date. Use this for "
                 "questions about ONRR-only active, producing, injection, or "
-                "inactive well counts when shutdown state is not requested."
+                "inactive well counts when shutdown state and other operational "
+                "conditions are not requested. Do not use this as the only tool for "
+                "questions that combine status with shutdowns, alarms, readings, "
+                "tests, reports, production, tanks, or work orders."
             ),
             args_schema=CountWellsByOnrrStatusInput,
         ),

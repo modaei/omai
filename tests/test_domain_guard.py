@@ -13,6 +13,10 @@ def test_accepts_oilfield_report_question():
     assert is_in_domain("How much gas was flared in May?") is True
 
 
+def test_accepts_data_point_trend_question():
+    assert is_in_domain("analyze stroke length trend of 2510 in June") is True
+
+
 def test_accepts_bare_numeric_well_status_question():
     assert is_in_domain("Why is 5248 down?") is True
     assert is_in_domain("Is 6243 shut in?") is True

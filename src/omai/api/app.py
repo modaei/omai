@@ -3,14 +3,20 @@ from __future__ import annotations
 import logging
 import json
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from threading import BoundedSemaphore
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from omai.api.schemas import ChatRequest, ChatResponse, RodPumpHealthReportRequest
+from omai.api.schemas import (
+    ChatRequest,
+    ChatResponse,
+    RodPumpHealthReportRequest,
+    WeeklyOverviewRequest,
+    WeeklyOverviewResponse,
+)
 from omai.clients.rod_pump_analysis_client import RodPumpAnalysisClient
 from omai.repositories.conversation_repository import (
     ConversationNotFoundError,
@@ -25,6 +31,7 @@ from omai.config.logging import configure_logging
 from omai.config.settings import Settings
 from omai.services.chat_service import answer_chat
 from omai.services.domain_guard import OUT_OF_DOMAIN_RESPONSE, is_in_domain
+from omai.services.weekly_overview_service import generate_weekly_overview
 from omai.ui.rag_sources import extract_rag_sources
 
 
@@ -40,6 +47,10 @@ RodPumpReportHandler = Callable[
     [Settings, int, str | None, list[int] | None],
     dict[str, Any],
 ]
+WeeklyOverviewHandler = Callable[
+    [Settings, int, str, str],
+    dict[str, str],
+]
 
 
 def create_app(
@@ -48,6 +59,7 @@ def create_app(
     conversation_repository: ConversationRepository | None = None,
     daily_usage_repository: DailyUsageRepository | None = None,
     rod_pump_report_handler: RodPumpReportHandler | None = None,
+    weekly_overview_handler: WeeklyOverviewHandler | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
     configure_logging(settings.log_level)
@@ -59,8 +71,12 @@ def create_app(
     app.state.rod_pump_report_handler = (
         rod_pump_report_handler or _run_rod_pump_health_report
     )
+    app.state.weekly_overview_handler = (
+        weekly_overview_handler or _run_weekly_overview
+    )
     app.state.chat_slots = BoundedSemaphore(settings.omai_max_concurrent)
     app.state.rod_pump_report_slots = BoundedSemaphore(1)
+    app.state.weekly_overview_slots = BoundedSemaphore(1)
 
     @app.middleware("http")
     async def allow_only_localhost(request: Request, call_next):
@@ -202,6 +218,35 @@ def create_app(
         finally:
             app.state.rod_pump_report_slots.release()
 
+    @app.post("/weekly-overview", response_model=WeeklyOverviewResponse)
+    def weekly_overview(payload: WeeklyOverviewRequest) -> WeeklyOverviewResponse:
+        """Generate the scheduled weekly email overview without chat state."""
+        if not app.state.weekly_overview_slots.acquire(
+            timeout=settings.omai_slot_timeout
+        ):
+            raise HTTPException(
+                status_code=503,
+                detail="A weekly overview is already running",
+            )
+        try:
+            result = app.state.weekly_overview_handler(
+                settings,
+                payload.site_id,
+                payload.start_date.isoformat(),
+                payload.end_date.isoformat(),
+            )
+            return WeeklyOverviewResponse.model_validate(result)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            logger.exception("Weekly overview failed")
+            raise HTTPException(
+                status_code=503,
+                detail="Weekly overview failed",
+            ) from exc
+        finally:
+            app.state.weekly_overview_slots.release()
+
     return app
 
 
@@ -216,6 +261,20 @@ def _run_rod_pump_health_report(
         site_id,
         as_of_time,
         well_ids=well_ids,
+    )
+
+
+def _run_weekly_overview(
+    settings: Settings,
+    site_id: int,
+    start_date: str,
+    end_date: str,
+) -> dict[str, str]:
+    return generate_weekly_overview(
+        settings,
+        site_id,
+        date.fromisoformat(start_date),
+        date.fromisoformat(end_date),
     )
 
 

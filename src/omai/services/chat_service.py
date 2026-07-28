@@ -12,8 +12,12 @@ from omai.agents.chat_agent import (
     build_model,
     reasoning_effort_for_response_mode,
 )
-from omai.agents.data_point_graph import try_answer_data_point_value_question
+from omai.agents.data_point_graph import (
+    try_answer_data_point_trend_question,
+    try_answer_data_point_value_question,
+)
 from omai.agents.navigation_router import try_answer_navigation_request
+from omai.agents.onrr_status_graph import try_answer_onrr_status_question
 from omai.agents.producing_wells_graph import (
     prepare_well_population_dependency,
     try_answer_producing_well_question,
@@ -206,6 +210,14 @@ def answer_chat(
     )
     if navigation_answer is not None:
         return navigation_answer
+    onrr_status_answer = try_answer_onrr_status_question(
+        tools=tools,
+        question=question,
+        history=history,
+        today=effective_today,
+    )
+    if onrr_status_answer is not None:
+        return onrr_status_answer
     deterministic_answer = try_answer_producing_well_question(
         tools=tools,
         question=question,
@@ -214,6 +226,13 @@ def answer_chat(
     )
     if deterministic_answer is not None:
         return deterministic_answer
+    data_point_trend_answer = try_answer_data_point_trend_question(
+        tools=tools,
+        question=question,
+        today=effective_today,
+    )
+    if data_point_trend_answer is not None:
+        return data_point_trend_answer
     data_point_answer = try_answer_data_point_value_question(
         tools=tools,
         question=question,
