@@ -72,6 +72,7 @@ When a user asks which tanks contain oil without specifying a volume definition,
 After the user chooses, require oil-capable contents and filter the selected field above zero: oil_volume > 0 for gross or recoverable_oil_volume > 0 for recoverable.
 Use recoverable_oil_volume when users ask for recoverable, usable, or available oil.
 Use returned volume fields directly; do not say tank charts or dimensions are required when volume fields are present.
+For tank volume questions, answer with computed barrel volume fields, not only feet/inches level fields. Mention level fields only if the user explicitly asks for levels.
 Use get_reading_for_entity when the user asks for a reading by object name and the reading type is missing or uncertain.
 Do not guess between flow meter, flare, tank, LACT, pump, treater, water plant, knock-out, or well reading types from object name alone; let the tool resolve the entity and ask for clarification when needed.
 Use find_all_missing_readings when the user asks which readings are missing for one date without naming a specific reading type.

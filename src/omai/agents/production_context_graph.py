@@ -25,6 +25,7 @@ def prepare_production_context_dependency(
     *,
     tools: list[BaseTool],
     question: str,
+    history: list[dict[str, str]] | None = None,
     site_id: int,
     today: date | None = None,
     reading_client: Any | None = None,
@@ -33,6 +34,12 @@ def prepare_production_context_dependency(
 ) -> ProductionContextDependency | None:
     """Prefetch report trend and notes for production variation/reason questions."""
     route = _classify_production_context(question, today=today)
+    if route is None:
+        route = _classify_production_context_follow_up(
+            question,
+            history or [],
+            today=today,
+        )
     if route is None:
         return None
     tool_map = {tool.name: tool for tool in tools}
@@ -179,6 +186,87 @@ def _classify_production_context(
             "limit": 10,
         },
     }
+
+
+def _classify_production_context_follow_up(
+    question: str,
+    history: list[dict[str, str]],
+    today: date | None = None,
+) -> dict[str, Any] | None:
+    """Resolve short reason follow-ups from recent production comparison turns."""
+    normalized_question = " ".join(question.lower().split())
+    if not _is_reason_follow_up(normalized_question):
+        return None
+
+    for item in reversed(history[-8:]):
+        content = str(item.get("content") or "")
+        expanded_question = _production_context_question_from_history(
+            content,
+            today=today,
+        )
+        if expanded_question:
+            return _classify_production_context(expanded_question, today=today)
+    return None
+
+
+def _is_reason_follow_up(text: str) -> bool:
+    """Return whether a short message is asking for the cause of prior context."""
+    return bool(
+        re.fullmatch(
+            r"(?:why|why\?|what caused (?:it|that|this)\??|"
+            r"what was the reason\??|explain(?: that| it| this)?\??|"
+            r"reason\??|cause\??)",
+            text,
+        )
+    )
+
+
+def _production_context_question_from_history(
+    content: str,
+    today: date | None = None,
+) -> str | None:
+    """Build a self-contained reason question from a prior comparison message."""
+    normalized = " ".join(content.lower().split())
+    if not re.search(r"\bbattery\s+([a-z0-9_-]+)\b", normalized):
+        return None
+    if not re.search(r"\b(oil production|produced|production)\b", normalized):
+        return None
+
+    battery_match = re.search(r"\bbattery\s+([a-z0-9_-]+)\b", normalized)
+    month_pair = _month_pair_from_history(normalized)
+    if battery_match is None or month_pair is None:
+        return None
+
+    year = _year_from_history(normalized, today=today)
+    battery_name = _battery_name(battery_match.group(1))
+    return (
+        f"Why did {battery_name} oil production change in "
+        f"{_month_name(month_pair[0])} than in {_month_name(month_pair[1])} {year}?"
+    )
+
+
+def _month_pair_from_history(text: str) -> tuple[int, int] | None:
+    """Extract two compared months from user or assistant history text."""
+    direct_pair = _month_pair(text)
+    if direct_pair is not None:
+        return direct_pair
+
+    month_names = []
+    for match in re.finditer(r"\b(" + "|".join(MONTHS) + r")\b", text):
+        month = MONTHS[match.group(1)]
+        if month not in month_names:
+            month_names.append(month)
+        if len(month_names) == 2:
+            return month_names[0], month_names[1]
+    return None
+
+
+def _year_from_history(text: str, today: date | None = None) -> int:
+    """Resolve the comparison year from history, falling back to current year."""
+    year_match = re.search(r"\b(20\d{2})\b", text)
+    if year_match:
+        return int(year_match.group(1))
+    return (today or date.today()).year
 
 
 def _battery_name(value: str) -> str:

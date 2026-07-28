@@ -181,6 +181,72 @@ def test_prefetches_month_comparison_reason_with_inferred_year():
     assert context["focus_periods"] == ["2026-06", "2026-05"]
 
 
+def test_short_reason_follow_up_uses_previous_battery_comparison():
+    calls = []
+
+    dependency = prepare_production_context_dependency(
+        tools=make_tools(calls),
+        question="why?",
+        history=[
+            {
+                "role": "user",
+                "content": "Compare Battery 6 oil production in June and May 2026",
+            },
+            {
+                "role": "assistant",
+                "content": (
+                    "Battery 6 produced 3,849.36 bbl in June 2026 and "
+                    "4,165.64 bbl in May 2026. June was down 7.6%."
+                ),
+            },
+        ],
+        site_id=4,
+        today=date(2026, 7, 10),
+        reading_client=FakeReadingClient(),
+        well_filter_client=FakeWellFilterClient(),
+    )
+
+    assert dependency is not None
+    assert calls[0] == (
+        "summarize_report_by_month",
+        {
+            "report_name": "oil_production",
+            "year": 2026,
+            "battery_name": "Battery 6",
+            "value_key": None,
+        },
+    )
+    searched_entities = [
+        arguments["entity_name"]
+        for tool_name, arguments in calls
+        if tool_name == "search_operational_context"
+    ]
+    assert searched_entities == [
+        "Battery 6",
+        "HARTZOG DRAW UNIT 4048",
+        "HARTZOG DRAW UNIT 5823",
+        "5-2 Float Over",
+        "Battery 6 Pump",
+    ]
+    context = json.loads(dependency["context"])
+    assert context["focus_periods"] == ["2026-06", "2026-05"]
+
+
+def test_short_reason_follow_up_without_production_history_does_not_prefetch():
+    dependency = prepare_production_context_dependency(
+        tools=make_tools([]),
+        question="why?",
+        history=[
+            {"role": "user", "content": "How old is Paris?"},
+            {"role": "assistant", "content": "I can only help with Ometrics."},
+        ],
+        site_id=4,
+        today=date(2026, 7, 10),
+    )
+
+    assert dependency is None
+
+
 def test_filters_operational_context_to_verified_battery_scope():
     calls = []
     matches_by_entity = {

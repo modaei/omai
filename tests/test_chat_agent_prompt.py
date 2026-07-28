@@ -328,6 +328,7 @@ def test_system_prompt_uses_supplied_current_date():
     assert "oil_volume" in system_prompt
     assert "report both oil_volume (gross oil) and recoverable_oil_volume" in system_prompt
     assert "report both totals" in system_prompt
+    assert "not only feet/inches level fields" in system_prompt
     assert "ask whether to use gross oil volume or recoverable oil volume" in system_prompt
     assert "contents is oil or water-oil" in system_prompt
     assert "never classify a water tank as containing oil" in system_prompt

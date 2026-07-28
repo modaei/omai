@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
@@ -1424,19 +1425,23 @@ class ReadingClient:
         day = self._parse_date(reading_date) if reading_date else None
         reading_types = self._resolution_reading_types(reading_type)
         candidates: list[dict[str, Any]] = []
+        entity_name_variants = _entity_name_lookup_variants(
+            normalized_name, reading_type
+        )
         for candidate_reading_type in reading_types:
             definition = self._definition(candidate_reading_type)
-            for row in self._matching_entities(
-                site_id, definition, normalized_name
-            ):
-                candidate = self._entity_candidate(
-                    candidate_reading_type, definition, row
-                )
-                if day is not None:
-                    candidate["has_reading"] = self._entity_has_reading(
-                        site_id, definition, int(row["entity_id"]), day
+            for lookup_name in entity_name_variants:
+                for row in self._matching_entities(
+                    site_id, definition, lookup_name
+                ):
+                    candidate = self._entity_candidate(
+                        candidate_reading_type, definition, row
                     )
-                candidates.append(candidate)
+                    if day is not None:
+                        candidate["has_reading"] = self._entity_has_reading(
+                            site_id, definition, int(row["entity_id"]), day
+                        )
+                    candidates.append(candidate)
 
         candidates = self._deduplicate_candidates(candidates)
         candidates.sort(
@@ -1751,8 +1756,14 @@ class ReadingClient:
                 )
                 params["battery_name"] = battery_reference["pattern"]
         if tank_name:
-            conditions.append("LOWER(t.name) LIKE LOWER(:tank_name)")
-            params["tank_name"] = f"%{tank_name}%"
+            name_conditions = []
+            for index, lookup_name in enumerate(
+                _entity_name_lookup_variants(tank_name, "tank")
+            ):
+                param_name = f"tank_name_{index}"
+                name_conditions.append(f"LOWER(t.name) LIKE LOWER(:{param_name})")
+                params[param_name] = f"%{lookup_name}%"
+            conditions.append(f"({' OR '.join(name_conditions)})")
         if tank_key:
             conditions.append("LOWER(t.`key`) LIKE LOWER(:tank_key)")
             params["tank_key"] = f"%{tank_key}%"
@@ -1829,8 +1840,14 @@ class ReadingClient:
         if battery_name:
             _append_battery_condition(conditions, params, battery_name)
         if entity_name:
-            conditions.append("LOWER(b.name) LIKE LOWER(:entity_name)")
-            params["entity_name"] = f"%{entity_name}%"
+            name_conditions = []
+            for index, lookup_name in enumerate(
+                _entity_name_lookup_variants(entity_name, reading_type)
+            ):
+                param_name = f"entity_name_{index}"
+                name_conditions.append(f"LOWER(b.name) LIKE LOWER(:{param_name})")
+                params[param_name] = f"%{lookup_name}%"
+            conditions.append(f"({' OR '.join(name_conditions)})")
         if entity_key:
             if not self._table_has_column(definition.base_table, "key"):
                 raise ReadingClientError(
@@ -2477,6 +2494,73 @@ def _is_number(value: Any) -> bool:
 
 def _normalize_entity_match_value(value: Any) -> str:
     return " ".join(str(value or "").lower().split())
+
+
+def _entity_name_lookup_variants(entity_name: str, reading_type: str | None) -> list[str]:
+    """Return safe lookup variants for entity names copied from assistant output.
+
+    Reading responses use display names such as "Tank - 10-1 Oil", but the
+    underlying equipment table stores only "10-1 Oil". Users often reuse the
+    displayed text in a follow-up command, so resolution should try the stored
+    form as well as the literal user input.
+    """
+    variants = [entity_name.strip()]
+    stripped = _strip_entity_display_prefix(entity_name, reading_type)
+    if stripped and stripped not in variants:
+        variants.append(stripped)
+    return variants
+
+
+def _strip_entity_display_prefix(entity_name: str, reading_type: str | None) -> str | None:
+    """Remove known equipment display prefixes from a user-supplied name."""
+    prefixes = _entity_display_prefixes_for_reading_type(reading_type)
+    if not prefixes:
+        return None
+
+    prefix_pattern = "|".join(
+        re.escape(prefix) for prefix in sorted(prefixes, key=len, reverse=True)
+    )
+    match = re.match(
+        rf"^\s*(?:{prefix_pattern})\s*(?:-\s*)?(.+?)\s*$",
+        entity_name,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+
+    stripped = match.group(1).strip()
+    return stripped if stripped and stripped != entity_name.strip() else None
+
+
+def _entity_display_prefixes_for_reading_type(reading_type: str | None) -> set[str]:
+    """Map reading type hints to the UI prefixes that may appear in answers."""
+    if reading_type is None:
+        return {
+            "Flare",
+            "Flow Meter",
+            "Knock Out",
+            "LACT",
+            "Pump",
+            "Tank",
+            "Treater",
+            "Water Plant",
+            "Well",
+        }
+    if reading_type in {"tank", "linear_tank", "mixed_tank", "non_linear_tank"}:
+        return {"Tank"}
+
+    return {
+        "flare": {"Flare"},
+        "flow_meter": {"Flow Meter"},
+        "knock_out": {"Knock Out"},
+        "lact": {"LACT"},
+        "pump": {"Pump"},
+        "treater": {"Treater"},
+        "water_plant": {"Water Plant"},
+        "well_fluid": {"Well"},
+        "well_injection": {"Well"},
+        "well_test": {"Well"},
+    }.get(reading_type, set())
 
 
 def _entity_match_rank(row: dict[str, Any], normalized_query: str) -> int:

@@ -258,6 +258,7 @@ def answer_chat(
     production_context_dependency = prepare_production_context_dependency(
         tools=tools,
         question=question,
+        history=history,
         site_id=site_id,
         today=effective_today,
         reading_client=reading_client,

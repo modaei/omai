@@ -1362,6 +1362,46 @@ def test_search_tank_readings_filters_recoverable_oil_volume():
     assert result["readings"][0]["recoverable_oil_volume"] == 250.0
 
 
+def test_search_tank_readings_accepts_display_prefixed_tank_name():
+    result = make_tank_volume_client().search_tank_readings(
+        1,
+        start_date="2026-06-10",
+        end_date="2026-06-10",
+        tank_name="Tank Linear B",
+    )
+
+    assert result["count"] == 1
+    assert result["readings"][0]["tank_name"] == "Linear B"
+    assert result["readings"][0]["oil_volume"] == 140.0
+
+
+def test_search_tank_readings_accepts_dash_display_prefixed_tank_name():
+    result = make_tank_volume_client().search_tank_readings(
+        1,
+        start_date="2026-06-10",
+        end_date="2026-06-10",
+        tank_name="Tank - Mixed A",
+    )
+
+    assert result["count"] == 1
+    assert result["readings"][0]["tank_name"] == "Mixed A"
+    assert result["readings"][0]["oil_volume"] == 300.0
+
+
+def test_search_equipment_readings_accepts_display_prefixed_tank_name():
+    result = make_tank_volume_client().search_equipment_readings(
+        1,
+        "tank",
+        start_date="2026-06-10",
+        end_date="2026-06-10",
+        entity_name="Tank - Mixed A",
+    )
+
+    assert result["count"] == 1
+    assert result["readings"][0]["entity_name"] == "Mixed A"
+    assert result["readings"][0]["oil_volume"] == 300.0
+
+
 def test_compare_readings_between_dates_returns_entity_summary():
     result = make_sqlite_client().compare_readings_between_dates(
         1, "lact", "2026-06-10", "2026-06-11"
@@ -1821,6 +1861,38 @@ def test_resolve_reading_entity_maps_tank_type_to_specific_reading_type():
     assert result["candidates"][0]["reading_type"] == "mixed_tank"
     assert result["candidates"][0]["entity_display_name"] == "Tank - 11-1-1 Oil"
     assert result["candidates"][0]["has_reading"] is True
+
+
+def test_resolve_reading_entity_strips_tank_display_prefix():
+    result = make_entity_resolution_client().resolve_reading_entity(
+        1, "Tank 10-1 Oil", "2026-06-01", "tank"
+    )
+
+    assert result["count"] == 1
+    assert result["candidates"][0]["reading_type"] == "linear_tank"
+    assert result["candidates"][0]["entity_display_name"] == "Tank - 10-1 Oil"
+
+
+def test_resolve_reading_entity_strips_tank_dash_display_prefix():
+    result = make_entity_resolution_client().resolve_reading_entity(
+        1, "Tank - 10-1 Oil", "2026-06-01", "tank"
+    )
+
+    assert result["count"] == 1
+    assert result["candidates"][0]["reading_type"] == "linear_tank"
+    assert result["candidates"][0]["entity_display_name"] == "Tank - 10-1 Oil"
+
+
+def test_get_reading_for_entity_accepts_display_prefixed_tank_name():
+    result = make_entity_resolution_client().get_reading_for_entity(
+        1, "Tank 11-1-1 Oil", "2026-06-01", "tank"
+    )
+
+    assert result["reading_type"] == "mixed_tank"
+    assert result["count"] == 1
+    assert result["readings"][0]["entity_display_name"] == "Tank - 11-1-1 Oil"
+    assert result["readings"][0]["oil_volume"] == 700.0
+    assert result["readings"][0]["water_volume"] == 100.0
 
 
 def test_resolve_reading_entity_is_scoped_to_site():
