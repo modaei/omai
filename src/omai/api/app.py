@@ -130,7 +130,11 @@ def create_app(
                 conversation = repository.create(payload.user_id, payload.site_id)
             history = repository.load_history(conversation)
             reasoning_effort = reasoning_effort_for_response_mode(payload.response_mode)
-            if not history and not is_in_domain(payload.message):
+            if (
+                not history
+                and not settings.local_llm_enabled
+                and not is_in_domain(payload.message)
+            ):
                 repository.append_message(conversation, "user", payload.message)
                 assistant_message_id = repository.append_message(
                     conversation,

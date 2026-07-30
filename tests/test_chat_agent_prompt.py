@@ -23,6 +23,28 @@ class FakeModel:
         return AIMessage(content="Done.")
 
 
+def test_build_model_omits_reasoning_effort_when_unsupported(monkeypatch):
+    captured = {}
+
+    class FakeChatOpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr("omai.agents.chat_agent.ChatOpenAI", FakeChatOpenAI)
+
+    build_model(
+        api_key="ollama",
+        model="qwen2.5:7b",
+        base_url="http://127.0.0.1:11434/v1",
+        reasoning_effort="medium",
+        supports_reasoning_effort=False,
+    )
+
+    assert captured["api_key"] == "ollama"
+    assert captured["model"] == "qwen2.5:7b"
+    assert "reasoning_effort" not in captured
+
+
 class FakeToolModel:
     def __init__(self):
         self.calls = 0

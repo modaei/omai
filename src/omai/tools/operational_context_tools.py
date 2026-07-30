@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import date
-from typing import Any
+from typing import Any, Callable
 
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
@@ -152,6 +152,7 @@ def _is_general_work_order_query(query: str) -> bool:
 def build_operational_context_tools(
     store: VectorOperationalContextStore,
     site_id: int,
+    query_rewriter: Callable[[str], str | None] | None = None,
 ) -> list[StructuredTool]:
     """Build the LangChain tool around the vector operational-context store."""
 
@@ -173,13 +174,20 @@ def build_operational_context_tools(
             entity_name,
         )
         try:
+            rewritten_query = query_rewriter(query) if query_rewriter else None
+            search_query = _combined_query(query, rewritten_query)
             # Convert date strings here so the store receives typed date values.
             # Bad dates become structured tool errors instead of uncaught crashes.
             return _json_result(
                 {
                     "ok": True,
+                    **(
+                        {"rewritten_query": rewritten_query}
+                        if rewritten_query
+                        else {}
+                    ),
                     **store.search(
-                        query=query,
+                        query=search_query,
                         site_id=site_id,
                         start_date=_parse_tool_date(start_date),
                         end_date=_parse_tool_date(end_date),
@@ -211,3 +219,12 @@ def build_operational_context_tools(
             args_schema=SearchOperationalContextInput,
         )
     ]
+
+
+def _combined_query(original: str, rewritten: str | None) -> str:
+    """Keep the user's original query and append local rewrite terms."""
+    original = original.strip()
+    rewritten = (rewritten or "").strip()
+    if not rewritten or rewritten.lower() == original.lower():
+        return original
+    return f"{original}\n{rewritten}"

@@ -158,6 +158,21 @@ LLM_MODEL=openai/gpt-5-mini
 LLM_BASE_URL=https://openrouter.ai/api/v1
 ```
 
+Optionally configure a local OpenAI-compatible helper model. When these values
+are absent, Omai uses the main LLM for the entire chat flow as before. When they
+are present, the local model is used only for bounded helper tasks such as
+intent classification, operational-context query rewriting, simple RAG
+summaries, and safe formatting of deterministic tool results. The main model is
+still used for complex agent reasoning, SQL fallback, report explanations, and
+management summaries.
+
+```bash
+LOCAL_LLM_API_KEY=ollama
+LOCAL_LLM_MODEL=qwen2.5:7b
+LOCAL_LLM_BASE_URL=http://test.ultimatesys.com:11500/v1
+LOCAL_LLM_TIMEOUT_SECONDS=10
+```
+
 Configure the Ometrics MySQL connection for reading operational data and storing
 conversation history:
 

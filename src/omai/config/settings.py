@@ -51,6 +51,10 @@ class Settings:
     rag_embedding_model: str
     rag_embedding_dimensions: int
     log_level: str
+    local_llm_api_key: str = "ollama"
+    local_llm_model: str = ""
+    local_llm_base_url: str = ""
+    local_llm_timeout_seconds: float = 10
     monitoring_data_api_url: str = "http://metrics1.ultimatesys.com/render"
     data_point_trend_timeout_seconds: float = 20
     data_point_trend_max_data_points: int = 300
@@ -68,6 +72,12 @@ class Settings:
                 "LLM_BASE_URL",
                 os.getenv("OPENROUTER_BASE_URL", "https://api.openai.com/v1"),
             ).rstrip("/"),
+            local_llm_api_key=os.getenv("LOCAL_LLM_API_KEY", "ollama").strip(),
+            local_llm_model=os.getenv("LOCAL_LLM_MODEL", "").strip(),
+            local_llm_base_url=os.getenv("LOCAL_LLM_BASE_URL", "").rstrip("/"),
+            local_llm_timeout_seconds=float(
+                os.getenv("LOCAL_LLM_TIMEOUT_SECONDS", "10")
+            ),
             omreports_api_url=os.getenv(
                 "OMREPORTS_API_URL", "http://127.0.0.1:50008/report/"
             ).strip(),
@@ -139,6 +149,8 @@ class Settings:
     def validate(self) -> None:
         if not self.llm_api_key:
             raise ValueError("LLM_API_KEY is not configured.")
+        if self.local_llm_enabled and self.local_llm_timeout_seconds <= 0:
+            raise ValueError("LOCAL_LLM_TIMEOUT_SECONDS must be positive.")
         if self.omreports_timeout_seconds <= 0:
             raise ValueError("OMREPORTS_TIMEOUT_SECONDS must be positive.")
         if self.max_report_days <= 0:
@@ -188,6 +200,10 @@ class Settings:
         if self.log_level not in LOG_LEVELS:
             allowed = ", ".join(LOG_LEVELS)
             raise ValueError(f"LOG_LEVEL must be one of: {allowed}.")
+
+    @property
+    def local_llm_enabled(self) -> bool:
+        return bool(self.local_llm_base_url and self.local_llm_model)
 
     def validate_database(self) -> None:
         missing = []

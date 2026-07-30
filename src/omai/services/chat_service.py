@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
+import json
 import re
 from datetime import date
 from functools import lru_cache
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 from omai.agents.chat_agent import (
@@ -59,6 +61,8 @@ from omai.rag.vector_store import (
     UnavailableOperationalContextStore,
     VectorOperationalContextStore,
 )
+from omai.services.domain_guard import OUT_OF_DOMAIN_RESPONSE
+from omai.services.local_llm_service import LocalLlmService, LocalLlmUsage
 from omai.tools.capability_tools import build_capability_tools
 from omai.tools.database_schema_tools import build_database_schema_tools
 from omai.tools.data_point_tools import build_data_point_tools
@@ -95,14 +99,39 @@ def answer_chat(
     settings.validate()
     effective_today = date.fromisoformat(current_date) if current_date else date.today()
     effective_current_date = effective_today.isoformat()
+    local_usage = LocalLlmUsage()
+    local_llm = _local_llm_from_settings(settings, local_usage)
+    local_classification = (
+        local_llm.classify_request(
+            question=question,
+            history=history,
+            today=effective_current_date,
+        )
+        if local_llm
+        else None
+    )
+    if _is_confident_unrelated(local_classification):
+        return OUT_OF_DOMAIN_RESPONSE, [], _stats_with_local_usage(
+            {
+                "total_seconds": 0.0,
+                "model_seconds": 0.0,
+                "tool_seconds": 0.0,
+                "model_calls": 0,
+                "tool_calls": [],
+            },
+            local_usage,
+        )
     if is_rod_pump_fleet_question(question):
-        return ROD_PUMP_FLEET_CHAT_RESPONSE, [], {
-            "total_seconds": 0.0,
-            "model_seconds": 0.0,
-            "tool_seconds": 0.0,
-            "model_calls": 0,
-            "tool_calls": [],
-        }
+        return ROD_PUMP_FLEET_CHAT_RESPONSE, [], _stats_with_local_usage(
+            {
+                "total_seconds": 0.0,
+                "model_seconds": 0.0,
+                "tool_seconds": 0.0,
+                "model_calls": 0,
+                "tool_calls": [],
+            },
+            local_usage,
+        )
     resolved_site_name = site_name or _site_name_from_db(settings, site_id)
 
     report_client = ReportClient(
@@ -176,7 +205,19 @@ def answer_chat(
         ),
         # This tool searches the vector DB derived index for notes/comments,
         # work-order context, shutdown explanations, alarms, and history.
-        *build_operational_context_tools(operational_context_store, site_id),
+        *build_operational_context_tools(
+            operational_context_store,
+            site_id,
+            query_rewriter=(
+                lambda query: local_llm.rewrite_operational_context_query(
+                    question=query,
+                    site_name=resolved_site_name,
+                    today=effective_current_date,
+                )
+            )
+            if local_llm
+            else None,
+        ),
         *build_data_point_tools(data_point_client, site_id),
         *build_report_tools(
             report_client,
@@ -209,7 +250,12 @@ def answer_chat(
         today=effective_today,
     )
     if navigation_answer is not None:
-        return navigation_answer
+        return _maybe_format_local_answer(
+            local_llm,
+            local_usage,
+            question,
+            navigation_answer,
+        )
     onrr_status_answer = try_answer_onrr_status_question(
         tools=tools,
         question=question,
@@ -217,7 +263,7 @@ def answer_chat(
         today=effective_today,
     )
     if onrr_status_answer is not None:
-        return onrr_status_answer
+        return _maybe_format_local_answer(local_llm, local_usage, question, onrr_status_answer)
     deterministic_answer = try_answer_producing_well_question(
         tools=tools,
         question=question,
@@ -225,20 +271,20 @@ def answer_chat(
         today=effective_today,
     )
     if deterministic_answer is not None:
-        return deterministic_answer
+        return _maybe_format_local_answer(local_llm, local_usage, question, deterministic_answer)
     data_point_trend_answer = try_answer_data_point_trend_question(
         tools=tools,
         question=question,
         today=effective_today,
     )
     if data_point_trend_answer is not None:
-        return data_point_trend_answer
+        return _maybe_format_local_answer(local_llm, local_usage, question, data_point_trend_answer)
     data_point_answer = try_answer_data_point_value_question(
         tools=tools,
         question=question,
     )
     if data_point_answer is not None:
-        return data_point_answer
+        return _maybe_format_local_answer(local_llm, local_usage, question, data_point_answer)
     well_test_answer = try_answer_well_test_analysis(
         tools=tools,
         question=question,
@@ -246,7 +292,16 @@ def answer_chat(
         today=effective_today,
     )
     if well_test_answer is not None:
-        return well_test_answer
+        return _maybe_format_local_answer(local_llm, local_usage, question, well_test_answer)
+    local_rag_answer = _try_local_operational_context_answer(
+        local_llm=local_llm,
+        local_usage=local_usage,
+        tools=tools,
+        question=question,
+        classification=local_classification,
+    )
+    if local_rag_answer is not None:
+        return local_rag_answer
     dependencies = []
     population_dependency = prepare_well_population_dependency(
         tools=tools,
@@ -304,7 +359,7 @@ def answer_chat(
         today=effective_today,
     )
     if not dependencies:
-        return answer, traces, stats
+        return answer, traces, _stats_with_local_usage(stats, local_usage)
     dependency_traces = [
         trace for dependency in dependencies for trace in dependency["traces"]
     ]
@@ -314,7 +369,7 @@ def answer_chat(
     return (
         answer,
         [*dependency_traces, *traces],
-        combined_stats,
+        _stats_with_local_usage(combined_stats, local_usage),
     )
 
 
@@ -343,6 +398,172 @@ def _merge_chat_stats(
         "model_calls": first["model_calls"] + second["model_calls"],
         "tool_calls": [*first["tool_calls"], *second["tool_calls"]],
     }
+
+
+def _local_llm_from_settings(
+    settings: Settings,
+    usage: LocalLlmUsage,
+) -> LocalLlmService | None:
+    """Build the optional local helper model without provider-specific extras."""
+    if not settings.local_llm_enabled:
+        return None
+    model = build_model(
+        api_key=settings.local_llm_api_key,
+        model=settings.local_llm_model,
+        base_url=settings.local_llm_base_url,
+        timeout=settings.local_llm_timeout_seconds,
+        max_retries=0,
+        supports_reasoning_effort=False,
+    )
+    return LocalLlmService(model, usage)
+
+
+def _is_confident_unrelated(classification: dict[str, Any] | None) -> bool:
+    """Use local classification only for high-confidence out-of-domain rejection."""
+    if not classification:
+        return False
+    return bool(
+        classification.get("intent") == "unrelated"
+        and classification.get("is_ometrics_related") is False
+        and float(classification.get("confidence", 0)) >= 0.85
+    )
+
+
+def _maybe_format_local_answer(
+    local_llm: LocalLlmService | None,
+    local_usage: LocalLlmUsage,
+    question: str,
+    result: tuple[str, list[dict[str, Any]], dict[str, Any]],
+) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+    """Optionally rephrase deterministic answers while preserving trace data."""
+    answer, traces, stats = result
+    if local_llm is None or not traces:
+        return answer, traces, _stats_with_local_usage(stats, local_usage)
+
+    tool_names = {str(item.get("tool")) for item in traces if item.get("tool")}
+    formatted = None
+    if "search_ometrics_capabilities" in tool_names:
+        formatted = local_llm.format_capability_answer(
+            question=question,
+            current_answer=answer,
+            traces=traces,
+        )
+    elif tool_names <= SAFE_LOCAL_FORMATTING_TOOLS:
+        formatted = local_llm.format_safe_tool_result(
+            question=question,
+            current_answer=answer,
+            traces=traces,
+        )
+
+    if formatted:
+        answer = formatted
+    return answer, traces, _stats_with_local_usage(stats, local_usage)
+
+
+def _try_local_operational_context_answer(
+    *,
+    local_llm: LocalLlmService | None,
+    local_usage: LocalLlmUsage,
+    tools: list[Any],
+    question: str,
+    classification: dict[str, Any] | None,
+) -> tuple[str, list[dict[str, Any]], dict[str, Any]] | None:
+    """Answer simple RAG-only questions locally after bounded retrieval."""
+    if local_llm is None or not _is_simple_rag_question(question, classification):
+        return None
+    tool = next((item for item in tools if item.name == "search_operational_context"), None)
+    if tool is None:
+        return None
+
+    tool_started_at = perf_counter()
+    arguments = {"query": question, "limit": 8}
+    try:
+        raw_result = tool.invoke(arguments)
+        payload = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
+    except Exception as exc:
+        logger.info("Local RAG retrieval failed: %s", exc)
+        return None
+    tool_seconds = perf_counter() - tool_started_at
+    if not isinstance(payload, dict) or not payload.get("ok"):
+        return None
+    records = list(payload.get("matches") or [])
+    summary = local_llm.summarize_operational_context(
+        question=question,
+        records=records,
+    )
+    if not summary:
+        return None
+    traces = [{"tool": "search_operational_context", "arguments": arguments, "result": raw_result}]
+    stats = _stats_with_local_usage(
+        {
+            "total_seconds": tool_seconds,
+            "model_seconds": 0.0,
+            "tool_seconds": tool_seconds,
+            "model_calls": 0,
+            "tool_calls": [{"tool": "search_operational_context", "seconds": tool_seconds}],
+        },
+        local_usage,
+    )
+    return summary, traces, stats
+
+
+def _is_simple_rag_question(
+    question: str,
+    classification: dict[str, Any] | None,
+) -> bool:
+    if not classification:
+        return False
+    if classification.get("intent") != "operational_context_question":
+        return False
+    if float(classification.get("confidence", 0)) < 0.75:
+        return False
+    normalized = " ".join(question.lower().replace("-", " ").split())
+    if re.search(r"\bwhy|reason|cause|lower|higher|drop|increase|decrease|change\b", normalized):
+        return False
+    return bool(
+        re.search(
+            r"\b(what happened|what can you tell me|tell me about|summari[sz]e|records mention|mentions?|history|notes?)\b",
+            normalized,
+        )
+    )
+
+
+def _stats_with_local_usage(
+    stats: dict[str, Any],
+    usage: LocalLlmUsage,
+) -> dict[str, Any]:
+    """Attach local helper timing details without changing public API shape."""
+    if not usage.calls:
+        return stats
+    local_info = usage.info()
+    return {
+        **stats,
+        "total_seconds": round(
+            float(stats.get("total_seconds", 0.0))
+            + float(local_info["local_llm_seconds"]),
+            3,
+        ),
+        "local_llm": local_info,
+    }
+
+
+SAFE_LOCAL_FORMATTING_TOOLS = {
+    "get_active_wells",
+    "get_producing_wells",
+    "count_wells_by_onrr_status",
+    "get_data_point_values",
+    "analyze_data_point_trend",
+    "search_well_tests",
+    "analyze_well_tests",
+    "get_shutdowns_for_date",
+    "search_shutdowns",
+    "summarize_shutdown_causes",
+    "find_all_missing_readings",
+    "find_all_missing_readings_for_range",
+    "get_reading_for_entity",
+    "get_readings_for_date",
+    "compare_readings_between_dates",
+}
 
 
 def _site_name_from_db(settings: Settings, site_id: int) -> str | None:

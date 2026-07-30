@@ -35,6 +35,9 @@ def build_model(
     model: str,
     base_url: str,
     reasoning_effort: str | None = None,
+    timeout: float = 60,
+    max_retries: int = 2,
+    supports_reasoning_effort: bool = True,
 ) -> ChatOpenAI:
     """Create the deterministic chat model used by the Omai agent.
 
@@ -42,15 +45,17 @@ def build_model(
     base URL. `reasoning_effort` is optional because not every OpenRouter model
     supports the same reasoning controls.
     """
-    return ChatOpenAI(
-        api_key=api_key,
-        model=model,
-        base_url=base_url,
-        temperature=0,
-        timeout=60,
-        max_retries=2,
-        reasoning_effort=reasoning_effort,
-    )
+    kwargs = {
+        "api_key": api_key,
+        "model": model,
+        "base_url": base_url,
+        "temperature": 0,
+        "timeout": timeout,
+        "max_retries": max_retries,
+    }
+    if supports_reasoning_effort and reasoning_effort:
+        kwargs["reasoning_effort"] = reasoning_effort
+    return ChatOpenAI(**kwargs)
 
 
 def reasoning_effort_for_response_mode(response_mode: str) -> str:
