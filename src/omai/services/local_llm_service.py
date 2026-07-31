@@ -29,7 +29,13 @@ class LocalLlmUsage:
 
     calls: list[LocalLlmTrace] = field(default_factory=list)
 
-    def add(self, task: str, seconds: float, ok: bool, fallback_reason: str | None = None) -> None:
+    def add(
+        self,
+        task: str,
+        seconds: float,
+        ok: bool,
+        fallback_reason: str | None = None,
+    ) -> None:
         self.calls.append(
             LocalLlmTrace(
                 task=task,
@@ -66,7 +72,6 @@ class LocalLlmUsage:
                 item.fallback_reason = fallback_reason
                 return
 
-
 class LocalLlmService:
     """Bounded helper around a local OpenAI-compatible chat model.
 
@@ -78,64 +83,6 @@ class LocalLlmService:
     def __init__(self, model: ChatOpenAI, usage: LocalLlmUsage | None = None):
         self.model = model
         self.usage = usage or LocalLlmUsage()
-
-    def classify_request(
-        self,
-        *,
-        question: str,
-        history: list[dict[str, str]] | None,
-        today: str,
-    ) -> dict[str, Any] | None:
-        """Classify the request for guard/routing hints; never answer the user."""
-
-        payload = self._json_task(
-            "intent_classification",
-            system=(
-                "You classify Ometrics assistant requests. Return only compact JSON. "
-                "Do not answer the request."
-            ),
-            user={
-                "today": today,
-                "recent_history": (history or [])[-4:],
-                "allowed_intents": [
-                    "report_question",
-                    "reading_question",
-                    "shutdown_question",
-                    "data_point_question",
-                    "software_help_question",
-                    "operational_context_question",
-                    "sql_needed",
-                    "unrelated",
-                    "ambiguous",
-                ],
-                "question": question,
-                "output_schema": {
-                    "intent": "one allowed intent",
-                    "is_ometrics_related": "boolean",
-                    "confidence": "number from 0 to 1",
-                },
-            },
-        )
-        if not payload:
-            return None
-        if payload.get("intent") not in {
-            "report_question",
-            "reading_question",
-            "shutdown_question",
-            "data_point_question",
-            "software_help_question",
-            "operational_context_question",
-            "sql_needed",
-            "unrelated",
-            "ambiguous",
-        }:
-            return None
-        try:
-            payload["confidence"] = float(payload.get("confidence", 0))
-        except (TypeError, ValueError):
-            return None
-        payload["is_ometrics_related"] = bool(payload.get("is_ometrics_related"))
-        return payload
 
     def rewrite_operational_context_query(
         self,

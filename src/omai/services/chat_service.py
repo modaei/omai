@@ -61,7 +61,6 @@ from omai.rag.vector_store import (
     UnavailableOperationalContextStore,
     VectorOperationalContextStore,
 )
-from omai.services.domain_guard import OUT_OF_DOMAIN_RESPONSE
 from omai.services.local_llm_service import LocalLlmService, LocalLlmUsage
 from omai.tools.capability_tools import build_capability_tools
 from omai.tools.database_schema_tools import build_database_schema_tools
@@ -101,26 +100,6 @@ def answer_chat(
     effective_current_date = effective_today.isoformat()
     local_usage = LocalLlmUsage()
     local_llm = _local_llm_from_settings(settings, local_usage)
-    local_classification = (
-        local_llm.classify_request(
-            question=question,
-            history=history,
-            today=effective_current_date,
-        )
-        if local_llm
-        else None
-    )
-    if _is_confident_unrelated(local_classification):
-        return OUT_OF_DOMAIN_RESPONSE, [], _stats_with_local_usage(
-            {
-                "total_seconds": 0.0,
-                "model_seconds": 0.0,
-                "tool_seconds": 0.0,
-                "model_calls": 0,
-                "tool_calls": [],
-            },
-            local_usage,
-        )
     if is_rod_pump_fleet_question(question):
         return ROD_PUMP_FLEET_CHAT_RESPONSE, [], _stats_with_local_usage(
             {
@@ -298,7 +277,6 @@ def answer_chat(
         local_usage=local_usage,
         tools=tools,
         question=question,
-        classification=local_classification,
     )
     if local_rag_answer is not None:
         return local_rag_answer
@@ -418,17 +396,6 @@ def _local_llm_from_settings(
     return LocalLlmService(model, usage)
 
 
-def _is_confident_unrelated(classification: dict[str, Any] | None) -> bool:
-    """Use local classification only for high-confidence out-of-domain rejection."""
-    if not classification:
-        return False
-    return bool(
-        classification.get("intent") == "unrelated"
-        and classification.get("is_ometrics_related") is False
-        and float(classification.get("confidence", 0)) >= 0.85
-    )
-
-
 def _maybe_format_local_answer(
     local_llm: LocalLlmService | None,
     local_usage: LocalLlmUsage,
@@ -466,10 +433,9 @@ def _try_local_operational_context_answer(
     local_usage: LocalLlmUsage,
     tools: list[Any],
     question: str,
-    classification: dict[str, Any] | None,
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any]] | None:
     """Answer simple RAG-only questions locally after bounded retrieval."""
-    if local_llm is None or not _is_simple_rag_question(question, classification):
+    if local_llm is None or not _is_simple_rag_question(question):
         return None
     tool = next((item for item in tools if item.name == "search_operational_context"), None)
     if tool is None:
@@ -507,16 +473,8 @@ def _try_local_operational_context_answer(
     return summary, traces, stats
 
 
-def _is_simple_rag_question(
-    question: str,
-    classification: dict[str, Any] | None,
-) -> bool:
-    if not classification:
-        return False
-    if classification.get("intent") != "operational_context_question":
-        return False
-    if float(classification.get("confidence", 0)) < 0.75:
-        return False
+def _is_simple_rag_question(question: str) -> bool:
+    """Recognize bounded context-summary requests without an LLM classifier."""
     normalized = " ".join(question.lower().replace("-", " ").split())
     if re.search(r"\bwhy|reason|cause|lower|higher|drop|increase|decrease|change\b", normalized):
         return False

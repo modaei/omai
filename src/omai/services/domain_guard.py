@@ -174,9 +174,26 @@ def _looks_like_domain_identifier(question: str) -> bool:
     return bool(
         re.search(r"\b\d{1,2}-\d{1,2}-\d{1,2}\b", question)
         or re.search(r"\bwell\s*\d+\b", question, flags=re.IGNORECASE)
+        or _looks_like_bare_well_identifier(question)
         or _looks_like_data_point_trend_lookup(question)
         or _looks_like_operational_identifier_lookup(question)
         or _looks_like_bare_well_status_question(question, tokens)
+    )
+
+
+def _looks_like_bare_well_identifier(question: str) -> bool:
+    """Accept field identifiers even when users omit the word ``well``.
+
+    Field users routinely refer to a well by its trailing number, including in
+    report and note questions such as "production of 2535". These identifiers
+    must reach the agent so it can resolve the actual Ometrics entity.
+    """
+    return bool(
+        re.search(
+            r"\b(?:hdu[_\s-]?)?\d{3,6}[a-z]?\b",
+            question,
+            flags=re.IGNORECASE,
+        )
     )
 
 

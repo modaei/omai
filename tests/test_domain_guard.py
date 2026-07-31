@@ -29,9 +29,14 @@ def test_accepts_operational_lookup_for_numbered_entity():
     assert is_in_domain("What happened with 5144H?") is True
 
 
-def test_rejects_unrelated_bare_numeric_question():
-    assert is_in_domain("How old is 5248?") is False
-    assert is_in_domain("What is 5248 divided by 2?") is False
+def test_accepts_bare_well_identifier_without_the_word_well():
+    assert is_in_domain("Summarize notes about paraffin treatment for 5823.") is True
+    assert is_in_domain("What was the production of 2535 last month?") is True
+
+
+def test_accepts_ambiguous_bare_numeric_question_for_field_resolution():
+    assert is_in_domain("How old is 5248?") is True
+    assert is_in_domain("What is 5248 divided by 2?") is True
 
 
 def test_accepts_follow_up_when_history_is_domain_related():
