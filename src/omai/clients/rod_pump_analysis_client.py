@@ -36,6 +36,15 @@ METRICS = {
     "max_load": "Max Load Set Point",
     "min_load": "Min Load Set Point",
 }
+SAM1_METRICS = {
+    # SAM1 pump-off-controller context. These remain batched with the core
+    # diagnostics rather than adding one Graphite request per data point.
+    "percent_run": "Percent Run",
+    "yesterday_percent_run": "Yesterday Percent Run",
+    "yesterday_peak_load": "Yesterday Peak Load",
+    "yesterday_min_load": "Yesterday Min Load",
+    "stroke_min": "Stroke Rate",
+}
 SEVERITY_ORDER = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 
 
@@ -103,18 +112,20 @@ class RodPumpAnalysisClient:
         well_name: str,
         start_time: str | None = None,
         end_time: str | None = None,
+        analysis_profile: str = "generic",
     ) -> dict[str, Any]:
         """Run retrieval, feature extraction, parallel diagnostics, and fusion."""
         start, end = self._interval(start_time, end_time)
         well = self._well(site_id, well_name)
-        series, warnings = self._trend_series(well["site_key"], well["well_key"], start, end)
+        metrics = {**METRICS, **SAM1_METRICS} if analysis_profile == "sam1" else METRICS
+        series, warnings = self._trend_series(well["site_key"], well["well_key"], start, end, metrics)
         cards = self._averaged_cards(well["well_id"], start, end)
         notes = self._chart_notes(well["well_id"], end)
         # The active interval drives the report. Older data is used only to
         # determine whether current behavior is unusual for this specific well.
         baseline_start = start - timedelta(days=30)
         baseline_series, baseline_warnings = self._trend_series(
-            well["site_key"], well["well_key"], baseline_start, start
+            well["site_key"], well["well_key"], baseline_start, start, metrics
         )
         baseline_cards = self._averaged_cards(
             well["well_id"], start - timedelta(days=14), start
@@ -127,7 +138,7 @@ class RodPumpAnalysisClient:
         trends = extract_trend_features(series)
         # Rules and anomaly scoring consume the same precomputed evidence. The
         # LLM receives their fused result and is not part of this decision path.
-        rules = rule_diagnoses(trends, card_features, notes)
+        rules = rule_diagnoses(trends, card_features, notes, sam1=analysis_profile == "sam1")
         anomaly = anomaly_score(
             trends,
             card_features,
@@ -170,6 +181,7 @@ class RodPumpAnalysisClient:
         site_id: int,
         as_of_time: str | None = None,
         well_ids: list[int] | None = None,
+        analysis_profile: str = "generic",
     ) -> dict[str, Any]:
         """Analyze every site-scoped rod well and apply deterministic ordering."""
         end = self._parse_time(as_of_time) if as_of_time else datetime.now(self.timezone)
@@ -192,7 +204,10 @@ class RodPumpAnalysisClient:
         def analyze_well(well):
             name = str(well["name"])
             try:
-                result = self.analyze(site_id, name, (end - timedelta(hours=24)).isoformat(), end.isoformat())
+                args = (site_id, name, (end - timedelta(hours=24)).isoformat(), end.isoformat())
+                result = self.analyze(*args, **({"analysis_profile": "sam1"} if analysis_profile == "sam1" else {}))
+                if analysis_profile == "sam1":
+                    result = self._apply_sam1_context(result)
                 leading = result["diagnoses"][0]
                 return {
                     "well": result["well"],
@@ -212,9 +227,34 @@ class RodPumpAnalysisClient:
             "site_id": site_id,
             "as_of_time": end.isoformat(),
             "well_scope": "configured" if configured_scope else "all_rod_pump_wells",
+            "analysis_profile": analysis_profile,
             "ignored_well_ids": ignored_well_ids,
             "wells": rows,
         }
+
+    def _apply_sam1_context(self, result: dict[str, Any]) -> dict[str, Any]:
+        """Qualify a generic mechanical result for fixed-speed SAM1 control.
+
+        SAM1 state and configuration are context, never named mechanical
+        diagnoses.  A missing controller signal makes the row incomplete
+        instead of silently applying VFD assumptions.
+        """
+        status = result.get("current_status", {})
+        values = status.get("values", {}) if isinstance(status, dict) else {}
+        state = values.get("state", {}).get("value")
+        if not state:
+            result["warnings"].append("SAM1 controller state is unavailable; diagnosis is qualified.")
+        result["controller"] = {
+            "profile": "sam1_fixed_speed",
+            "state": state,
+            "pump_status": values.get("pump_status", {}).get("value"),
+            "time_in_state": values.get("elapsed_time", {}).get("value"),
+        }
+        # A controller-declared stopped/off state must not be presented as a
+        # live mechanical fault. Preserve evidence but make the outcome clear.
+        if isinstance(state, str) and any(word in state.lower() for word in ("off", "down", "stop")):
+            result["warnings"].append("SAM1 reports a non-pumping state; mechanical diagnosis is not conclusive.")
+        return result
 
     def _interval(self, start_raw: str | None, end_raw: str | None) -> tuple[datetime, datetime]:
         end = self._parse_time(end_raw) if end_raw else datetime.now(self.timezone)
@@ -287,12 +327,12 @@ class RodPumpAnalysisClient:
             f"or complete field identifier: {well_name}"
         )
 
-    def _trend_series(self, site_key: str, well_key: str, start: datetime, end: datetime) -> tuple[dict[str, list], list[str]]:
+    def _trend_series(self, site_key: str, well_key: str, start: datetime, end: datetime, metrics: dict[str, str] = METRICS) -> tuple[dict[str, list], list[str]]:
         """Retrieve the same Graphite POC metrics used by OMetrics trend charts."""
-        result: dict[str, list] = {label: [] for label in METRICS.values()}
+        result: dict[str, list] = {label: [] for label in metrics.values()}
         warnings: list[str] = []
         prefix = f"MI3.{site_key}.{well_key.replace(' ', '_')}."
-        target_to_label = {prefix + metric: label for metric, label in METRICS.items()}
+        target_to_label = {prefix + metric: label for metric, label in metrics.items()}
         params = [("target", target) for target in target_to_label]
         params.extend([
             ("from", start.strftime("%H:%M_%Y%m%d")),
@@ -319,9 +359,14 @@ class RodPumpAnalysisClient:
                     for point in item.get("datapoints", [])
                     if len(point) >= 2 and point[0] is not None and point[1] is not None
                 ]
-            for label, points in result.items():
-                if not points:
-                    warnings.append(f"{label} returned no samples.")
+            missing = [label for label, points in result.items() if not points]
+            if missing:
+                # A SAM1 fleet may not expose every optional controller trend.
+                # Keep the report readable by reporting one retrieval warning
+                # per interval rather than a warning row for every absent tag.
+                warnings.append(
+                    "Rod-pump trends returned no samples for: " + ", ".join(missing) + "."
+                )
         except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
             warnings.append(f"Rod-pump trends could not be retrieved: {exc}")
         return result, warnings
@@ -418,7 +463,10 @@ class RodPumpAnalysisClient:
             LEFT JOIN data_points parent ON parent.id=dp.facility_id
             WHERE dp.site_id=:site_id
               AND COALESCE(parent.facility_name, dp.facility_name)=:well_key
-              AND dp.data_point_name IN ('stat','status','pump_status')
+              AND dp.data_point_name IN (
+                  'Well State', 'Pump Status', 'Time In State',
+                  'stat', 'status', 'pump_status', 'elapsed_time'
+              )
         """)
         try:
             with self.engine.connect() as connection:
@@ -426,12 +474,23 @@ class RodPumpAnalysisClient:
         except SQLAlchemyError:
             return {"available": False}
         values = {}
+        names = {
+            "Well State": "state",
+            "Pump Status": "pump_status",
+            "Time In State": "elapsed_time",
+            # Preserve existing installations that use raw controller tags as
+            # their data-point names.
+            "stat": "state",
+            "status": "state",
+            "pump_status": "pump_status",
+            "elapsed_time": "elapsed_time",
+        }
         for row in rows:
             try:
                 payload = json.loads(row["data"]) if isinstance(row["data"], str) else row["data"]
             except (TypeError, json.JSONDecodeError):
                 payload = {}
-            values[row["data_point_name"]] = {
+            values[names.get(row["data_point_name"], row["data_point_name"])] = {
                 "value": payload.get("value") if isinstance(payload, dict) else None,
                 "timestamp": payload.get("timestamp") if isinstance(payload, dict) else None,
             }

@@ -44,7 +44,7 @@ ChatHandler = Callable[
     tuple[str, list[dict[str, Any]], dict[str, Any]],
 ]
 RodPumpReportHandler = Callable[
-    [Settings, int, str | None, list[int] | None],
+    [Settings, int, str | None, list[int] | None, str],
     dict[str, Any],
 ]
 WeeklyOverviewHandler = Callable[
@@ -119,11 +119,7 @@ def create_app(
             )
             conversation_id = payload.conversation_id_text()
             if conversation_id:
-                conversation = repository.get(
-                    conversation_id,
-                    payload.user_id,
-                    payload.site_id,
-                )
+                conversation = repository.get_shared(conversation_id, payload.site_id) if payload.shared_case else repository.get(conversation_id, payload.user_id, payload.site_id)
                 usage_repository.consume(payload.user_id, payload.site_id)
             else:
                 usage_repository.consume(payload.user_id, payload.site_id)
@@ -155,6 +151,10 @@ def create_app(
                 answer, tool_calls, stats = app.state.chat_handler(
                     *handler_args,
                     current_date=(payload.current_date.isoformat() if payload.current_date else None),
+                    shared_case=payload.shared_case,
+                    read_only=payload.read_only,
+                    case_reassessment_requested=payload.case_reassessment_requested,
+                    case_context=payload.case_context,
                 )
             else:
                 answer, tool_calls, stats = app.state.chat_handler(*handler_args)
@@ -205,12 +205,10 @@ def create_app(
                 detail="A rod-pump health report is already running",
             )
         try:
-            return app.state.rod_pump_report_handler(
-                settings,
-                payload.site_id,
-                payload.as_of_time.isoformat() if payload.as_of_time else None,
-                payload.well_ids,
-            )
+            args = (settings, payload.site_id, payload.as_of_time.isoformat() if payload.as_of_time else None, payload.well_ids)
+            if payload.analysis_profile == "sam1":
+                return app.state.rod_pump_report_handler(*args, payload.analysis_profile)
+            return app.state.rod_pump_report_handler(*args)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
@@ -259,12 +257,14 @@ def _run_rod_pump_health_report(
     site_id: int,
     as_of_time: str | None,
     well_ids: list[int] | None,
+    analysis_profile: str = "generic",
 ) -> dict[str, Any]:
     """Construct the deterministic client outside the chat/conversation path."""
     return RodPumpAnalysisClient.from_settings(settings).rank_wells(
         site_id,
         as_of_time,
         well_ids=well_ids,
+        analysis_profile=analysis_profile,
     )
 
 

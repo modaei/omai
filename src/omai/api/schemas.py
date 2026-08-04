@@ -16,6 +16,10 @@ class ChatRequest(BaseModel):
     site_id: int = Field(gt=0)
     response_mode: Literal["fast", "intelligent"] = "fast"
     current_date: date | None = None
+    shared_case: bool = False
+    read_only: bool = False
+    case_reassessment_requested: bool = False
+    case_context: str | None = Field(default=None, max_length=12_000)
 
     @field_validator("message")
     @classmethod
@@ -47,6 +51,7 @@ class RodPumpHealthReportRequest(BaseModel):
     site_id: int = Field(gt=0)
     well_ids: list[int] | None = None
     as_of_time: datetime | None = None
+    analysis_profile: Literal["generic", "sam1"] = "generic"
 
     @field_validator("well_ids")
     @classmethod

@@ -94,6 +94,10 @@ def answer_chat(
     question: str,
     response_mode: str = "fast",
     current_date: str | None = None,
+    shared_case: bool = False,
+    read_only: bool = False,
+    case_reassessment_requested: bool = False,
+    case_context: str | None = None,
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     settings.validate()
     effective_today = date.fromisoformat(current_date) if current_date else date.today()
@@ -166,16 +170,8 @@ def answer_chat(
     data_entry_client = DataEntryClient.from_settings(settings)
     view_navigation_client = ViewNavigationClient.from_settings(settings)
     tools = [
-        *build_data_entry_tools(
-            data_entry_client,
-            site_id,
-            effective_current_date,
-        ),
-        *build_view_navigation_tools(
-            view_navigation_client,
-            site_id,
-            effective_current_date,
-        ),
+        *([] if read_only else build_data_entry_tools(data_entry_client, site_id, effective_current_date)),
+        *([] if read_only else build_view_navigation_tools(view_navigation_client, site_id, effective_current_date)),
         *build_capability_tools(capability_client),
         *build_database_schema_tools(
             database_schema_client,
@@ -315,11 +311,19 @@ def answer_chat(
     if well_test_dependency is not None:
         dependencies.append(well_test_dependency)
     agent_tools = tools
-    authoritative_context = None
+    authoritative_context = case_context
     if dependencies:
-        authoritative_context = "\n".join(item["context"] for item in dependencies)
+        dependency_context = "\n".join(item["context"] for item in dependencies)
+        authoritative_context = "\n".join(item for item in (case_context, dependency_context) if item)
         used_tool_names = {item["tool_name"] for item in dependencies}
         agent_tools = [tool for tool in tools if tool.name not in used_tool_names]
+    agent_tools = _tools_for_shared_case_turn(
+        agent_tools,
+        shared_case=shared_case,
+        read_only=read_only,
+        has_history=bool(history),
+        case_reassessment_requested=case_reassessment_requested,
+    )
     model = build_model(
         api_key=settings.llm_api_key,
         model=settings.llm_model,
@@ -349,6 +353,26 @@ def answer_chat(
         [*dependency_traces, *traces],
         _stats_with_local_usage(combined_stats, local_usage),
     )
+
+
+def _tools_for_shared_case_turn(
+    tools: list[Any],
+    *,
+    shared_case: bool,
+    read_only: bool,
+    has_history: bool,
+    case_reassessment_requested: bool,
+) -> list[Any]:
+    """Avoid fresh rod-pump diagnoses for ordinary shared-case follow-ups.
+
+    The opening turn needs ``analyze_rod_pump`` to establish a diagnosis. Later
+    messages normally refine the existing plan and must not pay for, or be
+    distorted by, a fresh analysis unless the user explicitly asks to reassess.
+    """
+    if not (shared_case and read_only and has_history and not case_reassessment_requested):
+        return tools
+
+    return [tool for tool in tools if tool.name != "analyze_rod_pump"]
 
 
 def is_rod_pump_fleet_question(question: str) -> bool:
