@@ -13,10 +13,9 @@ OpenAI-compatible chat model, and it can call Ometrics, Omreports, RAG, and
 validated SQL tools depending on the user's request.
 
 The Laravel Ometrics application uses Omai through a local FastAPI `/chat`
-endpoint; a Streamlit UI is also available for local development and debugging.
-Omai is not intended to run independently. It is an AI agent layer for an
-existing Ometrics deployment, with Ometrics and Omreports remaining the systems
-of record.
+endpoint. Omai is not intended to run independently. It is an AI agent layer
+for an existing Ometrics deployment, with Ometrics and Omreports remaining the
+systems of record.
 
 ## Responsibilities
 
@@ -82,6 +81,34 @@ domain tools will be unavailable or return errors.
 - Conversation messages are stored in the Ometrics database through Omai's
   conversation repository.
 
+## Rod-Pump Troubleshooting
+
+Ometrics provides a dedicated, shared troubleshooting page for rod-pump wells
+that need attention. It creates a persistent, read-only case for one well and
+uses Omai to turn the existing rod-pump health baseline, cards, trends, and
+operational evidence into focused troubleshooting guidance.
+
+The first request establishes the case assessment. Omai retrieves fresh
+rod-pump evidence and responds with a compact status sentence containing the
+well, diagnosis, severity, confidence, and supporting reason, followed by
+specific suggested actions. For fixed-speed SAM1 wells, recommendations favor
+supported controller-setpoint actions, such as Pump Off Load or Pump Off
+Position, or a concrete field check when the evidence does not support a remote
+adjustment.
+
+Later messages continue the same case and conversation. They answer the new
+question or constraint directly without repeating the opening status or running
+a fresh analysis. For example, if an operator says they cannot visit the site,
+Omai limits its recommendations to justified remote operating-mode or setpoint
+options and clearly states when no remote change is supported.
+
+A fresh rod-pump analysis is performed only when the user explicitly requests
+one, for example with `reassess`, `reassessment`, `analyze again`, `assess
+again`, or `update the diagnosis`. Reassessments compare newly retrieved
+evidence with the opening baseline. The troubleshooting workflow remains
+read-only: it can recommend actions but cannot change controller settings,
+create records, or claim that a field action was completed.
+
 Typical flow:
 
 ```text
@@ -109,18 +136,16 @@ The public `/chat` response contains only:
 }
 ```
 
-Tool calls and timing statistics are internal and are not returned by the API.
-RAG source snippets are also not returned by the API. The local Streamlit UI can
-show retrieved operational-context sources in a `RAG Sources` expander for
-debugging and evaluation. Assistant message metadata, including compact tool
-audit records and SQL audit records, is stored in `ai_messages.info`.
+Tool calls, timing statistics, and RAG source snippets are internal and are not
+returned by the API. Assistant message metadata, including compact tool audit
+records and SQL audit records, is stored in `ai_messages.info`.
 
 ## Setup
 
 Create a virtual environment and install dependencies:
 
 ```bash
-cd /home/mo/Projects/omai
+cd omai
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -130,8 +155,8 @@ cp .env.example .env
 
 Set the LLM provider values in `.env`.
 
-Set `LOG_LEVEL` to control Omai logging across the API, CLI commands, RAG event
-processor, and Streamlit UI. Supported values are:
+Set `LOG_LEVEL` to control Omai logging across the API, CLI commands, and RAG
+event processor. Supported values are:
 
 ```bash
 LOG_LEVEL=CRITICAL
@@ -243,7 +268,7 @@ rolling repair refreshes.
 Start Omreports:
 
 ```bash
-cd /home/mo/Projects/omreports
+cd omreports
 source venv/bin/activate
 python3 -m uvicorn api:app --host 127.0.0.1 --port 50008
 ```
@@ -251,7 +276,7 @@ python3 -m uvicorn api:app --host 127.0.0.1 --port 50008
 Start Omai API for Ometrics:
 
 ```bash
-cd /home/mo/Projects/omai
+cd omai
 source .venv/bin/activate
 python3 -m uvicorn omai.api.app:app --host 127.0.0.1 --port 50009
 ```
@@ -259,17 +284,9 @@ python3 -m uvicorn omai.api.app:app --host 127.0.0.1 --port 50009
 Process queued Omai RAG index events periodically:
 
 ```bash
-cd /home/mo/Projects/omai
+cd omai
 source .venv/bin/activate
 omai-process-rag-index-events
-```
-
-Optional local Streamlit UI:
-
-```bash
-cd /home/mo/Projects/omai
-source .venv/bin/activate
-streamlit run app.py
 ```
 
 ## Example Questions
@@ -288,7 +305,7 @@ streamlit run app.py
 ## Tests
 
 ```bash
-cd /home/mo/Projects/omai
+cd omai
 source .venv/bin/activate
 pytest -q
 ```
