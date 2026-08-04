@@ -159,6 +159,18 @@ class ConversationRepository:
             site_id=int(row["site_id"]),
         )
 
+    def get_shared(self, conversation_id: str, site_id: int) -> Conversation:
+        """Load a site-scoped persistent troubleshooting conversation."""
+        try:
+            conversation_uuid = str(UUID(conversation_id))
+        except ValueError as exc:
+            raise ConversationNotFoundError("Conversation not found.") from exc
+        with self.engine.connect() as connection:
+            row = connection.execute(text("SELECT id, uuid, user_id, site_id FROM ai_conversations WHERE uuid=:uuid AND site_id=:site_id LIMIT 1"), {"uuid": conversation_uuid, "site_id": site_id}).mappings().first()
+        if row is None:
+            raise ConversationNotFoundError("Conversation not found.")
+        return Conversation(id=int(row["id"]), uuid=str(row["uuid"]), user_id=int(row["user_id"]), site_id=int(row["site_id"]))
+
     def load_history(self, conversation: Conversation) -> list[dict[str, str]]:
         query = text(
             """
@@ -249,7 +261,8 @@ class ConversationRepository:
                     text(
                         """
                         UPDATE ai_conversations
-                        SET updated_at = :now, expires_at = :expires_at
+                        SET updated_at = :now,
+                            expires_at = CASE WHEN expires_at IS NULL THEN NULL ELSE :expires_at END
                         WHERE id = :conversation_id
                         """
                     ),

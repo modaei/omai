@@ -32,7 +32,7 @@ def make_client():
             "CREATE TABLE rod_pump_monitoring_data_cards (rod_pump_monitoring_data_id INTEGER, rod_pump_card_id INTEGER)",
             "CREATE TABLE rod_pump_cards (id INTEGER PRIMARY KEY, card_type TEXT, down_hole INTEGER, data_points TEXT)",
             "CREATE TABLE chart_notes (object_type TEXT, object_id INTEGER, x_axis_value TEXT, chart_name TEXT, note TEXT)",
-            "CREATE TABLE data_points (id INTEGER PRIMARY KEY, site_id INTEGER, facility_name TEXT, data_point_name TEXT)",
+            "CREATE TABLE data_points (id INTEGER PRIMARY KEY, site_id INTEGER, facility_name TEXT, data_point_name TEXT, facility_id INTEGER)",
             "CREATE TABLE data_point_data (data_point_id INTEGER, data TEXT)",
         ):
             connection.execute(text(statement))
@@ -128,6 +128,23 @@ def test_prediction_is_unavailable_without_validated_artifact():
         4, "5823", "2026-07-05T00:00:00+00:00", "2026-07-06T00:00:00+00:00"
     )
     assert result["paraffin_prediction"]["available"] is False
+
+
+def test_sam1_uses_ometrics_controller_data_point_names():
+    client = make_client()
+    with client.engine.begin() as connection:
+        connection.execute(text("INSERT INTO data_points VALUES (1,4,'HDU_5823','Well State',NULL)"))
+        connection.execute(text("INSERT INTO data_points VALUES (2,4,'HDU_5823','Pump Status',NULL)"))
+        connection.execute(text("INSERT INTO data_points VALUES (3,4,'HDU_5823','Time In State',NULL)"))
+        connection.execute(text("INSERT INTO data_point_data VALUES (1,:data)"), {"data": json.dumps({"value": "Pumping Normal"})})
+        connection.execute(text("INSERT INTO data_point_data VALUES (2,:data)"), {"data": json.dumps({"value": 0})})
+        connection.execute(text("INSERT INTO data_point_data VALUES (3,:data)"), {"data": json.dumps({"value": "01:30:00"})})
+
+    status = client.analyze(4, "5823", "2026-07-05T00:00:00+00:00", "2026-07-06T00:00:00+00:00")["current_status"]
+
+    assert status["values"]["state"]["value"] == "Pumping Normal"
+    assert status["values"]["pump_status"]["value"] == 0
+    assert status["values"]["elapsed_time"]["value"] == "01:30:00"
 
 
 def test_analysis_rejects_an_incomplete_identifier():

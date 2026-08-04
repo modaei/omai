@@ -94,6 +94,7 @@ def rule_diagnoses(
     trends: dict[str, dict[str, Any]],
     cards: list[dict[str, Any]],
     notes: list[dict[str, Any]],
+    sam1: bool = False,
 ) -> list[dict[str, Any]]:
     """Apply explicit engineering heuristics to current trends and cards."""
     fillage = trends.get("Pump Fillage", {})
@@ -151,6 +152,37 @@ def rule_diagnoses(
         add("Possible rod parting", "critical", .76, [f"Peak-load change: {peak.get('change_ratio')}", f"Surface load spread: {surface.get('load_spread')}"], "Escalate for immediate field verification.")
     if surface.get("impact_score", 0) > .75:
         add("Possible pump tagging", "high", .65, [f"Surface impact score: {surface.get('impact_score')}"], "Review end-of-stroke position and verify tagging in the field.")
+    if sam1:
+        percent_run = trends.get("Percent Run", {})
+        daily_percent = trends.get("Yesterday Percent Run", {})
+        daily_peak = trends.get("Yesterday Peak Load", {})
+        daily_minimum = trends.get("Yesterday Min Load", {})
+        stroke_rate = trends.get("Stroke Rate", {})
+        fixed_speed = abs(stroke_rate.get("change_ratio") or 0) < .02
+        # A SAM1 intentionally cycles a fixed-speed unit.  Reduced run time is
+        # controller context, not a named downhole fault, unless load/fillage
+        # evidence independently produces one of the mechanical rules above.
+        if (percent_run.get("latest", 100) < 95 or daily_percent.get("latest", 100) < 95):
+            add(
+                "SAM1 controlled downtime",
+                "info",
+                .75,
+                [f"Percent Run: {percent_run.get('latest')}", f"Yesterday Percent Run: {daily_percent.get('latest')}", "Fixed-speed pump-off controller context"],
+                "Review SAM1 fillage and downtime settings before treating reduced runtime as a mechanical failure.",
+            )
+        if (
+            fixed_speed
+            and (daily_peak.get("change_ratio") or 0) > .05
+            and (daily_minimum.get("change_ratio") or 0) > .05
+        ):
+            add(
+                "Rod/tubing friction",
+                "medium",
+                .7,
+                [f"Yesterday peak-load change: {daily_peak.get('change_ratio')}", f"Yesterday minimum-load change: {daily_minimum.get('change_ratio')}", f"Fixed stroke-rate change: {stroke_rate.get('change_ratio')}"],
+                "Compare load rise with dynographs and treatment history before scheduling mechanical work.",
+                ["Scale", "Paraffin", "Rod/tubing wear"],
+            )
     if not results:
         add("Normal pumping", "info", .75 if cards and fillage.get("count", 0) else .4, [f"Pump Fillage trend: {fillage.get('trend', 'unknown')}", "Dynograph abnormalities: none exceeded configured rules"], "Continue routine monitoring.")
     return sorted(results, key=lambda row: (-SEVERITY_ORDER[row["severity"]], -row["confidence"]))
