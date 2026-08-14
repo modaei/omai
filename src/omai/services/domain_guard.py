@@ -33,13 +33,13 @@ class RequestIntegrityDecision:
         if len(reasons) == 1:
             return (
                 f"I can't process this request because {reasons[0]}. "
-                "Please submit a factual Ometrics question, under 500 characters, that lets the data determine the conclusion."
+                f"Please submit a factual Ometrics question, under {MAX_CHAT_REQUEST_CHARACTERS} characters, that lets the data determine the conclusion."
             )
 
         joined = ", ".join(reasons[:-1]) + f", and {reasons[-1]}"
         return (
             f"I can't process this request because {joined}. "
-            "Please submit a factual Ometrics question, under 500 characters, that lets the data determine the conclusion."
+            f"Please submit a factual Ometrics question, under {MAX_CHAT_REQUEST_CHARACTERS} characters, that lets the data determine the conclusion."
         )
 
 
