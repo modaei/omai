@@ -8,7 +8,7 @@ OUT_OF_DOMAIN_RESPONSE = (
     "I can only help with Ometrics related questions."
 )
 
-MAX_CHAT_REQUEST_CHARACTERS = 500
+MAX_CHAT_REQUEST_CHARACTERS = 750
 
 
 @dataclass(frozen=True)
