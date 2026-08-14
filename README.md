@@ -13,10 +13,9 @@ OpenAI-compatible chat model, and it can call Ometrics, Omreports, RAG, and
 validated SQL tools depending on the user's request.
 
 The Laravel Ometrics application uses Omai through a local FastAPI `/chat`
-endpoint; a Streamlit UI is also available for local development and debugging.
-Omai is not intended to run independently. It is an AI agent layer for an
-existing Ometrics deployment, with Ometrics and Omreports remaining the systems
-of record.
+endpoint. Omai is not intended to run independently. It is an AI agent layer
+for an existing Ometrics deployment, with Ometrics and Omreports remaining the
+systems of record.
 
 ## Responsibilities
 
@@ -109,11 +108,9 @@ The public `/chat` response contains only:
 }
 ```
 
-Tool calls and timing statistics are internal and are not returned by the API.
-RAG source snippets are also not returned by the API. The local Streamlit UI can
-show retrieved operational-context sources in a `RAG Sources` expander for
-debugging and evaluation. Assistant message metadata, including compact tool
-audit records and SQL audit records, is stored in `ai_messages.info`.
+Tool calls, timing statistics, and RAG source snippets are internal and are not
+returned by the API. Assistant message metadata, including compact tool, RAG,
+and SQL audit records, is stored in `ai_messages.info`.
 
 ## Setup
 
@@ -130,8 +127,8 @@ cp .env.example .env
 
 Set the LLM provider values in `.env`.
 
-Set `LOG_LEVEL` to control Omai logging across the API, CLI commands, RAG event
-processor, and Streamlit UI. Supported values are:
+Set `LOG_LEVEL` to control Omai logging across the API, CLI commands, and RAG
+event processor. Supported values are:
 
 ```bash
 LOG_LEVEL=CRITICAL
@@ -262,14 +259,6 @@ Process queued Omai RAG index events periodically:
 cd /home/mo/Projects/omai
 source .venv/bin/activate
 omai-process-rag-index-events
-```
-
-Optional local Streamlit UI:
-
-```bash
-cd /home/mo/Projects/omai
-source .venv/bin/activate
-streamlit run app.py
 ```
 
 ## Example Questions

@@ -30,9 +30,13 @@ from omai.repositories.daily_usage_repository import (
 from omai.config.logging import configure_logging
 from omai.config.settings import Settings
 from omai.services.chat_service import answer_chat
-from omai.services.domain_guard import OUT_OF_DOMAIN_RESPONSE, is_in_domain
+from omai.services.domain_guard import (
+    OUT_OF_DOMAIN_RESPONSE,
+    assess_request_integrity,
+    is_in_domain,
+)
 from omai.services.weekly_overview_service import generate_weekly_overview
-from omai.ui.rag_sources import extract_rag_sources
+from omai.services.rag_sources import extract_rag_sources
 
 
 ALLOWED_HOSTS = {"127.0.0.1", "::1"}
@@ -124,12 +128,35 @@ def create_app(
                     payload.user_id,
                     payload.site_id,
                 )
-                usage_repository.consume(payload.user_id, payload.site_id)
             else:
-                usage_repository.consume(payload.user_id, payload.site_id)
-                conversation = repository.create(payload.user_id, payload.site_id)
-            history = repository.load_history(conversation)
+                conversation = None
+            integrity = assess_request_integrity(payload.message)
             reasoning_effort = reasoning_effort_for_response_mode(payload.response_mode)
+            if not integrity.allowed:
+                conversation = conversation or repository.create(
+                    payload.user_id,
+                    payload.site_id,
+                )
+                repository.append_message(conversation, "user", payload.message)
+                assistant_message_id = repository.append_message(
+                    conversation,
+                    "assistant",
+                    integrity.response,
+                    reasoning_effort=reasoning_effort,
+                    info={"request_guard": {"reason_codes": list(integrity.reason_codes)}},
+                )
+                return ChatResponse(
+                    conversation_id=conversation.uuid,
+                    answer=integrity.response,
+                    assistant_message_id=assistant_message_id,
+                )
+
+            usage_repository.consume(payload.user_id, payload.site_id)
+            conversation = conversation or repository.create(
+                payload.user_id,
+                payload.site_id,
+            )
+            history = repository.load_history(conversation)
             if not history and not is_in_domain(payload.message):
                 repository.append_message(conversation, "user", payload.message)
                 assistant_message_id = repository.append_message(

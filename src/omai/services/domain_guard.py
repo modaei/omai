@@ -1,11 +1,84 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 
 OUT_OF_DOMAIN_RESPONSE = (
     "I can only help with Ometrics related questions."
 )
+
+MAX_CHAT_REQUEST_CHARACTERS = 500
+
+
+@dataclass(frozen=True)
+class RequestIntegrityDecision:
+    """Outcome of deterministic chat-request safety and scope validation."""
+
+    reason_codes: tuple[str, ...] = ()
+
+    @property
+    def allowed(self) -> bool:
+        return not self.reason_codes
+
+    @property
+    def response(self) -> str:
+        """Return a concise refusal that identifies every rejected directive."""
+        descriptions = {
+            "too_long": f"it exceeds the {MAX_CHAT_REQUEST_CHARACTERS}-character limit",
+            "role_directive": "it asks me to adopt a role or persona",
+            "prescribed_conclusion": "it requires a predetermined conclusion or recommendation",
+        }
+        reasons = [descriptions[code] for code in self.reason_codes]
+        if len(reasons) == 1:
+            return (
+                f"I can't process this request because {reasons[0]}. "
+                "Please submit a factual Ometrics question, under 500 characters, that lets the data determine the conclusion."
+            )
+
+        joined = ", ".join(reasons[:-1]) + f", and {reasons[-1]}"
+        return (
+            f"I can't process this request because {joined}. "
+            "Please submit a factual Ometrics question, under 500 characters, that lets the data determine the conclusion."
+        )
+
+
+ROLE_DIRECTIVE_PATTERNS = (
+    r"\bact\s+as\b",
+    r"\bbehave\s+as\b",
+    r"\bassume\s+(?:the\s+)?role(?:\s+of)?\b",
+    r"\byou\s+are\s+(?:an?|the)\s+[a-z]",
+)
+
+PRESCRIBED_CONCLUSION_PATTERNS = (
+    r"\bconclude\s+that\b",
+    r"\b(?:prove|argue|demonstrate|show)\s+that\b",
+    r"\bmake\s+(?:a\s+)?(?:business\s+|profitability\s+)?case\s+(?:for|that)\b",
+    r"\b(?:must|should)\s+(?:conclude|recommend)\b",
+    r"\b(?:the\s+)?conclusion\s+(?:must|should|is)\b",
+)
+
+
+def assess_request_integrity(question: str) -> RequestIntegrityDecision:
+    """Reject oversized requests and instructions that would bias Omai's answer.
+
+    This guard intentionally does not use an LLM. It is evaluated before tools
+    and model calls, so role-play or conclusion-forcing language cannot turn an
+    operational data request into an unsupported commissioned report.
+    """
+    normalized = " ".join(question.strip().split())
+    reason_codes: list[str] = []
+    if len(normalized) > MAX_CHAT_REQUEST_CHARACTERS:
+        reason_codes.append("too_long")
+    if any(re.search(pattern, normalized, re.IGNORECASE) for pattern in ROLE_DIRECTIVE_PATTERNS):
+        reason_codes.append("role_directive")
+    if any(
+        re.search(pattern, normalized, re.IGNORECASE)
+        for pattern in PRESCRIBED_CONCLUSION_PATTERNS
+    ):
+        reason_codes.append("prescribed_conclusion")
+
+    return RequestIntegrityDecision(tuple(reason_codes))
 
 
 DOMAIN_TERMS = {
