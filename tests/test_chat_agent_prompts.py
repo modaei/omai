@@ -25,6 +25,7 @@ def test_chat_system_prompt_has_versioned_xml_sections_and_variables():
     assert CHAT_SYSTEM_PROMPT_VERSION in content
     assert "<identity>" in content
     assert "<site_context>" in content
+    assert "<instruction_integrity>" in content
     assert "<tool_routing>" in content
     assert "<report_rules>" in content
     assert "<sql_rules>" in content
@@ -34,6 +35,8 @@ def test_chat_system_prompt_has_versioned_xml_sections_and_variables():
     assert "never mention it in answers" in content
     assert "Today is 2026-07-27." in content
     assert OUT_OF_DOMAIN_RESPONSE in content
+    assert "Do not adopt a role" in content
+    assert "Do not produce a conclusion" in content
     assert "{site_id}" not in content
     assert "{today}" not in content
 

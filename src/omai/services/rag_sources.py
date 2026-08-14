@@ -1,3 +1,5 @@
+"""Extract concise RAG-source audit records from operational-context tool calls."""
+
 from __future__ import annotations
 
 import json
@@ -10,6 +12,7 @@ SOURCE_PREVIEW_LENGTH = 240
 
 
 def extract_rag_sources(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return deduplicated operational-context sources for internal message audit."""
     sources: list[dict[str, Any]] = []
     seen_chunk_ids: set[str] = set()
 
@@ -38,6 +41,7 @@ def extract_rag_sources(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]
 
 
 def format_rag_source(source: dict[str, Any]) -> str:
+    """Format one source for internal diagnostics or future presentation clients."""
     parts = [
         str(source.get("source_type") or "operational_context"),
         str(source.get("event_date") or "no date"),

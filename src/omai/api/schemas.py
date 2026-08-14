@@ -11,7 +11,10 @@ class ChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     conversation_id: UUID | None = None
-    message: str = Field(min_length=1, max_length=2_000)
+    # The request-integrity guard owns the user-visible 500-character limit so
+    # it can record a clear refusal in the conversation. Keep a larger
+    # transport-level ceiling to protect the API from unbounded input.
+    message: str = Field(min_length=1, max_length=10_000)
     user_id: int = Field(gt=0)
     site_id: int = Field(gt=0)
     response_mode: Literal["fast", "intelligent"] = "fast"

@@ -137,8 +137,8 @@ The public `/chat` response contains only:
 ```
 
 Tool calls, timing statistics, and RAG source snippets are internal and are not
-returned by the API. Assistant message metadata, including compact tool audit
-records and SQL audit records, is stored in `ai_messages.info`.
+returned by the API. Assistant message metadata, including compact tool, RAG,
+and SQL audit records, is stored in `ai_messages.info`.
 
 ## Setup
 
