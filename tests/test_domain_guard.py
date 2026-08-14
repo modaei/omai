@@ -81,7 +81,7 @@ def test_request_integrity_rejects_long_role_play_and_prescribed_conclusion():
         "role_directive",
         "prescribed_conclusion",
     )
-    assert "exceeds the 500-character limit" in decision.response
+    assert f"exceeds the {MAX_CHAT_REQUEST_CHARACTERS}-character limit" in decision.response
     assert "adopt a role or persona" in decision.response
     assert "predetermined conclusion or recommendation" in decision.response
 

@@ -552,7 +552,7 @@ def test_chat_endpoint_rejects_integrity_violations_without_model_or_daily_usage
     )
 
     body = response.model_dump()
-    assert "exceeds the 500-character limit" in body["answer"]
+    assert f"exceeds the {MAX_CHAT_REQUEST_CHARACTERS}-character limit" in body["answer"]
     assert "adopt a role or persona" in body["answer"]
     assert "predetermined conclusion or recommendation" in body["answer"]
     assert daily_usage_count(repository) == 0
