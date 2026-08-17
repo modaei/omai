@@ -5,14 +5,14 @@ report production data. It tracks field readings, tanks, wells, shutdowns,
 alarms, work orders, notes, emails, and production reports across a selected
 site.
 
-Omai is the read-only AI agent for Ometrics. It is not just a chat wrapper: it
-interprets oil-field operations questions, chooses the appropriate tool or data
-path, retrieves the required operational context, and produces grounded answers
-from the retrieved data. The agent is built with LangChain and an
-OpenAI-compatible chat model, and it can call Ometrics, Omreports, RAG, and
-validated SQL tools depending on the user's request.
+Omai is the read-only AI agent for Ometrics. It interprets oil-field operations 
+questions, chooses the appropriate tool or data path, retrieves the required 
+operational context, and produces grounded answers from the retrieved data. 
+The agent is built with LangChain, LangGraph and an OpenAI-compatible chat
+model, and it can call Ometrics, Omreports, RAG, and validated SQL tools
+depending on the user's request.
 
-The Laravel Ometrics application uses Omai through a local FastAPI `/chat`
+The Ometrics application uses Omai through a local FastAPI `/chat`
 endpoint. Omai is not intended to run independently. It is an AI agent layer
 for an existing Ometrics deployment, with Ometrics and Omreports remaining the
 systems of record.
@@ -114,10 +114,10 @@ and SQL audit records, is stored in `ai_messages.info`.
 
 ## Setup
 
-Create a virtual environment and install dependencies:
+Run the following Omai commands from the Omai repository root. Create a virtual
+environment and install dependencies:
 
 ```bash
-cd /home/mo/Projects/omai
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -237,10 +237,10 @@ rolling repair refreshes.
 
 ## Running Services
 
-Start Omreports:
+Start Omreports. The Ometrics software bundle keeps the Omreports repository
+next to the Omai repository:
 
 ```bash
-cd /home/mo/Projects/omreports
 source venv/bin/activate
 python3 -m uvicorn api:app --host 127.0.0.1 --port 50008
 ```
@@ -248,7 +248,6 @@ python3 -m uvicorn api:app --host 127.0.0.1 --port 50008
 Start Omai API for Ometrics:
 
 ```bash
-cd /home/mo/Projects/omai
 source .venv/bin/activate
 python3 -m uvicorn omai.api.app:app --host 127.0.0.1 --port 50009
 ```
@@ -256,7 +255,6 @@ python3 -m uvicorn omai.api.app:app --host 127.0.0.1 --port 50009
 Process queued Omai RAG index events periodically:
 
 ```bash
-cd /home/mo/Projects/omai
 source .venv/bin/activate
 omai-process-rag-index-events
 ```
@@ -277,7 +275,6 @@ omai-process-rag-index-events
 ## Tests
 
 ```bash
-cd /home/mo/Projects/omai
 source .venv/bin/activate
 pytest -q
 ```
