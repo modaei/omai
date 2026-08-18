@@ -12,10 +12,12 @@ The agent is built with LangChain, LangGraph and an OpenAI-compatible chat
 model, and it can call Ometrics, Omreports, RAG, and validated SQL tools
 depending on the user's request.
 
-The Ometrics application uses Omai through a local FastAPI `/chat`
-endpoint. Omai is not intended to run independently. It is an AI agent layer
-for an existing Ometrics deployment, with Ometrics and Omreports remaining the
-systems of record.
+The Ometrics application uses Omai through a local FastAPI `/chat` endpoint.
+Omai normally operates as an AI agent layer for an existing Ometrics deployment,
+with the Ometrics database and Omreports remaining the systems of record. The
+`demo` branch also includes a deliberately isolated public-demo deployment that
+uses an anonymized database, synthetic time-series data, and a fixed server-side
+site scope. It never connects to an Ometrics production environment.
 
 ## Responsibilities
 
@@ -249,7 +251,7 @@ Start Omai API for Ometrics:
 
 ```bash
 source .venv/bin/activate
-python3 -m uvicorn omai.api.app:app --host 127.0.0.1 --port 50009
+python3 -m uvicorn omai.api.app:create_app --factory --host 127.0.0.1 --port 50009
 ```
 
 Process queued Omai RAG index events periodically:
@@ -258,6 +260,115 @@ Process queued Omai RAG index events periodically:
 source .venv/bin/activate
 omai-process-rag-index-events
 ```
+
+## Public Demo Deployment
+
+The `demo` branch contains a Docker Compose deployment for a public Omai
+showcase. It does **not** deploy Ometrics, Omemails, Omtasks, or Nginx. The stack is:
+
+- Omai running directly with Uvicorn on port `50009`.
+- Omreports on a private Docker network.
+- MariaDB containing only a deterministic sanitized demo dataset.
+- Postgres + pgvector for the derived RAG index.
+- Graphite for synthetic trend and rod-pump time series.
+
+The future standalone Vue frontend runs in its own container and calls Omai
+directly at `POST /chat`. Set `OMAI_CORS_ALLOWED_ORIGINS` to that frontend's
+exact public origin. Omai runs in demo mode and accepts only this request body:
+
+```json
+{
+  "conversation_id": "optional UUID",
+  "message": "How much gas was flared in May?",
+  "response_mode": "fast"
+}
+```
+
+The server injects `DEMO_SITE_ID`, `DEMO_USER_ID`, and `DEMO_CURRENT_DATE`.
+Browser clients cannot select a site, user, current
+date, tools, or SQL settings. The response contains only `conversation_id` and
+`answer`.
+
+### Deployment Layout
+
+The Compose file expects sibling source checkouts by default:
+
+```text
+deployment-root/
+├── omai/       # checked out on the demo branch
+└── omreports/  # matching demo-compatible source
+```
+
+`OMREPORTS_SOURCE_DIR` in `deploy/.env` can point to a different Omreports
+checkout. Copy and fill the deployment environment file:
+
+```bash
+cd omai/deploy
+cp .env.example .env
+```
+
+Use unique secrets and a dedicated LLM key with a low spending limit. Do not
+copy production `.env` files, databases, Graphite storage, or backups into this
+deployment.
+
+### Initial Bootstrap
+
+Start the private services and gateway:
+
+```bash
+cd deploy
+docker compose --env-file .env -f compose.yaml up --build -d
+docker compose --env-file .env -f compose.yaml ps
+```
+
+Place a pre-sanitized compressed SQL dump at
+`deploy/data/ometrics-demo.sql.gz`, then import and prepare it:
+
+```bash
+sh scripts/import-demo-database.sh
+sh scripts/provision-readonly-user.sh
+sh scripts/initialize-rag.sh
+```
+
+The sanitization process is external to this stack and must replace names,
+keys, free text, locations, credentials, and identifiers consistently before a
+dump is accepted. Never sanitize a production backup in place on the public
+VPS.
+
+Generate and import synthetic Graphite metrics after the sanitized database is
+loaded:
+
+```bash
+sh scripts/generate-synthetic-graphite.sh
+sh scripts/import-synthetic-graphite.sh
+```
+
+The generator reads only sanitized metadata such as site keys, facility names,
+data-point names, and tags. It does not read current or historical telemetry
+values. It produces deterministic plausible values in Graphite plaintext format
+using the exact metric paths Omai queries. Pass an output path and number of
+days to generate another dataset, for example:
+
+```bash
+sh scripts/generate-synthetic-graphite.sh data/synthetic-90-days.txt 90
+```
+
+### Network and TLS
+
+Compose publishes only Uvicorn port `50009`. MariaDB, Postgres, Graphite, and
+Omreports have no host ports. Demo mode permits direct public browser requests
+and applies a deliberately small global daily request limit until access-code
+authentication is implemented. The static frontend is a different browser
+origin, so `OMAI_CORS_ALLOWED_ORIGINS` must contain its exact HTTPS origin.
+
+Uvicorn does not terminate TLS in this configuration. Before exposing the demo
+on a public domain, use a TLS-capable load balancer or run Uvicorn with a
+certificate and key. Do not publish any internal service port as a shortcut for
+testing.
+
+This initial demo stack intentionally has no scheduler, email sender, queue
+worker, or RAG outbox processor. Reload sanitized data, Graphite data, and the
+RAG index manually through the commands above.
 
 ## Example Questions
 

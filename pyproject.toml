@@ -33,6 +33,7 @@ omai-index-operational-text = "omai.rag.index_operational_text:main"
 omai-process-rag-index-events = "omai.rag.process_index_events:main"
 omai-vector-db-migrate = "omai.rag.migrate_vector_db:main"
 omai-evaluate = "omai.evals.runner:main"
+omai-generate-demo-graphite = "omai.demo.generate_graphite:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,4 +1,5 @@
 import pytest
+from datetime import date
 
 from omai.config.settings import Settings
 
@@ -36,3 +37,35 @@ def test_invalid_log_level_is_rejected(monkeypatch):
 
     with pytest.raises(ValueError, match="LOG_LEVEL must be one of"):
         settings.validate()
+
+
+def test_demo_mode_requires_fixed_scope_and_date(monkeypatch):
+    monkeypatch.setenv("DEMO_MODE", "true")
+    settings = Settings.from_env()
+
+    with pytest.raises(ValueError, match="DEMO_SITE_ID"):
+        settings.validate()
+
+
+def test_demo_mode_accepts_fixed_scope(monkeypatch):
+    monkeypatch.setenv("DEMO_MODE", "true")
+    monkeypatch.setenv("DEMO_SITE_ID", "4")
+    monkeypatch.setenv("DEMO_USER_ID", "1")
+    monkeypatch.setenv("DEMO_CURRENT_DATE", "2026-07-31")
+    settings = Settings.from_env()
+
+    assert settings.demo_current_date == date(2026, 7, 31)
+
+
+def test_cors_origins_are_loaded_from_env(monkeypatch):
+    monkeypatch.setenv(
+        "OMAI_CORS_ALLOWED_ORIGINS",
+        "https://demo.example.com, https://preview.example.com",
+    )
+
+    settings = Settings.from_env()
+
+    assert settings.omai_cors_allowed_origins == (
+        "https://demo.example.com",
+        "https://preview.example.com",
+    )

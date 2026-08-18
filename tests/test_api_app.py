@@ -1,13 +1,19 @@
 import json
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
 from omai.api.app import create_app, is_allowed_client_host
-from omai.api.schemas import ChatRequest, RodPumpHealthReportRequest, WeeklyOverviewRequest
+from omai.api.schemas import (
+    ChatRequest,
+    DemoChatRequest,
+    RodPumpHealthReportRequest,
+    WeeklyOverviewRequest,
+)
 from omai.config.settings import Settings
 from omai.repositories.conversation_repository import ConversationRepository
 from omai.services.domain_guard import MAX_CHAT_REQUEST_CHARACTERS, OUT_OF_DOMAIN_RESPONSE
@@ -368,6 +374,73 @@ def test_chat_endpoint_creates_conversation_and_returns_answer_only():
     assert "rows" not in json.dumps(info["sql_queries"])
     assert "row_count" not in json.dumps(info["sql_queries"])
     assert "validation" not in json.dumps(info["sql_queries"])
+
+
+def test_demo_chat_uses_server_owned_scope_and_hides_internal_response_fields():
+    repository = make_conversation_repository()
+    settings = replace(
+        make_settings(),
+        demo_mode=True,
+        demo_site_id=4,
+        demo_user_id=999,
+        demo_current_date=date(2026, 7, 31),
+    )
+    app = create_app(
+        settings=settings,
+        chat_handler=fake_chat_handler,
+        conversation_repository=repository,
+    )
+    endpoint = route_endpoint(app, "/chat", "POST")
+
+    response = endpoint(
+        DemoChatRequest.model_validate(
+            {"message": "How much gas was flared in May?"}
+        )
+    )
+
+    body = response.model_dump()
+    assert set(body) == {"conversation_id", "answer"}
+    assert body["answer"] == "db lookup: How much gas was flared in May? [fast]"
+    conversation = repository.get(body["conversation_id"], user_id=999, site_id=4)
+    assert repository.load_history(conversation)[0]["content"] == "How much gas was flared in May?"
+
+
+def test_demo_chat_request_rejects_caller_controlled_scope_fields():
+    with pytest.raises(ValueError):
+        DemoChatRequest.model_validate(
+            {
+                "message": "How much gas was flared in May?",
+                "site_id": 999,
+                "user_id": 999,
+            }
+        )
+
+
+def test_demo_api_allows_preflight_from_configured_frontend_origin():
+    settings = replace(
+        make_settings(),
+        demo_mode=True,
+        demo_site_id=4,
+        demo_user_id=999,
+        demo_current_date=date(2026, 7, 31),
+        omai_cors_allowed_origins=("https://demo.example.com",),
+    )
+    app = create_app(
+        settings=settings,
+        chat_handler=fake_chat_handler,
+        conversation_repository=make_conversation_repository(),
+    )
+
+    response = TestClient(app).options(
+        "/chat",
+        headers={
+            "Origin": "https://demo.example.com",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "https://demo.example.com"
 
 
 def test_chat_endpoint_continues_existing_conversation():

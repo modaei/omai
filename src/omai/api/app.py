@@ -8,11 +8,14 @@ from threading import BoundedSemaphore
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from omai.api.schemas import (
     ChatRequest,
     ChatResponse,
+    DemoChatRequest,
+    DemoChatResponse,
     RodPumpHealthReportRequest,
     WeeklyOverviewRequest,
     WeeklyOverviewResponse,
@@ -66,8 +69,19 @@ def create_app(
     weekly_overview_handler: WeeklyOverviewHandler | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
+    # Fail at startup instead of accepting public demo traffic with incomplete
+    # fixed-scope configuration.
+    settings.validate()
     configure_logging(settings.log_level)
     app = FastAPI(title="ometrics-ai")
+    if settings.omai_cors_allowed_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(settings.omai_cors_allowed_origins),
+            allow_credentials=False,
+            allow_methods=["POST"],
+            allow_headers=["Content-Type"],
+        )
     app.state.settings = settings
     app.state.chat_handler = chat_handler
     app.state.conversation_repository = conversation_repository
@@ -85,11 +99,15 @@ def create_app(
     @app.middleware("http")
     async def allow_only_localhost(request: Request, call_next):
         client = request.client
-        if not client or not is_allowed_client_host(client.host):
+        # The public demo intentionally receives browser traffic directly. The
+        # internal Ometrics integration remains bound to local clients only.
+        if not settings.demo_mode and (
+            not client or not is_allowed_client_host(client.host)
+        ):
             return JSONResponse(
                 status_code=403,
                 content={
-                    "detail": "Access allowed only from localhost",
+                    "detail": "Access denied",
                 },
             )
         return await call_next(request)
@@ -98,8 +116,8 @@ def create_app(
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.post("/chat", response_model=ChatResponse)
-    def chat(payload: ChatRequest) -> ChatResponse:
+    def answer_request(payload: ChatRequest) -> ChatResponse:
+        """Execute the shared conversation flow for internal and demo requests."""
         if not app.state.chat_slots.acquire(timeout=settings.omai_slot_timeout):
             raise HTTPException(status_code=503, detail="Omai service is busy")
 
@@ -217,6 +235,33 @@ def create_app(
         finally:
             app.state.chat_slots.release()
 
+    if settings.demo_mode:
+
+        @app.post("/chat", response_model=DemoChatResponse)
+        def chat(payload: DemoChatRequest) -> DemoChatResponse:
+            """Run a public demo request with a server-owned operational scope."""
+            response = answer_request(
+                ChatRequest(
+                    conversation_id=payload.conversation_id,
+                    message=payload.message,
+                    user_id=settings.demo_user_id,
+                    site_id=settings.demo_site_id,
+                    response_mode=payload.response_mode,
+                    current_date=settings.demo_current_date,
+                )
+            )
+            return DemoChatResponse(
+                conversation_id=response.conversation_id,
+                answer=response.answer,
+            )
+
+    else:
+
+        @app.post("/chat", response_model=ChatResponse)
+        def chat(payload: ChatRequest) -> ChatResponse:
+            """Run the internal Ometrics chat contract."""
+            return answer_request(payload)
+
     @app.post("/rod-pump-health-report")
     def rod_pump_health_report(payload: RodPumpHealthReportRequest) -> dict[str, Any]:
         """Run deterministic fleet analysis without creating chat records."""
@@ -306,6 +351,7 @@ def _run_weekly_overview(
 
 
 def is_allowed_client_host(host: str) -> bool:
+    """Restrict the internal Ometrics API contract to local clients."""
     return host in ALLOWED_HOSTS
 
 

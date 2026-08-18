@@ -42,6 +42,35 @@ class ChatResponse(BaseModel):
     view_intent: dict | None = None
 
 
+class DemoChatRequest(BaseModel):
+    """Public demo chat contract without operational identity fields.
+
+    The demo service derives the user, site, and reference date from server-side
+    configuration so callers cannot select another tenant or alter demo time.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    conversation_id: UUID | None = None
+    message: str = Field(min_length=1, max_length=10_000)
+    response_mode: Literal["fast", "intelligent"] = "fast"
+
+    @field_validator("message")
+    @classmethod
+    def message_must_not_be_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("message cannot be blank")
+        return value
+
+
+class DemoChatResponse(BaseModel):
+    """Public response deliberately limited to conversation state and answer."""
+
+    conversation_id: str
+    answer: str
+
+
 class RodPumpHealthReportRequest(BaseModel):
     """Internal batch request used by the scheduled email report."""
 
