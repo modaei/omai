@@ -31,7 +31,7 @@ if [ -z "$site_id" ] || [ -z "$database_host" ] || [ -z "$database_port" ] || [ 
 fi
 
 export DEMO_MYSQL_ROOT_PASSWORD="$admin_password"
-python_bin=${OMAI_PYTHON:-"$project_dir/.venv/bin/python"}
+python_bin=${OMAI_PYTHON:-"$project_dir/venv/bin/python"}
 PYTHONPATH="$project_dir/src${PYTHONPATH:+:$PYTHONPATH}" \
     "$python_bin" -m omai.demo.sanitize_database \
     --input "$source_dump" \

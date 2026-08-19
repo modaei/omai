@@ -11,7 +11,7 @@ if [ -z "$site_id" ]; then
     exit 1
 fi
 
-python_bin=${OMAI_PYTHON:-"$project_dir/.venv/bin/python"}
+python_bin=${OMAI_PYTHON:-"$project_dir/venv/bin/python"}
 PYTHONPATH="$project_dir/src${PYTHONPATH:+:$PYTHONPATH}" \
     "$python_bin" -m omai.rag.migrate_vector_db
 PYTHONPATH="$project_dir/src${PYTHONPATH:+:$PYTHONPATH}" \

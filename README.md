@@ -120,8 +120,8 @@ Run the following Omai commands from the Omai repository root. Create a virtual
 environment and install dependencies:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+python3 -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
 pip install .
 cp .env.example .env
@@ -250,14 +250,14 @@ python3 -m uvicorn api:app --host 127.0.0.1 --port 50008
 Start Omai API for Ometrics:
 
 ```bash
-source .venv/bin/activate
+source venv/bin/activate
 python3 -m uvicorn omai.api.app:create_app --factory --host 127.0.0.1 --port 50009
 ```
 
 Process queued Omai RAG index events periodically:
 
 ```bash
-source .venv/bin/activate
+source venv/bin/activate
 omai-process-rag-index-events
 ```
 
@@ -295,12 +295,12 @@ deployment-root/
 └── omreports/  # matching demo-compatible source
 ```
 
-Create `/opt/omai/.venv`, install Omai, and copy the environment template:
+Create `/opt/omai/venv`, install Omai, and copy the environment template:
 
 ```bash
 cd /opt/omai
-python3 -m venv .venv
-.venv/bin/pip install .
+python3 -m venv venv
+venv/bin/pip install .
 cp .env.example .env
 ```
 
@@ -405,7 +405,7 @@ RAG index manually through the commands above.
 ## Tests
 
 ```bash
-source .venv/bin/activate
+source venv/bin/activate
 pytest -q
 ```
 
