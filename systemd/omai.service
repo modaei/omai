@@ -1,0 +1,16 @@
+[Unit]
+Description=Omai API
+After=network.target mariadb.service postgresql.service
+
+[Service]
+Type=simple
+User=omai
+Group=omai
+WorkingDirectory=/opt/omai
+EnvironmentFile=/opt/omai/.env
+ExecStart=/opt/omai/.venv/bin/python -m uvicorn omai.api.app:create_app --factory --host 127.0.0.1 --port 50009
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

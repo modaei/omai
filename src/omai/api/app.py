@@ -247,7 +247,8 @@ def create_app(
                     user_id=settings.demo_user_id,
                     site_id=settings.demo_site_id,
                     response_mode=payload.response_mode,
-                    current_date=settings.demo_current_date,
+                    # Demo conversations always use the real current calendar date.
+                    current_date=date.today(),
                 )
             )
             return DemoChatResponse(

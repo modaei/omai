@@ -1,5 +1,4 @@
 import pytest
-from datetime import date
 
 from omai.config.settings import Settings
 
@@ -51,10 +50,9 @@ def test_demo_mode_accepts_fixed_scope(monkeypatch):
     monkeypatch.setenv("DEMO_MODE", "true")
     monkeypatch.setenv("DEMO_SITE_ID", "4")
     monkeypatch.setenv("DEMO_USER_ID", "1")
-    monkeypatch.setenv("DEMO_CURRENT_DATE", "2026-07-31")
     settings = Settings.from_env()
 
-    assert settings.demo_current_date == date(2026, 7, 31)
+    settings.validate()
 
 
 def test_cors_origins_are_loaded_from_env(monkeypatch):

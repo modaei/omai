@@ -263,18 +263,13 @@ omai-process-rag-index-events
 
 ## Public Demo Deployment
 
-The `demo` branch contains a Docker Compose deployment for a public Omai
-showcase. It does **not** deploy Ometrics, Omemails, Omtasks, or Nginx. The stack is:
+The `demo` branch supports a standard Ubuntu deployment. Omai, Omreports,
+MariaDB, Postgres with pgvector, and Graphite run as normal host services.
+Ometrics itself is not deployed to the public demo server.
 
-- Omai running directly with Uvicorn on port `50009`.
-- Omreports on a private Docker network.
-- MariaDB containing only a deterministic sanitized demo dataset.
-- Postgres + pgvector for the derived RAG index.
-- Graphite for synthetic trend and rod-pump time series.
-
-The future standalone Vue frontend runs in its own container and calls Omai
-directly at `POST /chat`. Set `OMAI_CORS_ALLOWED_ORIGINS` to that frontend's
-exact public origin. Omai runs in demo mode and accepts only this request body:
+The standalone frontend calls Omai directly at `POST /chat`. Set
+`OMAI_CORS_ALLOWED_ORIGINS` to the frontend's exact public origin. Omai runs in
+demo mode and accepts only this request body:
 
 ```json
 {
@@ -284,14 +279,15 @@ exact public origin. Omai runs in demo mode and accepts only this request body:
 }
 ```
 
-The server injects `DEMO_SITE_ID`, `DEMO_USER_ID`, and `DEMO_CURRENT_DATE`.
+The server injects `DEMO_SITE_ID` and `DEMO_USER_ID`, and always uses the real
+current date.
 Browser clients cannot select a site, user, current
 date, tools, or SQL settings. The response contains only `conversation_id` and
 `answer`.
 
-### Deployment Layout
+### Server Setup
 
-The Compose file expects sibling source checkouts by default:
+Keep Omai and Omreports as sibling source checkouts:
 
 ```text
 deployment-root/
@@ -299,48 +295,71 @@ deployment-root/
 └── omreports/  # matching demo-compatible source
 ```
 
-`OMREPORTS_SOURCE_DIR` in `deploy/.env` can point to a different Omreports
-checkout. Copy and fill the deployment environment file:
+Create `/opt/omai/.venv`, install Omai, and copy the environment template:
 
 ```bash
-cd omai/deploy
+cd /opt/omai
+python3 -m venv .venv
+.venv/bin/pip install .
 cp .env.example .env
 ```
 
 Use unique secrets and a dedicated LLM key with a low spending limit. Do not
-copy production `.env` files, databases, Graphite storage, or backups into this
-deployment.
+copy production `.env` files, databases, Graphite storage, or backups into the
+public deployment. Configure `DB_*`, `VECTOR_DB_*`, `OMREPORTS_API_URL`, and
+`MONITORING_DATA_API_URL` for host-local or private services.
 
 ### Initial Bootstrap
 
-Start the private services and gateway:
+Install pgvector once with a privileged Postgres account:
 
 ```bash
-cd deploy
-docker compose --env-file .env -f compose.yaml up --build -d
-docker compose --env-file .env -f compose.yaml ps
+psql -U postgres -d ometrics_demo -c 'CREATE EXTENSION IF NOT EXISTS vector;'
 ```
 
-Place a pre-sanitized compressed SQL dump at
-`deploy/data/ometrics-demo.sql.gz`, then import and prepare it:
+Install and start the systemd service after adjusting its user and paths:
 
 ```bash
-sh scripts/import-demo-database.sh
-sh scripts/provision-readonly-user.sh
-sh scripts/initialize-rag.sh
+sudo cp systemd/omai.service /etc/systemd/system/omai.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now omai
 ```
 
-The sanitization process is external to this stack and must replace names,
-keys, free text, locations, credentials, and identifiers consistently before a
-dump is accepted. Never sanitize a production backup in place on the public
-VPS.
+On a trusted administrator host, refresh the demo database directly from a
+private source dump. The command imports it into a temporary MariaDB staging
+database, retains one site's latest 12 months, shifts the timeline so the latest
+retained event is today, sanitizes it, validates it, creates a rollback dump,
+and replaces the configured demo database directly:
+
+```bash
+cd /opt/omai
+scripts/refresh-demo-database.sh /secure/ometrics.sql.gz /secure/demo-sanitization-seed
+scripts/provision-demo-readonly-user.sh
+scripts/initialize-demo-rag.sh
+scripts/generate-demo-graphite.sh
+scripts/import-demo-graphite.sh
+```
+
+`omai-sanitize-demo-dump` is a developer-only command. It replaces names,
+keys, free text, locations, credentials, telemetry values, and numeric values
+deterministically while preserving foreign-key relationships. It clears users,
+tokens, contacts, queues, logs, AI conversations, documents, and unrecognized
+tables. Do not run it against a production database. Keep the source dump and
+seed file outside the repository and public web root.
+
+The source dump must be created without `--databases`, `CREATE DATABASE`,
+`DROP DATABASE`, or `USE` statements, for example:
+
+```bash
+mariadb-dump --single-transaction --routines --events --no-tablespaces ometrics > ometrics.sql
+```
 
 Generate and import synthetic Graphite metrics after the sanitized database is
 loaded:
 
 ```bash
-sh scripts/generate-synthetic-graphite.sh
-sh scripts/import-synthetic-graphite.sh
+scripts/generate-demo-graphite.sh
+scripts/import-demo-graphite.sh
 ```
 
 The generator reads only sanitized metadata such as site keys, facility names,
@@ -350,24 +369,24 @@ using the exact metric paths Omai queries. Pass an output path and number of
 days to generate another dataset, for example:
 
 ```bash
-sh scripts/generate-synthetic-graphite.sh data/synthetic-90-days.txt 90
+scripts/generate-demo-graphite.sh data/synthetic-90-days.txt 90
 ```
 
 ### Network and TLS
 
-Compose publishes only Uvicorn port `50009`. MariaDB, Postgres, Graphite, and
-Omreports have no host ports. Demo mode permits direct public browser requests
-and applies a deliberately small global daily request limit until access-code
-authentication is implemented. The static frontend is a different browser
-origin, so `OMAI_CORS_ALLOWED_ORIGINS` must contain its exact HTTPS origin.
+Bind MariaDB, Postgres, Graphite, and Omreports to localhost or private network
+interfaces. Demo mode permits direct public browser requests and applies a
+deliberately small global daily request limit until access-code authentication
+is implemented. The static frontend is a different browser origin, so
+`OMAI_CORS_ALLOWED_ORIGINS` must contain its exact HTTPS origin.
 
 Uvicorn does not terminate TLS in this configuration. Before exposing the demo
 on a public domain, use a TLS-capable load balancer or run Uvicorn with a
 certificate and key. Do not publish any internal service port as a shortcut for
 testing.
 
-This initial demo stack intentionally has no scheduler, email sender, queue
-worker, or RAG outbox processor. Reload sanitized data, Graphite data, and the
+This initial demo service intentionally has no scheduler, email sender, queue
+worker, or RAG outbox processor. Refresh sanitized data, Graphite data, and the
 RAG index manually through the commands above.
 
 ## Example Questions

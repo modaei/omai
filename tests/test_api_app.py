@@ -383,7 +383,6 @@ def test_demo_chat_uses_server_owned_scope_and_hides_internal_response_fields():
         demo_mode=True,
         demo_site_id=4,
         demo_user_id=999,
-        demo_current_date=date(2026, 7, 31),
     )
     app = create_app(
         settings=settings,
@@ -422,7 +421,6 @@ def test_demo_api_allows_preflight_from_configured_frontend_origin():
         demo_mode=True,
         demo_site_id=4,
         demo_user_id=999,
-        demo_current_date=date(2026, 7, 31),
         omai_cors_allowed_origins=("https://demo.example.com",),
     )
     app = create_app(

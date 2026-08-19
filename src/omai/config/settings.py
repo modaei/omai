@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import date
 
 from dotenv import load_dotenv
 
@@ -58,7 +57,6 @@ class Settings:
     demo_mode: bool = False
     demo_site_id: int = 0
     demo_user_id: int = 0
-    demo_current_date: date | None = None
     omai_cors_allowed_origins: tuple[str, ...] = ()
 
     @classmethod
@@ -143,7 +141,6 @@ class Settings:
             demo_mode=_env_bool("DEMO_MODE", False),
             demo_site_id=int(os.getenv("DEMO_SITE_ID", "0")),
             demo_user_id=int(os.getenv("DEMO_USER_ID", "0")),
-            demo_current_date=_optional_date("DEMO_CURRENT_DATE"),
             omai_cors_allowed_origins=_env_csv("OMAI_CORS_ALLOWED_ORIGINS"),
         )
 
@@ -204,8 +201,6 @@ class Settings:
                 raise ValueError("DEMO_SITE_ID must be positive in demo mode.")
             if self.demo_user_id <= 0:
                 raise ValueError("DEMO_USER_ID must be positive in demo mode.")
-            if self.demo_current_date is None:
-                raise ValueError("DEMO_CURRENT_DATE is required in demo mode.")
 
     def validate_database(self) -> None:
         missing = []
@@ -230,12 +225,6 @@ def _env_bool(name: str, default: bool) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _optional_date(name: str) -> date | None:
-    """Read an optional ISO date and fail early for malformed demo configuration."""
-    value = os.getenv(name, "").strip()
-    return date.fromisoformat(value) if value else None
 
 
 def _env_csv(name: str) -> tuple[str, ...]:

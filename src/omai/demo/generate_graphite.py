@@ -49,7 +49,8 @@ def main() -> None:
     if args.interval_minutes <= 0:
         raise SystemExit("--interval-minutes must be positive.")
 
-    end_date = args.end_date or settings.demo_current_date or date.today()
+    # Keep generated telemetry aligned with the real current demo date.
+    end_date = args.end_date or date.today()
     output = args.output.open("w", encoding="utf-8") if args.output else sys.stdout
     try:
         metric_count, sample_count = generate_metrics(
