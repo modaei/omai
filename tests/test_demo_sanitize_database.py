@@ -31,6 +31,18 @@ def test_sanitized_data_point_names_and_tags_are_safe_and_usable():
     assert _slug("Well 101 / Pump Fillage") == "well_101_pump_fillage"
 
 
+def test_entity_aliases_are_deterministic_and_unique_within_one_entity_type():
+    sanitizer = DatabaseSanitizer.__new__(DatabaseSanitizer)
+    sanitizer.seed = b"test-seed"
+
+    aliases = sanitizer._unique_entity_aliases("Well", [437, 12, 900, 12])
+
+    assert aliases == sanitizer._unique_entity_aliases("Well", [437, 12, 900])
+    assert len(aliases) == 3
+    assert len(set(aliases.values())) == 3
+    assert all(alias.startswith("Well ") for alias in aliases.values())
+
+
 def test_database_selecting_source_dump_is_rejected_before_import(tmp_path):
     source = tmp_path / "unsafe.sql"
     source.write_text("CREATE DATABASE ometrics;\nUSE ometrics;\n", encoding="utf-8")

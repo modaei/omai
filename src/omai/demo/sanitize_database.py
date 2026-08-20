@@ -595,9 +595,14 @@ class DatabaseSanitizer:
             cursor.execute(
                 f"SELECT id{', `name`' if name_column else ''}{', `key`' if key_column else ''} FROM `{table}`"
             )
-            for row in cursor.fetchall():
+            rows = cursor.fetchall()
+            entity_aliases = self._unique_entity_aliases(
+                label,
+                [int(row[0]) for row in rows],
+            )
+            for row in rows:
                 identifier = row[0]
-                alias = self._entity_alias(label, int(identifier))
+                alias = entity_aliases[int(identifier)]
                 old_values = row[1:]
                 for old in old_values:
                     if old:
@@ -787,6 +792,23 @@ class DatabaseSanitizer:
 
     def _entity_alias(self, label: str, identifier: int) -> str:
         return f"{label} {100 + int(self._fraction(f'{label}:{identifier}') * 899)}"
+
+    def _unique_entity_aliases(self, label: str, identifiers: list[int]) -> dict[int, str]:
+        """Return stable, non-colliding aliases for every row in one entity table.
+
+        Hash ordering keeps the output unrelated to source row IDs, while the
+        sequential suffix guarantees unique values for columns such as
+        ``wells.key`` that have a database unique constraint.
+        """
+        ordered_identifiers = sorted(
+            set(identifiers),
+            key=lambda identifier: (self._fraction(f"{label}:{identifier}"), identifier),
+        )
+
+        return {
+            identifier: f"{label} {100 + position}"
+            for position, identifier in enumerate(ordered_identifiers)
+        }
 
     def _synthetic_text(self, table: str, identifier: int) -> str:
         terms = ("routine inspection", "chemical treatment", "paraffin review", "maintenance follow-up", "flow verification")
