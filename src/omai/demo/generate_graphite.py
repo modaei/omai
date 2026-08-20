@@ -190,3 +190,7 @@ def _baseline_for_name(data_point_name: str, generator: random.Random) -> float:
     if "current" in normalized or "amp" in normalized:
         return generator.uniform(10, 150)
     return generator.uniform(10, 500)
+
+
+if __name__ == "__main__":
+    main()
