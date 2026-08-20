@@ -259,8 +259,6 @@ class DemoDumpSanitizer:
             raise SanitizationError("--database-port must be positive.")
         if not self.options.database_host or not self.options.database_user:
             raise SanitizationError("--database-host and --database-user are required.")
-        if not self.options.target_database.lower().endswith("demo") and "demo" not in self.options.target_database.lower():
-            raise SanitizationError("Target database name must identify a demo database.")
         if not self.options.staging_database.startswith("omai_demo_staging"):
             raise SanitizationError("Staging database must start with 'omai_demo_staging'.")
         if self.options.staging_database == self.options.target_database:
