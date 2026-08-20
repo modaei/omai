@@ -8,6 +8,7 @@ User=ubuntu
 Group=ubuntu
 WorkingDirectory=/opt/omai
 EnvironmentFile=/opt/omai/.env
+Environment=PYTHONPATH=/opt/omai/src
 ExecStart=/opt/omai/venv/bin/python -m uvicorn omai.api.app:create_app --factory --host 127.0.0.1 --port 50009
 Restart=on-failure
 RestartSec=5

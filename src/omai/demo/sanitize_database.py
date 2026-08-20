@@ -51,7 +51,6 @@ FORBIDDEN_TABLES = {
     "role_user",
     "settings",
     "site_user",
-    "users",
     "well_documents",
 }
 
@@ -195,6 +194,7 @@ class SanitizationOptions:
 
     input_path: Path
     site_id: int
+    demo_user_id: int
     seed: bytes
     staging_database: str
     database_host: str
@@ -232,6 +232,7 @@ class DemoDumpSanitizer:
                 sanitizer = DatabaseSanitizer(
                     connection=connection,
                     site_id=self.options.site_id,
+                    demo_user_id=self.options.demo_user_id,
                     seed=self.options.seed,
                     keep_days=self.options.keep_days,
                     target_date=date.today(),
@@ -253,8 +254,8 @@ class DemoDumpSanitizer:
     def _validate_options(self) -> None:
         if not self.options.input_path.is_file():
             raise SanitizationError(f"Input dump does not exist: {self.options.input_path}")
-        if self.options.site_id <= 0 or self.options.keep_days <= 0:
-            raise SanitizationError("--site-id and --keep-days must be positive.")
+        if self.options.site_id <= 0 or self.options.demo_user_id <= 0 or self.options.keep_days <= 0:
+            raise SanitizationError("--site-id, --demo-user-id, and --keep-days must be positive.")
         if self.options.database_port <= 0:
             raise SanitizationError("--database-port must be positive.")
         if not self.options.database_host or not self.options.database_user:
@@ -435,12 +436,14 @@ class DatabaseSanitizer:
         *,
         connection: pymysql.connections.Connection,
         site_id: int,
+        demo_user_id: int,
         seed: bytes,
         keep_days: int,
         target_date: date,
     ):
         self.connection = connection
         self.site_id = site_id
+        self.demo_user_id = demo_user_id
         self.seed = seed
         self.keep_days = keep_days
         self.target_date = target_date
@@ -454,6 +457,7 @@ class DatabaseSanitizer:
             cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
             self._clear_non_operational_tables(cursor)
             self._keep_selected_site(cursor)
+            self._create_demo_user(cursor)
             self._remove_orphans(cursor)
             self._retain_recent_events(cursor)
             self._remove_orphans(cursor)
@@ -500,6 +504,44 @@ class DatabaseSanitizer:
             if "site_id" in columns:
                 cursor.execute(f"DELETE FROM `{table}` WHERE site_id <> %s", (self.site_id,))
         cursor.execute("DELETE FROM sites WHERE id <> %s", (self.site_id,))
+
+    def _create_demo_user(self, cursor: pymysql.cursors.Cursor) -> None:
+        """Create the one non-login user required by Omai's foreign keys.
+
+        Public demo requests use ``DEMO_USER_ID`` as a server-owned identity.
+        Conversations and daily rate-limit rows reference ``users.id``, so a
+        synthetic user must exist even though all production users are removed.
+        """
+        columns = self.columns.get("users")
+        if columns is None:
+            raise SanitizationError("Source database has no users table required by Omai conversations.")
+        required = {"id", "name", "email", "password"}
+        if not required.issubset(columns):
+            raise SanitizationError("Users table does not contain Omai demo-user columns.")
+
+        now = datetime.combine(self.target_date, datetime.min.time())
+        values: dict[str, Any] = {
+            "id": self.demo_user_id,
+            "name": "Omai Demo User",
+            "email": f"omai-demo-{self.demo_user_id}@example.invalid",
+            # This identity cannot be used to log into Ometrics. It exists only
+            # to satisfy chat-conversation and rate-limit foreign keys.
+            "password": "!public-demo-login-disabled!",
+        }
+        if "email_verified_at" in columns:
+            values["email_verified_at"] = now
+        if "created_at" in columns:
+            values["created_at"] = now
+        if "updated_at" in columns:
+            values["updated_at"] = now
+
+        column_names = list(values)
+        cursor.execute(
+            "INSERT INTO `users` "
+            f"({', '.join(f'`{column}`' for column in column_names)}) "
+            f"VALUES ({', '.join(['%s'] * len(column_names))})",
+            [values[column] for column in column_names],
+        )
 
     def _remove_orphans(self, cursor: pymysql.cursors.Cursor) -> None:
         """Delete rows whose non-null foreign key now targets a removed row."""
@@ -781,6 +823,7 @@ class DatabaseSanitizer:
                 counts[table] = int(cursor.fetchone()[0])
         return {
             "site_id": self.site_id,
+            "demo_user_id": self.demo_user_id,
             "keep_days": self.keep_days,
             "date_shift_days": self.date_shift_days,
             "table_counts": counts,
@@ -831,6 +874,7 @@ def _options_from_args(argv: list[str] | None) -> SanitizationOptions:
     parser.add_argument("--input", type=Path, required=True, help="Private .sql or .sql.gz source dump.")
     parser.add_argument("--site-id", type=int, required=True)
     parser.add_argument("--seed-file", type=Path, required=True, help="Private deterministic sanitization seed.")
+    parser.add_argument("--demo-user-id", type=int, required=True)
     parser.add_argument("--staging-database", default="omai_demo_staging")
     parser.add_argument("--database-host", default="127.0.0.1")
     parser.add_argument("--database-port", type=int, default=3306)
@@ -849,6 +893,7 @@ def _options_from_args(argv: list[str] | None) -> SanitizationOptions:
     return SanitizationOptions(
         input_path=args.input,
         site_id=args.site_id,
+        demo_user_id=args.demo_user_id,
         seed=args.seed_file.read_bytes().strip(),
         staging_database=args.staging_database,
         database_host=args.database_host,

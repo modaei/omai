@@ -110,8 +110,15 @@ class DailyUsageRepository:
                         remaining=self.request_limit - 1,
                         reset_at=reset_at,
                     )
-                except IntegrityError:
-                    pass
+                except IntegrityError as exc:
+                    # A duplicate-key error is expected when another request
+                    # created this user/site/day row first. Other integrity
+                    # errors, such as a missing referenced demo user, must not
+                    # be mistaken for a normal rate-limit update.
+                    if not _is_duplicate_key_error(exc):
+                        raise DailyUsageRepositoryError(
+                            f"Could not create daily AI usage: {exc}"
+                        ) from exc
 
                 result = connection.execute(
                     text(
@@ -196,3 +203,13 @@ class DailyUsageRepository:
             datetime.now(timezone.utc).replace(tzinfo=None),
             next_day.astimezone(timezone.utc),
         )
+
+
+def _is_duplicate_key_error(error: IntegrityError) -> bool:
+    """Return true for MySQL and SQLite unique-constraint violations only."""
+    arguments = getattr(error.orig, "args", ())
+    if arguments and arguments[0] == 1062:
+        return True
+
+    message = str(error.orig).lower()
+    return "duplicate entry" in message or "unique constraint failed" in message

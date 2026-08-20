@@ -19,14 +19,15 @@ env_value() {
 }
 
 site_id=$(env_value DEMO_SITE_ID)
+demo_user_id=$(env_value DEMO_USER_ID)
 database_host=$(env_value DB_HOST)
 database_port=$(env_value DB_PORT)
 database_name=$(env_value DB_NAME)
 admin_user=$(env_value DEMO_DB_ADMIN_USER)
 admin_password=$(env_value DEMO_DB_ADMIN_PASSWORD)
 
-if [ -z "$site_id" ] || [ -z "$database_host" ] || [ -z "$database_port" ] || [ -z "$database_name" ] || [ -z "$admin_user" ] || [ -z "$admin_password" ]; then
-    echo "DEMO_SITE_ID, DB_HOST, DB_PORT, DB_NAME, DEMO_DB_ADMIN_USER, and DEMO_DB_ADMIN_PASSWORD are required." >&2
+if [ -z "$site_id" ] || [ -z "$demo_user_id" ] || [ -z "$database_host" ] || [ -z "$database_port" ] || [ -z "$database_name" ] || [ -z "$admin_user" ] || [ -z "$admin_password" ]; then
+    echo "DEMO_SITE_ID, DEMO_USER_ID, DB_HOST, DB_PORT, DB_NAME, DEMO_DB_ADMIN_USER, and DEMO_DB_ADMIN_PASSWORD are required." >&2
     exit 1
 fi
 
@@ -37,6 +38,7 @@ PYTHONPATH="$project_dir/src${PYTHONPATH:+:$PYTHONPATH}" \
     --input "$source_dump" \
     --seed-file "$seed_file" \
     --site-id "$site_id" \
+    --demo-user-id "$demo_user_id" \
     --database-host "$database_host" \
     --database-port "$database_port" \
     --database-user "$admin_user" \

@@ -1,6 +1,7 @@
 import pytest
 
 from omai.demo.sanitize_database import (
+    DatabaseSanitizer,
     DemoDumpSanitizer,
     SanitizationError,
     SanitizationOptions,
@@ -50,6 +51,7 @@ def test_database_selecting_source_dump_is_rejected_before_import(tmp_path):
         SanitizationOptions(
             input_path=source,
             site_id=4,
+            demo_user_id=1,
             seed=b"test-seed",
             staging_database="omai_demo_staging",
             database_host="127.0.0.1",
