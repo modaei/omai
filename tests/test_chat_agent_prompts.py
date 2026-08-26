@@ -4,8 +4,11 @@ from omai.prompts.chat_agent import (
     SQL_DRAFT_VALID_PROMPT_VERSION,
     SQL_EXECUTED_PROMPT_VERSION,
     SQL_FAILED_PROMPT_VERSION,
+    SKILL_CORE_SYSTEM_PROMPT_VERSION,
     build_authoritative_context_message,
+    build_chat_skill_message,
     build_chat_system_message,
+    build_skill_core_system_message,
     build_sql_draft_valid_message,
     build_sql_executed_message,
     build_sql_failed_message,
@@ -48,6 +51,22 @@ def test_authoritative_context_prompt_is_versioned_and_rendered():
     assert "<authoritative_context>" in message.content
     assert "prefetched facts" in message.content
     assert "{authoritative_context}" not in message.content
+
+
+def test_skill_core_prompt_exposes_catalog_and_active_skills_are_versioned():
+    core = build_skill_core_system_message(
+        site_name="HARTZOG DRAW",
+        site_id=4,
+        today="2026-07-27",
+        skill_catalog="- reports_allocation (v1): reports",
+    )
+    skill = build_chat_skill_message("reports_allocation", "v1", "Use report tools.")
+
+    assert SKILL_CORE_SYSTEM_PROMPT_VERSION in core.content
+    assert "<skill_catalog>" in core.content
+    assert "activate_skills" in core.content
+    assert "reports_allocation (v1)" in core.content
+    assert '<active_skill id="reports_allocation" version="v1">' in skill.content
 
 
 def test_sql_control_prompts_are_versioned():

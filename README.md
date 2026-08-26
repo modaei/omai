@@ -75,6 +75,10 @@ domain tools will be unavailable or return errors.
   final answer.
 - Deterministic routing handles common high-confidence workflows before a full
   LLM tool-selection loop is needed.
+- Optional skill routing replaces the large agent prompt with a compact global
+  policy plus only the relevant versioned domain skills. The LLM receives a
+  catalog of all skills and can activate up to two additional trusted skills
+  before calling operational tools.
 - `omreports` remains the source for calculated report results.
 - Ometrics MySQL remains the source of operational records.
 - Postgres + pgvector stores the derived operational-text vector index.
@@ -154,6 +158,20 @@ LLM_API_KEY=your-openrouter-key
 LLM_MODEL=openai/gpt-5-mini
 LLM_BASE_URL=https://openrouter.ai/api/v1
 ```
+
+### Optional skill routing
+
+The default agent keeps the legacy complete system prompt. To use the compact
+skill-based prompt and server-enforced per-skill tool allowlists, set:
+
+```bash
+OMAI_SKILLS_ENABLED=true
+```
+
+The deterministic router selects up to two initial skills without another model
+call. For ambiguous requests, the main model can activate up to two more skills
+from the trusted catalog before it can access that skill's tools. Selected and
+activated skill IDs are recorded in `ai_messages.info` timing metadata.
 
 Configure the Ometrics MySQL connection for reading operational data and storing
 conversation history:

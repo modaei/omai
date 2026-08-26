@@ -302,6 +302,7 @@ def answer_chat(
         question=question,
         authoritative_context=authoritative_context,
         today=effective_today,
+        skills_enabled=settings.omai_skills_enabled,
     )
     if not dependencies:
         return answer, traces, stats
@@ -336,13 +337,16 @@ def _merge_chat_stats(
     first: dict[str, Any], second: dict[str, Any]
 ) -> dict[str, Any]:
     """Combine prefetch and agent timings into the public statistics shape."""
-    return {
+    merged = {
         "total_seconds": round(first["total_seconds"] + second["total_seconds"], 3),
         "model_seconds": round(first["model_seconds"] + second["model_seconds"], 3),
         "tool_seconds": round(first["tool_seconds"] + second["tool_seconds"], 3),
         "model_calls": first["model_calls"] + second["model_calls"],
         "tool_calls": [*first["tool_calls"], *second["tool_calls"]],
     }
+    if "skills" in second:
+        merged["skills"] = second["skills"]
+    return merged
 
 
 def _site_name_from_db(settings: Settings, site_id: int) -> str | None:

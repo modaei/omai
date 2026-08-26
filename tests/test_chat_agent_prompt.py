@@ -46,6 +46,43 @@ class FakeToolModel:
         return AIMessage(content="Final answer.")
 
 
+class FakeSkillActivationModel:
+    """Simulate activation followed by a newly available report tool call."""
+
+    def __init__(self):
+        self.calls = 0
+        self.bound_tool_names: list[list[str]] = []
+        self.messages = None
+
+    def bind_tools(self, tools, parallel_tool_calls=False):
+        self.bound_tool_names.append([tool.name for tool in tools])
+        return self
+
+    def invoke(self, messages):
+        self.calls += 1
+        self.messages = messages
+        if self.calls == 1:
+            return AIMessage(
+                content="",
+                tool_calls=[{
+                    "id": "activate_1",
+                    "name": "activate_skills",
+                    "args": {"skill_ids": ["reports_allocation"]},
+                }],
+            )
+        if self.calls == 2:
+            assert "run_report" in self.bound_tool_names[-1]
+            return AIMessage(
+                content="",
+                tool_calls=[{
+                    "id": "report_1",
+                    "name": "run_report",
+                    "args": {"report_name": "oil_production"},
+                }],
+            )
+        return AIMessage(content="Activated report answer.")
+
+
 class FakeToolBoundSqlModel:
     def __init__(self):
         self.calls = 0
@@ -181,6 +218,12 @@ class FakeUnitsDisclaimerModel:
 def sample_tool(value: str) -> str:
     """Return a sample value."""
     return f"result: {value}"
+
+
+@tool("run_report")
+def run_report(report_name: str) -> str:
+    """Return a report result for activation testing."""
+    return f"report: {report_name}"
 
 
 @tool
@@ -506,6 +549,29 @@ def test_tool_trace_includes_tool_result_for_local_debugging():
     assert len(stats["tool_calls"]) == 1
     assert stats["tool_calls"][0]["tool"] == "sample_tool"
     assert stats["tool_calls"][0]["seconds"] >= 0
+
+
+def test_skill_activation_expands_tool_access_and_records_trace():
+    model = FakeSkillActivationModel()
+
+    answer, traces, stats = answer_chat_question(
+        model=model,
+        tools=[run_report],
+        site_id=1,
+        history=[],
+        question="Please help with this.",
+        skills_enabled=True,
+    )
+
+    assert answer == "Activated report answer."
+    assert [trace["tool"] for trace in traces] == ["activate_skills", "run_report"]
+    assert stats["skills"] == {
+        "selected": [],
+        "activated": ["reports_allocation"],
+    }
+    assert "run_report" not in model.bound_tool_names[0]
+    assert "activate_skills" in model.bound_tool_names[0]
+    assert "<skill_catalog>" in model.messages[0].content
 
 
 def test_units_disclaimer_is_removed_from_final_answer():

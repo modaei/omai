@@ -7,7 +7,7 @@ from time import perf_counter
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langchain_core.tools import BaseTool
+from langchain_core.tools import BaseTool, StructuredTool
 from langchain_openai import ChatOpenAI
 
 from omai.agents.producing_wells_graph import (
@@ -15,11 +15,19 @@ from omai.agents.producing_wells_graph import (
 )
 from omai.prompts.chat_agent import (
     build_authoritative_context_message,
+    build_chat_skill_message,
     build_chat_system_message,
+    build_skill_core_system_message,
     build_sql_draft_valid_message,
     build_sql_executed_message,
     build_sql_failed_message,
     build_sql_success_final_message,
+)
+from omai.skills.chat_skills import (
+    resolve_activated_skills,
+    select_initial_skills,
+    skill_catalog,
+    tool_names_for_skills,
 )
 
 
@@ -67,6 +75,7 @@ def answer_chat_question(
     site_name: str | None = None,
     authoritative_context: str | None = None,
     today: date | None = None,
+    skills_enabled: bool = False,
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     """Answer one user question with tool calling and bounded agent control flow.
 
@@ -81,15 +90,47 @@ def answer_chat_question(
     started_at = perf_counter()
     effective_today = today or date.today()
     tool_map = {tool.name: tool for tool in tools}
-    model_with_tools = model.bind_tools(tools, parallel_tool_calls=False)
+    active_skills = list(select_initial_skills(question, history)) if skills_enabled else []
+    activated_skill_ids: list[str] = []
+    activation_used = False
+    activation_tool = _build_skill_activation_tool() if skills_enabled else None
 
-    messages = [
-        build_chat_system_message(
+    if skills_enabled:
+        messages = [
+            build_skill_core_system_message(
+                site_name=site_name,
+                site_id=site_id,
+                today=effective_today.isoformat(),
+                skill_catalog=skill_catalog(),
+            ),
+            *[
+                build_chat_skill_message(
+                    skill.skill_id,
+                    skill.version,
+                    skill.instructions,
+                )
+                for skill in active_skills
+            ],
+        ]
+    else:
+        messages = [build_chat_system_message(
             site_name=site_name,
             site_id=site_id,
             today=effective_today.isoformat(),
+        )]
+
+    def bind_active_tools() -> Any:
+        """Bind only the server-approved tools for the currently active skills."""
+        if not skills_enabled:
+            return model.bind_tools(tools, parallel_tool_calls=False)
+        permitted_names = tool_names_for_skills(active_skills)
+        active_tools = [tool for tool in tools if tool.name in permitted_names]
+        return model.bind_tools(
+            [*active_tools, activation_tool],
+            parallel_tool_calls=False,
         )
-    ]
+
+    model_with_tools = bind_active_tools()
 
     if authoritative_context:
         messages.append(build_authoritative_context_message(authoritative_context))
@@ -109,6 +150,11 @@ def answer_chat_question(
         "model_calls": 0,
         "tool_calls": [],
     }
+    if skills_enabled:
+        stats["skills"] = {
+            "selected": [skill.skill_id for skill in active_skills],
+            "activated": activated_skill_ids,
+        }
     force_final_response = False
     seen_sql_drafts: set[str] = set()
     failed_sql_attempts = 0
@@ -117,7 +163,9 @@ def answer_chat_question(
         history,
     )
 
-    for _ in range(MAX_TOOL_ROUNDS):
+    # Activation gets one extra model round, preserving the normal six-round
+    # operational tool budget for an ambiguous request that loads a skill.
+    for _ in range(MAX_TOOL_ROUNDS + int(skills_enabled)):
         model_started_at = perf_counter()
         response = model.invoke(messages) if force_final_response else model_with_tools.invoke(messages)
         stats["model_seconds"] += perf_counter() - model_started_at
@@ -128,6 +176,59 @@ def answer_chat_question(
             stats["total_seconds"] = perf_counter() - started_at
             return _clean_answer(_message_text(response.content)), traces, _rounded_stats(stats)
 
+        activation_calls = [
+            call for call in response.tool_calls
+            if call["name"] == "activate_skills"
+        ]
+        if skills_enabled and activation_calls:
+            activation_call = activation_calls[0]
+            requested_ids = activation_call.get("args", {}).get("skill_ids", [])
+            if not isinstance(requested_ids, list):
+                requested_ids = []
+            newly_active = () if activation_used else resolve_activated_skills(
+                requested_ids,
+                (skill.skill_id for skill in active_skills),
+            )
+            activation_used = True
+            active_skills.extend(newly_active)
+            activated_skill_ids.extend(skill.skill_id for skill in newly_active)
+            activation_result = {
+                "ok": bool(newly_active),
+                "activated_skill_ids": [skill.skill_id for skill in newly_active],
+                "message": (
+                    "Requested skill instructions are now active. Choose operational tools on the next call."
+                    if newly_active
+                    else "No requested inactive skills were available. Continue with the active skills."
+                ),
+            }
+            traces.append({
+                "tool": "activate_skills",
+                "arguments": {"skill_ids": requested_ids},
+                "result": json.dumps(activation_result, separators=(",", ":")),
+                "internal": True,
+            })
+            stats["tool_calls"].append({"tool": "activate_skills", "seconds": 0.0})
+            messages.append(ToolMessage(
+                content=json.dumps(activation_result, separators=(",", ":")),
+                tool_call_id=activation_call["id"],
+            ))
+            # OpenAI-compatible APIs require a response for every tool call in
+            # the assistant message. Deferred calls must be reissued after the
+            # skill instructions and newly allowed tool schemas are available.
+            for deferred_call in response.tool_calls:
+                if deferred_call is activation_call:
+                    continue
+                messages.append(ToolMessage(
+                    content="Deferred until skill activation is complete. Reissue this tool call if still needed.",
+                    tool_call_id=deferred_call["id"],
+                ))
+            messages.extend(
+                build_chat_skill_message(skill.skill_id, skill.version, skill.instructions)
+                for skill in newly_active
+            )
+            model_with_tools = bind_active_tools()
+            continue
+
         for call in response.tool_calls:
             requested_tool_name = call["name"]
             tool_name = requested_tool_name
@@ -135,7 +236,14 @@ def answer_chat_question(
             trace: dict[str, Any] = {"tool": tool_name, "arguments": arguments}
 
             tool_started_at = perf_counter()
-            if requested_tool_name == "execute_operational_sql" and "draft_operational_sql" in tool_map:
+            permitted_tool_names = tool_names_for_skills(active_skills) if skills_enabled else frozenset(tool_map)
+            tool_is_blocked = skills_enabled and requested_tool_name not in permitted_tool_names
+            if tool_is_blocked:
+                result = (
+                    f"Tool {requested_tool_name!r} is not available through active skills. "
+                    "Activate the relevant skill first."
+                )
+            elif requested_tool_name == "execute_operational_sql" and "draft_operational_sql" in tool_map:
                 # Treat model-requested execution as a validation draft first.
                 # If validation succeeds, _execute_valid_sql_draft runs the SQL
                 # immediately below. If validation fails, the model receives
@@ -144,47 +252,48 @@ def answer_chat_question(
                 trace["tool"] = tool_name
                 trace["requested_tool"] = requested_tool_name
                 trace["validation_before_execute"] = True
-            tool = tool_map.get(tool_name)
-            if tool is None:
-                result = f"Unknown tool: {tool_name}"
-            elif block_coverage_sql and requested_tool_name in {
-                "draft_operational_sql",
-                "execute_operational_sql",
-            }:
-                result = json.dumps(
-                    {
-                        "ok": False,
-                        "executed": False,
-                        "error": (
-                            "Operational SQL cannot classify active/producing well "
-                            "test coverage. Use the dedicated well-population tool "
-                            "and an unfiltered search_well_tests result for the "
-                            "same date range."
-                        ),
-                    },
-                    separators=(",", ":"),
-                )
-                force_final_response = True
-            elif _is_repeated_sql_draft(tool_name, arguments, seen_sql_drafts):
-                # Repeated SQL drafts were a common source of tool-limit failures.
-                # Return a structured failure so the model can stop or use prior
-                # results instead of consuming another tool round.
-                result = json.dumps(
-                    {
-                        "ok": False,
-                        "executed": False,
-                        "validation": {
-                            "valid": False,
-                            "error": "Repeated SQL draft. Execute the previous valid draft or answer from prior tool results.",
+            if not tool_is_blocked:
+                tool = tool_map.get(tool_name)
+                if tool is None:
+                    result = f"Unknown tool: {tool_name}"
+                elif block_coverage_sql and requested_tool_name in {
+                    "draft_operational_sql",
+                    "execute_operational_sql",
+                }:
+                    result = json.dumps(
+                        {
+                            "ok": False,
+                            "executed": False,
+                            "error": (
+                                "Operational SQL cannot classify active/producing well "
+                                "test coverage. Use the dedicated well-population tool "
+                                "and an unfiltered search_well_tests result for the "
+                                "same date range."
+                            ),
                         },
-                    },
-                    separators=(",", ":"),
-                )
-            else:
-                try:
-                    result = tool.invoke(arguments)
-                except Exception as exc:  # LangChain schema errors are user-facing here.
-                    result = f"Tool validation failed: {exc}"
+                        separators=(",", ":"),
+                    )
+                    force_final_response = True
+                elif _is_repeated_sql_draft(tool_name, arguments, seen_sql_drafts):
+                    # Repeated SQL drafts were a common source of tool-limit failures.
+                    # Return a structured failure so the model can stop or use prior
+                    # results instead of consuming another tool round.
+                    result = json.dumps(
+                        {
+                            "ok": False,
+                            "executed": False,
+                            "validation": {
+                                "valid": False,
+                                "error": "Repeated SQL draft. Execute the previous valid draft or answer from prior tool results.",
+                            },
+                        },
+                        separators=(",", ":"),
+                    )
+                else:
+                    try:
+                        result = tool.invoke(arguments)
+                    except Exception as exc:  # LangChain schema errors are user-facing here.
+                        result = f"Tool validation failed: {exc}"
             tool_seconds = perf_counter() - tool_started_at
             stats["tool_seconds"] += tool_seconds
             stats["tool_calls"].append(
@@ -391,7 +500,7 @@ def _clean_answer(answer: str) -> str:
 
 def _rounded_stats(stats: dict[str, Any]) -> dict[str, Any]:
     """Round timing statistics while preserving tool-call structure."""
-    return {
+    rounded = {
         "total_seconds": round(stats["total_seconds"], 3),
         "model_seconds": round(stats["model_seconds"], 3),
         "tool_seconds": round(stats["tool_seconds"], 3),
@@ -404,3 +513,26 @@ def _rounded_stats(stats: dict[str, Any]) -> dict[str, Any]:
             for tool_call in stats["tool_calls"]
         ],
     }
+    if "skills" in stats:
+        rounded["skills"] = stats["skills"]
+    return rounded
+
+
+def _build_skill_activation_tool() -> StructuredTool:
+    """Expose bounded trusted-skill activation without granting data access.
+
+    The agent intercepts this call before normal tool execution. The callable is
+    only a schema carrier for OpenAI-compatible tool binding.
+    """
+    def activate_skills(skill_ids: list[str]) -> str:
+        """Activate up to two named Omai instruction skills before using data tools."""
+        return json.dumps({"requested_skill_ids": skill_ids})
+
+    return StructuredTool.from_function(
+        func=activate_skills,
+        name="activate_skills",
+        description=(
+            "Load trusted Omai instruction skills when the active skill guidance "
+            "does not cover the request. Call at most once before data tools."
+        ),
+    )

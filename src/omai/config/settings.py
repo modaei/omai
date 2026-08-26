@@ -51,6 +51,7 @@ class Settings:
     rag_embedding_model: str
     rag_embedding_dimensions: int
     log_level: str
+    omai_skills_enabled: bool = False
     monitoring_data_api_url: str = "http://metrics1.ultimatesys.com/render"
     data_point_trend_timeout_seconds: float = 20
     data_point_trend_max_data_points: int = 300
@@ -134,6 +135,7 @@ class Settings:
             ).strip(),
             rag_embedding_dimensions=int(os.getenv("RAG_EMBEDDING_DIMENSIONS", "1536")),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
+            omai_skills_enabled=_env_bool("OMAI_SKILLS_ENABLED", False),
         )
 
     def validate(self) -> None:
