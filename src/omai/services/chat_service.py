@@ -24,6 +24,7 @@ from omai.agents.producing_wells_graph import (
 )
 from omai.agents.production_context_graph import prepare_production_context_dependency
 from omai.agents.report_comparison_graph import prepare_report_comparison_dependency
+from omai.agents.rod_pump_graph import try_answer_rod_pump_question
 from omai.agents.well_test_graph import (
     prepare_well_test_analysis_dependency,
     try_answer_well_test_analysis,
@@ -91,6 +92,7 @@ def answer_chat(
     question: str,
     response_mode: str = "fast",
     current_date: str | None = None,
+    rod_pump_context: dict[str, Any] | None = None,
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     settings.validate()
     effective_today = date.fromisoformat(current_date) if current_date else date.today()
@@ -190,7 +192,6 @@ def answer_chat(
             site_id,
             operational_context_store=operational_context_store,
         ),
-        *build_rod_pump_analysis_tools(rod_pump_analysis_client, site_id),
         *build_onrr_tools(onrr_client, site_id),
         *build_shutdown_tools(
             shutdown_client,
@@ -247,6 +248,29 @@ def answer_chat(
     )
     if well_test_answer is not None:
         return well_test_answer
+    # Rod-pump health is a constrained specialist path. Route it before shared
+    # prefetch dependencies so a clear single-well question cannot trigger
+    # unrelated report, population, or well-test retrieval.
+    model = build_model(
+        api_key=settings.llm_api_key,
+        model=settings.llm_model,
+        base_url=settings.llm_base_url,
+        reasoning_effort=reasoning_effort_for_response_mode(response_mode),
+    )
+    rod_pump_answer = try_answer_rod_pump_question(
+        model=model,
+        tools=build_rod_pump_analysis_tools(rod_pump_analysis_client, site_id),
+        question=question,
+        history=history,
+        site_name=resolved_site_name,
+        today=effective_today,
+        prior_context=rod_pump_context,
+        rod_pump_well_resolver=lambda candidate: rod_pump_analysis_client.resolves_rod_pump_well(
+            site_id, candidate
+        ),
+    )
+    if rod_pump_answer is not None:
+        return rod_pump_answer
     dependencies = []
     population_dependency = prepare_well_population_dependency(
         tools=tools,
@@ -287,12 +311,6 @@ def answer_chat(
         authoritative_context = "\n".join(item["context"] for item in dependencies)
         used_tool_names = {item["tool_name"] for item in dependencies}
         agent_tools = [tool for tool in tools if tool.name not in used_tool_names]
-    model = build_model(
-        api_key=settings.llm_api_key,
-        model=settings.llm_model,
-        base_url=settings.llm_base_url,
-        reasoning_effort=reasoning_effort_for_response_mode(response_mode),
-    )
     answer, traces, stats = answer_chat_question(
         model=model,
         tools=agent_tools,

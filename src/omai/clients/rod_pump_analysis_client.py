@@ -165,6 +165,14 @@ class RodPumpAnalysisClient:
             "warnings": warnings,
         }
 
+    def resolves_rod_pump_well(self, site_id: int, well_name: str) -> bool:
+        """Check a candidate during chat routing without running telemetry analysis."""
+        try:
+            self._well(site_id, well_name)
+        except RodPumpAnalysisError:
+            return False
+        return True
+
     def rank_wells(
         self,
         site_id: int,
@@ -462,6 +470,7 @@ class UnavailableRodPumpAnalysisClient:
     def __init__(self, reason: str): self.reason = reason
     def analyze(self, *args, **kwargs): raise RodPumpAnalysisError(self.reason)
     def rank_wells(self, *args, **kwargs): raise RodPumpAnalysisError(self.reason)
+    def resolves_rod_pump_well(self, *args, **kwargs): return False
 
 
 def _note_event(note: str) -> str:

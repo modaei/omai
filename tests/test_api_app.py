@@ -6,7 +6,7 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import create_engine, text
 
-from omai.api.app import create_app, is_allowed_client_host
+from omai.api.app import _assistant_info, create_app, is_allowed_client_host
 from omai.api.schemas import ChatRequest, RodPumpHealthReportRequest, WeeklyOverviewRequest
 from omai.config.settings import Settings
 from omai.repositories.conversation_repository import ConversationRepository
@@ -798,6 +798,46 @@ def test_chat_request_rejects_invalid_response_mode():
         assert "response_mode" in str(exc)
     else:
         raise AssertionError("invalid response_mode was accepted")
+
+
+def test_assistant_info_persists_compact_rod_pump_context_only():
+    info = _assistant_info(
+        [
+            {
+                "tool": "analyze_rod_pump",
+                "arguments": {"well_name": "5823"},
+                "result": {
+                    "ok": True,
+                    "well": {"name": "HDU 5823"},
+                    "interval": {"start": "2026-07-01", "end": "2026-07-02"},
+                    "diagnoses": [{"name": "fluid pound"}],
+                    "trend_series": {"Pump Fillage": [{"timestamp": "large raw series"}]},
+                    "averaged_dynographs": [{"large": "raw card"}],
+                },
+            }
+        ],
+        {"total_seconds": 1.0, "model_seconds": 0.5, "tool_seconds": 0.5, "model_calls": 2, "tool_calls": []},
+        "fast",
+    )
+
+    assert info["rod_pump_context"]["well"] == {"name": "HDU 5823"}
+    assert "trend_series" not in info["rod_pump_context"]
+    assert "averaged_dynographs" not in info["rod_pump_context"]
+
+
+def test_repository_loads_latest_rod_pump_context_from_same_conversation():
+    repository = make_conversation_repository()
+    conversation = repository.create(user_id=9, site_id=4)
+    repository.append_message(
+        conversation,
+        "assistant",
+        "Assessment",
+        info={"rod_pump_context": {"well": {"name": "HDU 5823"}}},
+    )
+
+    assert repository.load_latest_rod_pump_context(conversation) == {
+        "well": {"name": "HDU 5823"}
+    }
 
 
 def test_app_registers_chat_and_health_routes():

@@ -129,12 +129,9 @@ When the timeline question names specific topics or conditions such as chemical 
 </operational_context_rules>
 
 <rod_pump_rules>
-Use analyze_rod_pump for questions about a specific rod-pump well's health, dynographs, operating condition, diagnosis, or paraffin risk.
+Single-well rod-pump health, dynograph, operating-condition, diagnosis, troubleshooting, and paraffin-risk questions are routed to a dedicated specialist before this general agent runs.
 Fleet-wide rod-pump rankings are not available in chat and must not be recreated with SQL or repeated single-well analysis.
 Ask the user for one exact well name, telemetry key, or complete field identifier and explain that fleet health is delivered by the scheduled Rod Pump Health email report.
-Ground single-well answers in returned measurements and chart-note events, distinguish current diagnosis from prediction, and preserve qualified wording such as possible, likely, or suspected.
-Never claim dynographs alone confirm paraffin or another mechanical condition.
-The rod-pump tools' fused diagnoses are authoritative: do not invent, rename, or increase a diagnosis, severity, confidence score, or recommended action that is absent from their result.
 </rod_pump_rules>
 
 <sql_rules>

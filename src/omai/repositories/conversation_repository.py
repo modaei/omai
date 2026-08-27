@@ -192,6 +192,43 @@ class ConversationRepository:
             for row in rows
         ]
 
+    def load_latest_rod_pump_context(
+        self, conversation: Conversation
+    ) -> dict[str, Any] | None:
+        """Return compact specialist evidence from this conversation only.
+
+        The chat history intentionally contains presentation text only. Rod-pump
+        follow-ups need the structured evidence that produced the last answer,
+        so it is recovered from the assistant message metadata instead.
+        """
+        query = text(
+            """
+            SELECT info
+            FROM ai_messages
+            WHERE ai_conversation_id = :conversation_id
+              AND role = 'assistant'
+              AND info IS NOT NULL
+            ORDER BY created_at DESC, id DESC
+            LIMIT :limit
+            """
+        )
+        try:
+            with self.engine.connect() as connection:
+                rows = connection.execute(
+                    query,
+                    {"conversation_id": conversation.id, "limit": self.history_limit},
+                ).mappings()
+                for row in rows:
+                    raw = row["info"]
+                    value = json.loads(raw) if isinstance(raw, str) else raw
+                    if isinstance(value, dict) and isinstance(value.get("rod_pump_context"), dict):
+                        return value["rod_pump_context"]
+        except (SQLAlchemyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ConversationRepositoryError(
+                f"Could not load rod-pump conversation context: {exc}"
+            ) from exc
+        return None
+
     def append_message(
         self,
         conversation: Conversation,

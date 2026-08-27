@@ -23,6 +23,7 @@ from omai.repositories.conversation_repository import (
     ConversationRepository,
 )
 from omai.agents.chat_agent import reasoning_effort_for_response_mode
+from omai.agents.rod_pump_graph import compact_rod_pump_context
 from omai.repositories.daily_usage_repository import (
     DailyUsageLimitExceeded,
     DailyUsageRepository,
@@ -157,6 +158,7 @@ def create_app(
                 payload.site_id,
             )
             history = repository.load_history(conversation)
+            rod_pump_context = repository.load_latest_rod_pump_context(conversation)
             if not history and not is_in_domain(payload.message):
                 repository.append_message(conversation, "user", payload.message)
                 assistant_message_id = repository.append_message(
@@ -178,6 +180,7 @@ def create_app(
                 answer, tool_calls, stats = app.state.chat_handler(
                     *handler_args,
                     current_date=(payload.current_date.isoformat() if payload.current_date else None),
+                    rod_pump_context=rod_pump_context,
                 )
             else:
                 answer, tool_calls, stats = app.state.chat_handler(*handler_args)
@@ -322,7 +325,7 @@ def _assistant_info(
     stats: dict[str, Any],
     response_mode: str,
 ) -> dict[str, Any]:
-    return {
+    info = {
         "response_mode": response_mode,
         "tool_calls": [
             {
@@ -336,6 +339,25 @@ def _assistant_info(
         "rag_documents": extract_rag_sources(tool_calls),
         "sql_queries": _sql_query_audit(tool_calls),
     }
+    rod_pump_context = _rod_pump_context(tool_calls)
+    if rod_pump_context is not None:
+        info["rod_pump_context"] = rod_pump_context
+    return info
+
+
+def _rod_pump_context(tool_calls: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Persist only compact evidence after a successful specialist analysis."""
+    for call in reversed(tool_calls):
+        if call.get("tool") != "analyze_rod_pump":
+            continue
+        result = call.get("result")
+        try:
+            payload = json.loads(result) if isinstance(result, str) else result
+        except (TypeError, ValueError):
+            continue
+        if isinstance(payload, dict):
+            return compact_rod_pump_context(payload)
+    return None
 
 
 def _data_entry_intent(tool_calls: list[dict[str, Any]]) -> dict[str, Any] | None:
