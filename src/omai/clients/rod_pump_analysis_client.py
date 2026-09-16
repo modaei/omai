@@ -12,6 +12,7 @@ from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 import httpx
+from langchain_openai import ChatOpenAI
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine, URL
 from sqlalchemy.exc import SQLAlchemyError
@@ -25,6 +26,7 @@ from omai.services.rod_pump_analysis_engine import (
     health_scores,
     rule_diagnoses,
 )
+from omai.services.rod_pump_health import RodPumpHealthEvaluator
 
 
 METRICS = {
@@ -35,15 +37,6 @@ METRICS = {
     "yesterday_stroke_min": "Yesterday Strokes per minute",
     "max_load": "Max Load Set Point",
     "min_load": "Min Load Set Point",
-}
-SAM1_METRICS = {
-    # SAM1 pump-off-controller context. These remain batched with the core
-    # diagnostics rather than adding one Graphite request per data point.
-    "percent_run": "Percent Run",
-    "yesterday_percent_run": "Yesterday Percent Run",
-    "yesterday_peak_load": "Yesterday Peak Load",
-    "yesterday_min_load": "Yesterday Min Load",
-    "stroke_min": "Stroke Rate",
 }
 SEVERITY_ORDER = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 
@@ -65,6 +58,7 @@ class RodPumpAnalysisClient:
         http_get: Callable[..., Any] = httpx.get,
         prediction_metadata_path: str | None = None,
         batch_workers: int = 2,
+        health_reviewer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ):
         self.engine = engine
         self.monitoring_url = monitoring_url
@@ -74,6 +68,7 @@ class RodPumpAnalysisClient:
         self.http_get = http_get
         self.prediction_metadata_path = prediction_metadata_path
         self.batch_workers = max(1, batch_workers)
+        self.health_reviewer = health_reviewer
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "RodPumpAnalysisClient":
@@ -104,6 +99,7 @@ class RodPumpAnalysisClient:
             max_data_points=int(os.getenv("ROD_PUMP_MAX_DATA_POINTS", "96")),
             prediction_metadata_path=os.getenv("ROD_PUMP_MODEL_METADATA") or None,
             batch_workers=int(os.getenv("ROD_PUMP_BATCH_WORKERS", "2")),
+            health_reviewer=_health_reviewer(settings),
         )
 
     def analyze(
@@ -112,46 +108,27 @@ class RodPumpAnalysisClient:
         well_name: str,
         start_time: str | None = None,
         end_time: str | None = None,
-        analysis_profile: str = "generic",
     ) -> dict[str, Any]:
         """Run retrieval, feature extraction, parallel diagnostics, and fusion."""
         start, end = self._interval(start_time, end_time)
         well = self._well(site_id, well_name)
-        metrics = {**METRICS, **SAM1_METRICS} if analysis_profile == "sam1" else METRICS
-        series, warnings = self._trend_series(well["site_key"], well["well_key"], start, end, metrics)
+        series, warnings = self._trend_series(well["site_key"], well["well_key"], start, end)
         cards = self._averaged_cards(well["well_id"], start, end)
         notes = self._chart_notes(well["well_id"], end)
-        # The active interval drives the report. Older data is used only to
-        # determine whether current behavior is unusual for this specific well.
         baseline_start = start - timedelta(days=30)
-        baseline_series, baseline_warnings = self._trend_series(
-            well["site_key"], well["well_key"], baseline_start, start, metrics
-        )
-        baseline_cards = self._averaged_cards(
-            well["well_id"], start - timedelta(days=14), start
-        )
-        baseline_series, baseline_cards = _exclude_intervention_windows(
-            baseline_series, baseline_cards, notes
-        )
+        baseline_series, baseline_warnings = self._trend_series(well["site_key"], well["well_key"], baseline_start, start)
+        baseline_cards = self._averaged_cards(well["well_id"], start - timedelta(days=14), start)
+        baseline_series, baseline_cards = _exclude_intervention_windows(baseline_series, baseline_cards, notes)
         card_features = extract_card_features(cards)
         baseline_card_features = extract_card_features(baseline_cards)
         trends = extract_trend_features(series)
-        # Rules and anomaly scoring consume the same precomputed evidence. The
-        # LLM receives their fused result and is not part of this decision path.
-        rules = rule_diagnoses(trends, card_features, notes, sam1=analysis_profile == "sam1")
-        anomaly = anomaly_score(
-            trends,
-            card_features,
-            baseline_series,
-            baseline_card_features,
-        )
+        rules = rule_diagnoses(trends, card_features, notes)
+        anomaly = anomaly_score(trends, card_features, baseline_series, baseline_card_features)
         prediction = self._prediction_gate()
         diagnoses = fuse_diagnoses(rules, anomaly, prediction)
         scores = health_scores(trends, card_features, diagnoses)
         if baseline_warnings:
-            warnings.append(
-                f"Historical baseline is partial ({len(baseline_warnings)} metric retrieval failures)."
-            )
+            warnings.append(f"Historical baseline is partial ({len(baseline_warnings)} metric retrieval failures).")
         if not cards:
             warnings.append("No rod-pump dynographs were found in the analysis interval.")
         if not any(series.values()):
@@ -163,9 +140,6 @@ class RodPumpAnalysisClient:
             "current_status": self._current_status(site_id, well["well_key"]),
             "trend_series": series,
             "trend_features": trends,
-            # Feature extraction above always uses full-resolution averages.
-            # Compact only the LLM-facing representation so every pull remains
-            # visible without flooding the tool context with thousands of points.
             "averaged_dynographs": [_compact_card(card) for card in cards],
             "dynograph_features": card_features,
             "chart_note_events": notes,
@@ -176,12 +150,22 @@ class RodPumpAnalysisClient:
             "warnings": warnings,
         }
 
+    def evaluate_health(self, site_id: int, well_name: str) -> dict[str, Any]:
+        """Run the persisted rod-pump health evaluator for one resolved well."""
+        well = self._well(site_id, well_name)
+        return RodPumpHealthEvaluator(
+            self.engine,
+            self.monitoring_url,
+            str(self.timezone),
+            self.http_get,
+            self.health_reviewer,
+        ).evaluate(site_id, int(well["well_id"]))
+
     def rank_wells(
         self,
         site_id: int,
         as_of_time: str | None = None,
         well_ids: list[int] | None = None,
-        analysis_profile: str = "generic",
     ) -> dict[str, Any]:
         """Analyze every site-scoped rod well and apply deterministic ordering."""
         end = self._parse_time(as_of_time) if as_of_time else datetime.now(self.timezone)
@@ -204,16 +188,17 @@ class RodPumpAnalysisClient:
         def analyze_well(well):
             name = str(well["name"])
             try:
-                args = (site_id, name, (end - timedelta(hours=24)).isoformat(), end.isoformat())
-                result = self.analyze(*args, **({"analysis_profile": "sam1"} if analysis_profile == "sam1" else {}))
-                if analysis_profile == "sam1":
-                    result = self._apply_sam1_context(result)
-                leading = result["diagnoses"][0]
+                result = self.evaluate_health(site_id, name)
+                leading = result["episodes"][0] if result["episodes"] else {
+                    "code": "insufficient_data",
+                    "severity": "info",
+                    "summary": "No Phase 1 diagnosis was detected.",
+                }
                 return {
                     "well": result["well"],
-                    "health": result["health"],
+                    "health": {"category": "phase_1", "baseline_status": result["baseline"]["status"]},
                     "leading_diagnosis": leading,
-                    "warnings": result["warnings"],
+                    "warnings": [key for key, item in result["coverage"].items() if item["status"] != "available"],
                 }
             except Exception as exc:
                 return {"well": {"id": int(well["id"]), "name": name}, "health": {"category": "unknown"}, "error": str(exc)}
@@ -227,34 +212,9 @@ class RodPumpAnalysisClient:
             "site_id": site_id,
             "as_of_time": end.isoformat(),
             "well_scope": "configured" if configured_scope else "all_rod_pump_wells",
-            "analysis_profile": analysis_profile,
             "ignored_well_ids": ignored_well_ids,
             "wells": rows,
         }
-
-    def _apply_sam1_context(self, result: dict[str, Any]) -> dict[str, Any]:
-        """Qualify a generic mechanical result for fixed-speed SAM1 control.
-
-        SAM1 state and configuration are context, never named mechanical
-        diagnoses.  A missing controller signal makes the row incomplete
-        instead of silently applying VFD assumptions.
-        """
-        status = result.get("current_status", {})
-        values = status.get("values", {}) if isinstance(status, dict) else {}
-        state = values.get("state", {}).get("value")
-        if not state:
-            result["warnings"].append("SAM1 controller state is unavailable; diagnosis is qualified.")
-        result["controller"] = {
-            "profile": "sam1_fixed_speed",
-            "state": state,
-            "pump_status": values.get("pump_status", {}).get("value"),
-            "time_in_state": values.get("elapsed_time", {}).get("value"),
-        }
-        # A controller-declared stopped/off state must not be presented as a
-        # live mechanical fault. Preserve evidence but make the outcome clear.
-        if isinstance(state, str) and any(word in state.lower() for word in ("off", "down", "stop")):
-            result["warnings"].append("SAM1 reports a non-pumping state; mechanical diagnosis is not conclusive.")
-        return result
 
     def _interval(self, start_raw: str | None, end_raw: str | None) -> tuple[datetime, datetime]:
         end = self._parse_time(end_raw) if end_raw else datetime.now(self.timezone)
@@ -327,12 +287,12 @@ class RodPumpAnalysisClient:
             f"or complete field identifier: {well_name}"
         )
 
-    def _trend_series(self, site_key: str, well_key: str, start: datetime, end: datetime, metrics: dict[str, str] = METRICS) -> tuple[dict[str, list], list[str]]:
+    def _trend_series(self, site_key: str, well_key: str, start: datetime, end: datetime) -> tuple[dict[str, list], list[str]]:
         """Retrieve the same Graphite POC metrics used by OMetrics trend charts."""
-        result: dict[str, list] = {label: [] for label in metrics.values()}
+        result: dict[str, list] = {label: [] for label in METRICS.values()}
         warnings: list[str] = []
         prefix = f"MI3.{site_key}.{well_key.replace(' ', '_')}."
-        target_to_label = {prefix + metric: label for metric, label in metrics.items()}
+        target_to_label = {prefix + metric: label for metric, label in METRICS.items()}
         params = [("target", target) for target in target_to_label]
         params.extend([
             ("from", start.strftime("%H:%M_%Y%m%d")),
@@ -359,14 +319,9 @@ class RodPumpAnalysisClient:
                     for point in item.get("datapoints", [])
                     if len(point) >= 2 and point[0] is not None and point[1] is not None
                 ]
-            missing = [label for label, points in result.items() if not points]
-            if missing:
-                # A SAM1 fleet may not expose every optional controller trend.
-                # Keep the report readable by reporting one retrieval warning
-                # per interval rather than a warning row for every absent tag.
-                warnings.append(
-                    "Rod-pump trends returned no samples for: " + ", ".join(missing) + "."
-                )
+            for label, points in result.items():
+                if not points:
+                    warnings.append(f"{label} returned no samples.")
         except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
             warnings.append(f"Rod-pump trends could not be retrieved: {exc}")
         return result, warnings
@@ -463,10 +418,7 @@ class RodPumpAnalysisClient:
             LEFT JOIN data_points parent ON parent.id=dp.facility_id
             WHERE dp.site_id=:site_id
               AND COALESCE(parent.facility_name, dp.facility_name)=:well_key
-              AND dp.data_point_name IN (
-                  'Well State', 'Pump Status', 'Time In State',
-                  'stat', 'status', 'pump_status', 'elapsed_time'
-              )
+              AND dp.data_point_name IN ('stat','status','pump_status')
         """)
         try:
             with self.engine.connect() as connection:
@@ -474,23 +426,12 @@ class RodPumpAnalysisClient:
         except SQLAlchemyError:
             return {"available": False}
         values = {}
-        names = {
-            "Well State": "state",
-            "Pump Status": "pump_status",
-            "Time In State": "elapsed_time",
-            # Preserve existing installations that use raw controller tags as
-            # their data-point names.
-            "stat": "state",
-            "status": "state",
-            "pump_status": "pump_status",
-            "elapsed_time": "elapsed_time",
-        }
         for row in rows:
             try:
                 payload = json.loads(row["data"]) if isinstance(row["data"], str) else row["data"]
             except (TypeError, json.JSONDecodeError):
                 payload = {}
-            values[names.get(row["data_point_name"], row["data_point_name"])] = {
+            values[row["data_point_name"]] = {
                 "value": payload.get("value") if isinstance(payload, dict) else None,
                 "timestamp": payload.get("timestamp") if isinstance(payload, dict) else None,
             }
@@ -599,7 +540,88 @@ def _exclude_intervention_windows(
     )
 
 
+def _health_reviewer(settings: Settings) -> Callable[[dict[str, Any]], dict[str, Any]] | None:
+    """Create the bounded LLM explainer used after deterministic health detection."""
+    if not settings.llm_api_key:
+        return None
+    model = ChatOpenAI(
+        api_key=settings.llm_api_key,
+        model=settings.llm_model,
+        base_url=settings.llm_base_url,
+        temperature=0,
+        timeout=60,
+        max_retries=1,
+    )
+
+    def invoke(prompt: str) -> dict[str, Any]:
+        response = model.invoke(prompt)
+        content = response.content if isinstance(response.content, str) else ""
+        return json.loads(content)
+
+    def review(packet: dict[str, Any]) -> dict[str, Any]:
+        reviewed_packet = {**packet, "metric_units": _health_metric_units(packet)}
+        prompt = (
+            "Return JSON only with alert_summary, plain_language_explanation, "
+            "ranked_differentials, operator_checks, and data_limitations. "
+            "Do not change severity or state. Preserve every supplied measurement and unit exactly. "
+            "runtime_7d and runtime_baseline are percentages of a day; they are never minutes, hours, "
+            "or elapsed durations. When mentioning either runtime value, include '%' or 'percent'. "
+            "Do not invent a measurement, unit, controller state, or operating condition. Evidence packet: "
+            + json.dumps(reviewed_packet, default=str)
+        )
+        result = invoke(prompt)
+        if _health_review_has_unit_error(result, packet):
+            result = invoke(
+                "Correct the following JSON. Return JSON only, preserving its schema. "
+                "The supplied runtime values are percentages of a day, not minutes, hours, or durations. "
+                "Replace any invalid runtime wording with '%' or 'percent' and do not change the numeric values. "
+                "Original evidence packet: " + json.dumps(reviewed_packet, default=str)
+                + " Invalid response: " + json.dumps(result, default=str)
+            )
+        if _health_review_has_unit_error(result, packet):
+            return _unit_safe_health_review(packet)
+        return result
+
+    return review
+
+
+def _health_metric_units(packet: dict[str, Any]) -> dict[str, dict[str, str]]:
+    """Explicit units supplied with Phase 1 evidence; never leave the LLM to infer them."""
+    evidence = packet.get("evidence", {}) if isinstance(packet.get("evidence"), dict) else {}
+    units = {
+        "runtime_7d": "percent of day", "runtime_baseline": "percent of day",
+        "cycles_7d": "cycles per day", "cycles_baseline": "cycles per day",
+        "peak_load": "pounds", "baseline_peak": "pounds", "peak_limit": "pounds",
+    }
+    return {key: {"value": str(evidence[key]), "unit": unit} for key, unit in units.items() if key in evidence}
+
+
+def _health_review_has_unit_error(result: dict[str, Any], packet: dict[str, Any]) -> bool:
+    if packet.get("diagnosis_code") != "increasing_cycling_declining_runtime":
+        return False
+    explanation = str(result.get("plain_language_explanation", "")).casefold()
+    # For this diagnosis, duration language is prohibited: the only runtime
+    # values supplied are percentages of a day.
+    if re.search(r"\b(minutes?|hours?|duration)\b", explanation):
+        return True
+    return "%" not in explanation and "percent" not in explanation
+
+
+def _unit_safe_health_review(packet: dict[str, Any]) -> dict[str, Any]:
+    evidence = packet.get("evidence", {})
+    return {
+        "alert_summary": packet.get("summary"),
+        "plain_language_explanation": (
+            f"Seven-day runtime was {evidence.get('runtime_7d', 'not available')}% of day versus "
+            f"a historical median of {evidence.get('runtime_baseline', 'not available')}% of day."
+        ),
+        "ranked_differentials": [],
+        "operator_checks": [],
+        "data_limitations": ["Ometrics AI output was rejected because it used an invalid unit for runtime percentage."],
+    }
+
+
 def _ranking_key(row: dict[str, Any]):
     if "error" in row: return (1, 0, 101, 0, row["well"]["name"])
     diagnosis=row["leading_diagnosis"]
-    return (0, -SEVERITY_ORDER[diagnosis["severity"]], row["health"]["score"], -diagnosis["confidence"], row["well"]["name"])
+    return (0, -SEVERITY_ORDER.get(diagnosis["severity"], 0), 0, -float(diagnosis.get("confidence", 0)), row["well"]["name"])
