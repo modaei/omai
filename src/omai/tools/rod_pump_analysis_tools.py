@@ -44,6 +44,8 @@ def build_rod_pump_analysis_tools(
         end_time: str | None = None,
     ) -> str:
         try:
+            if start_time is None and end_time is None and hasattr(client, "evaluate_health"):
+                return _json({"ok": True, "workflow": "rod_pump_health", **client.evaluate_health(site_id, well_name)})
             return _json({"ok": True, **client.analyze(site_id, well_name, start_time, end_time)})
         except RodPumpAnalysisError as exc:
             return _json({"ok": False, "error": str(exc)})

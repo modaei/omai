@@ -33,6 +33,8 @@ omai-index-operational-text = "omai.rag.index_operational_text:main"
 omai-process-rag-index-events = "omai.rag.process_index_events:main"
 omai-vector-db-migrate = "omai.rag.migrate_vector_db:main"
 omai-evaluate = "omai.evals.runner:main"
+omai-evaluate-rod-pump-health = "omai.services.rod_pump_health:main"
+omai-refresh-rod-pump-health-history = "omai.services.rod_pump_health:refresh_history_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -12,6 +12,7 @@ from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 import httpx
+from langchain_openai import ChatOpenAI
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine, URL
 from sqlalchemy.exc import SQLAlchemyError
@@ -25,6 +26,7 @@ from omai.services.rod_pump_analysis_engine import (
     health_scores,
     rule_diagnoses,
 )
+from omai.services.rod_pump_health import RodPumpHealthEvaluator
 
 
 METRICS = {
@@ -56,6 +58,7 @@ class RodPumpAnalysisClient:
         http_get: Callable[..., Any] = httpx.get,
         prediction_metadata_path: str | None = None,
         batch_workers: int = 2,
+        health_reviewer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ):
         self.engine = engine
         self.monitoring_url = monitoring_url
@@ -65,6 +68,7 @@ class RodPumpAnalysisClient:
         self.http_get = http_get
         self.prediction_metadata_path = prediction_metadata_path
         self.batch_workers = max(1, batch_workers)
+        self.health_reviewer = health_reviewer
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "RodPumpAnalysisClient":
@@ -95,6 +99,7 @@ class RodPumpAnalysisClient:
             max_data_points=int(os.getenv("ROD_PUMP_MAX_DATA_POINTS", "96")),
             prediction_metadata_path=os.getenv("ROD_PUMP_MODEL_METADATA") or None,
             batch_workers=int(os.getenv("ROD_PUMP_BATCH_WORKERS", "2")),
+            health_reviewer=_health_reviewer(settings),
         )
 
     def analyze(
@@ -110,37 +115,20 @@ class RodPumpAnalysisClient:
         series, warnings = self._trend_series(well["site_key"], well["well_key"], start, end)
         cards = self._averaged_cards(well["well_id"], start, end)
         notes = self._chart_notes(well["well_id"], end)
-        # The active interval drives the report. Older data is used only to
-        # determine whether current behavior is unusual for this specific well.
         baseline_start = start - timedelta(days=30)
-        baseline_series, baseline_warnings = self._trend_series(
-            well["site_key"], well["well_key"], baseline_start, start
-        )
-        baseline_cards = self._averaged_cards(
-            well["well_id"], start - timedelta(days=14), start
-        )
-        baseline_series, baseline_cards = _exclude_intervention_windows(
-            baseline_series, baseline_cards, notes
-        )
+        baseline_series, baseline_warnings = self._trend_series(well["site_key"], well["well_key"], baseline_start, start)
+        baseline_cards = self._averaged_cards(well["well_id"], start - timedelta(days=14), start)
+        baseline_series, baseline_cards = _exclude_intervention_windows(baseline_series, baseline_cards, notes)
         card_features = extract_card_features(cards)
         baseline_card_features = extract_card_features(baseline_cards)
         trends = extract_trend_features(series)
-        # Rules and anomaly scoring consume the same precomputed evidence. The
-        # LLM receives their fused result and is not part of this decision path.
         rules = rule_diagnoses(trends, card_features, notes)
-        anomaly = anomaly_score(
-            trends,
-            card_features,
-            baseline_series,
-            baseline_card_features,
-        )
+        anomaly = anomaly_score(trends, card_features, baseline_series, baseline_card_features)
         prediction = self._prediction_gate()
         diagnoses = fuse_diagnoses(rules, anomaly, prediction)
         scores = health_scores(trends, card_features, diagnoses)
         if baseline_warnings:
-            warnings.append(
-                f"Historical baseline is partial ({len(baseline_warnings)} metric retrieval failures)."
-            )
+            warnings.append(f"Historical baseline is partial ({len(baseline_warnings)} metric retrieval failures).")
         if not cards:
             warnings.append("No rod-pump dynographs were found in the analysis interval.")
         if not any(series.values()):
@@ -152,9 +140,6 @@ class RodPumpAnalysisClient:
             "current_status": self._current_status(site_id, well["well_key"]),
             "trend_series": series,
             "trend_features": trends,
-            # Feature extraction above always uses full-resolution averages.
-            # Compact only the LLM-facing representation so every pull remains
-            # visible without flooding the tool context with thousands of points.
             "averaged_dynographs": [_compact_card(card) for card in cards],
             "dynograph_features": card_features,
             "chart_note_events": notes,
@@ -164,6 +149,17 @@ class RodPumpAnalysisClient:
             "paraffin_prediction": prediction,
             "warnings": warnings,
         }
+
+    def evaluate_health(self, site_id: int, well_name: str) -> dict[str, Any]:
+        """Run the persisted rod-pump health evaluator for one resolved well."""
+        well = self._well(site_id, well_name)
+        return RodPumpHealthEvaluator(
+            self.engine,
+            self.monitoring_url,
+            str(self.timezone),
+            self.http_get,
+            self.health_reviewer,
+        ).evaluate(site_id, int(well["well_id"]))
 
     def rank_wells(
         self,
@@ -192,13 +188,17 @@ class RodPumpAnalysisClient:
         def analyze_well(well):
             name = str(well["name"])
             try:
-                result = self.analyze(site_id, name, (end - timedelta(hours=24)).isoformat(), end.isoformat())
-                leading = result["diagnoses"][0]
+                result = self.evaluate_health(site_id, name)
+                leading = result["episodes"][0] if result["episodes"] else {
+                    "code": "insufficient_data",
+                    "severity": "info",
+                    "summary": "No Phase 1 diagnosis was detected.",
+                }
                 return {
                     "well": result["well"],
-                    "health": result["health"],
+                    "health": {"category": "phase_1", "baseline_status": result["baseline"]["status"]},
                     "leading_diagnosis": leading,
-                    "warnings": result["warnings"],
+                    "warnings": [key for key, item in result["coverage"].items() if item["status"] != "available"],
                 }
             except Exception as exc:
                 return {"well": {"id": int(well["id"]), "name": name}, "health": {"category": "unknown"}, "error": str(exc)}
@@ -540,7 +540,88 @@ def _exclude_intervention_windows(
     )
 
 
+def _health_reviewer(settings: Settings) -> Callable[[dict[str, Any]], dict[str, Any]] | None:
+    """Create the bounded LLM explainer used after deterministic health detection."""
+    if not settings.llm_api_key:
+        return None
+    model = ChatOpenAI(
+        api_key=settings.llm_api_key,
+        model=settings.llm_model,
+        base_url=settings.llm_base_url,
+        temperature=0,
+        timeout=60,
+        max_retries=1,
+    )
+
+    def invoke(prompt: str) -> dict[str, Any]:
+        response = model.invoke(prompt)
+        content = response.content if isinstance(response.content, str) else ""
+        return json.loads(content)
+
+    def review(packet: dict[str, Any]) -> dict[str, Any]:
+        reviewed_packet = {**packet, "metric_units": _health_metric_units(packet)}
+        prompt = (
+            "Return JSON only with alert_summary, plain_language_explanation, "
+            "ranked_differentials, operator_checks, and data_limitations. "
+            "Do not change severity or state. Preserve every supplied measurement and unit exactly. "
+            "runtime_7d and runtime_baseline are percentages of a day; they are never minutes, hours, "
+            "or elapsed durations. When mentioning either runtime value, include '%' or 'percent'. "
+            "Do not invent a measurement, unit, controller state, or operating condition. Evidence packet: "
+            + json.dumps(reviewed_packet, default=str)
+        )
+        result = invoke(prompt)
+        if _health_review_has_unit_error(result, packet):
+            result = invoke(
+                "Correct the following JSON. Return JSON only, preserving its schema. "
+                "The supplied runtime values are percentages of a day, not minutes, hours, or durations. "
+                "Replace any invalid runtime wording with '%' or 'percent' and do not change the numeric values. "
+                "Original evidence packet: " + json.dumps(reviewed_packet, default=str)
+                + " Invalid response: " + json.dumps(result, default=str)
+            )
+        if _health_review_has_unit_error(result, packet):
+            return _unit_safe_health_review(packet)
+        return result
+
+    return review
+
+
+def _health_metric_units(packet: dict[str, Any]) -> dict[str, dict[str, str]]:
+    """Explicit units supplied with Phase 1 evidence; never leave the LLM to infer them."""
+    evidence = packet.get("evidence", {}) if isinstance(packet.get("evidence"), dict) else {}
+    units = {
+        "runtime_7d": "percent of day", "runtime_baseline": "percent of day",
+        "cycles_7d": "cycles per day", "cycles_baseline": "cycles per day",
+        "peak_load": "pounds", "baseline_peak": "pounds", "peak_limit": "pounds",
+    }
+    return {key: {"value": str(evidence[key]), "unit": unit} for key, unit in units.items() if key in evidence}
+
+
+def _health_review_has_unit_error(result: dict[str, Any], packet: dict[str, Any]) -> bool:
+    if packet.get("diagnosis_code") != "increasing_cycling_declining_runtime":
+        return False
+    explanation = str(result.get("plain_language_explanation", "")).casefold()
+    # For this diagnosis, duration language is prohibited: the only runtime
+    # values supplied are percentages of a day.
+    if re.search(r"\b(minutes?|hours?|duration)\b", explanation):
+        return True
+    return "%" not in explanation and "percent" not in explanation
+
+
+def _unit_safe_health_review(packet: dict[str, Any]) -> dict[str, Any]:
+    evidence = packet.get("evidence", {})
+    return {
+        "alert_summary": packet.get("summary"),
+        "plain_language_explanation": (
+            f"Seven-day runtime was {evidence.get('runtime_7d', 'not available')}% of day versus "
+            f"a historical median of {evidence.get('runtime_baseline', 'not available')}% of day."
+        ),
+        "ranked_differentials": [],
+        "operator_checks": [],
+        "data_limitations": ["Ometrics AI output was rejected because it used an invalid unit for runtime percentage."],
+    }
+
+
 def _ranking_key(row: dict[str, Any]):
     if "error" in row: return (1, 0, 101, 0, row["well"]["name"])
     diagnosis=row["leading_diagnosis"]
-    return (0, -SEVERITY_ORDER[diagnosis["severity"]], row["health"]["score"], -diagnosis["confidence"], row["well"]["name"])
+    return (0, -SEVERITY_ORDER.get(diagnosis["severity"], 0), 0, -float(diagnosis.get("confidence", 0)), row["well"]["name"])
