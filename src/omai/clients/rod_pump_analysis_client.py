@@ -559,14 +559,22 @@ def _health_reviewer(settings: Settings) -> Callable[[dict[str, Any]], dict[str,
         return json.loads(content)
 
     def review(packet: dict[str, Any]) -> dict[str, Any]:
-        reviewed_packet = {**packet, "metric_units": _health_metric_units(packet)}
+        # The explanation is operator-facing. Keep the evidence numerical but
+        # compact enough to read, while the database retains full precision.
+        reviewed_packet = _round_health_packet({**packet, "metric_units": _health_metric_units(packet)})
         prompt = (
             "Return JSON only with alert_summary, plain_language_explanation, "
             "ranked_differentials, operator_checks, and data_limitations. "
-            "Do not change severity or state. Preserve every supplied measurement and unit exactly. "
+            "Do not change severity or state. Use simple oilfield language and do not invent a measurement, "
+            "unit, controller state, operating condition, or confirmed mechanical failure. "
+            "plain_language_explanation must have exactly two short paragraphs: first start with 'What this pattern can mean:' "
+            "and explain the diagnosis in general (for example, what a standing valve or gas interference is and when the pattern can occur). "
+            "Second start with 'Why it was identified for this well:' and explain only the supplied well evidence. "
+            "Use each supplied number at most to two decimal places and include its supplied unit. "
+            "operator_checks must be a short, simple list of practical checks; it is displayed after the explanation as the final section. "
             "runtime_7d and runtime_baseline are percentages of a day; they are never minutes, hours, "
             "or elapsed durations. When mentioning either runtime value, include '%' or 'percent'. "
-            "Do not invent a measurement, unit, controller state, or operating condition. Evidence packet: "
+            "Evidence packet: "
             + json.dumps(reviewed_packet, default=str)
         )
         result = invoke(prompt)
@@ -583,6 +591,17 @@ def _health_reviewer(settings: Settings) -> Callable[[dict[str, Any]], dict[str,
         return result
 
     return review
+
+
+def _round_health_packet(value: Any) -> Any:
+    """Limit prose-facing evidence to two decimals without changing stored evidence."""
+    if isinstance(value, float):
+        return round(value, 2)
+    if isinstance(value, dict):
+        return {key: _round_health_packet(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_round_health_packet(item) for item in value]
+    return value
 
 
 def _health_metric_units(packet: dict[str, Any]) -> dict[str, dict[str, str]]:
