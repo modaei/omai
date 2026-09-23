@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 import math
+import base64
+import hashlib
+import io
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from statistics import median
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
@@ -53,12 +56,13 @@ CORE_SAM1_METRICS = {"runtime", "cycles", "peak_load", "min_load", "well_state_c
 class RodPumpHealthEvaluator:
     """Derive and persist Phase 1 health episodes from Graphite SAM1 telemetry."""
 
-    def __init__(self, engine: Engine, monitoring_url: str, timezone_name: str, http_get: Callable[..., Any] = httpx.get, reviewer: Callable[[dict[str, Any]], dict[str, Any]] | None = None):
+    def __init__(self, engine: Engine, monitoring_url: str, timezone_name: str, http_get: Callable[..., Any] = httpx.get, reviewer: Callable[[dict[str, Any]], dict[str, Any]] | None = None, dynograph_image_reviewer: Callable[[dict[str, Any]], dict[str, Any]] | None = None):
         self.engine = engine
         self.monitoring_url = monitoring_url.rstrip("/")
         self.timezone = ZoneInfo(timezone_name)
         self.http_get = http_get
         self.reviewer = reviewer
+        self.dynograph_image_reviewer = dynograph_image_reviewer
 
     def evaluate(self, site_id: int, well_id: int, now: datetime | None = None) -> dict[str, Any]:
         """Evaluate current conditions using the previously refreshed baseline."""
@@ -79,17 +83,24 @@ class RodPumpHealthEvaluator:
         daily = daily_by_date.get(end.date(), self._daily({}, end))
         baseline_configuration = self._current_baseline_configuration(well_id)
         baseline = self._stored_baseline(well_id, end)
-        history = self._recent_days(well_id, end)
+        # Daily trend rules need the persisted month of daily summaries.  This
+        # is local SQL data refreshed by the history command, not another
+        # Graphite lookback on every health query.
+        history = self._recent_days(well_id, end, days=30)
         current_configuration = self._configuration_from_daily(daily)
         episodes = self._rules(well_id, daily, baseline, coverage, history, baseline_configuration, current_configuration, end)
         # Current-card extraction is deliberately part of the existing
         # evaluator.  It never creates a separate polling job.
         card_features = self._refresh_card_features(well, catalog, end - timedelta(days=2), end)
         card_episodes = self._card_rules(well_id, card_features, daily, end)
+        image_episode = self._image_diagnosis_episode(well_id, card_features, end)
+        if image_episode:
+            card_episodes.append(image_episode)
         episodes.extend(card_episodes)
         for episode in episodes:
             self._upsert_episode(well_id, episode, end)
         self._clear_unseen_episodes(well_id, {item["code"] for item in episodes}, end)
+        self._upsert_well_overview(well_id, episodes, end)
         return {"well": well, "daily": daily, "baseline": baseline, "coverage": coverage, "episodes": episodes}
 
     def refresh_history(self, site_id: int, well_id: int, now: datetime | None = None) -> dict[str, Any]:
@@ -266,6 +277,9 @@ class RodPumpHealthEvaluator:
             feature = _card_feature_row(source, well_id, pull_timestamp, side, self.timezone)
             feature = _with_card_state_context(feature, state_samples)
             _upsert(self.engine, "rod_pump_health_card_features", feature, ["well_id", "pull_timestamp", "card_side", "card_type"])
+            # Keep the rendered image only in the evaluation payload; the
+            # persisted feature row remains compact and contains no image blob.
+            feature["_dynograph_image"] = _dynograph_image_data_uri(source, side)
             result.append(feature)
         return result
 
@@ -305,6 +319,7 @@ class RodPumpHealthEvaluator:
                   AND x_axis_value>=:event_start AND x_axis_value<=:event_end
                 ORDER BY x_axis_value"""), {"well_id": well_id, "event_start": start - timedelta(days=3), "event_end": end + timedelta(days=3)}).mappings().all()
         paraffin_events = [_as_timezone_datetime(row["x_axis_value"], self.timezone) for row in paraffin_rows]
+        eligible_by_side: dict[str, list[dict[str, Any]]] = {}
         for side in ("surface", "downhole"):
             rejected: defaultdict[str, int] = defaultdict(int); eligible = []
             for card in (item for item in cards if item["card_side"] == side):
@@ -316,6 +331,7 @@ class RodPumpHealthEvaluator:
                 if any(_within_paraffin_event_window(_as_timezone_datetime(card["observed_at"], self.timezone), event) for event in paraffin_events):
                     rejected["paraffin_event_window"] += 1; continue
                 eligible.append(card)
+            eligible_by_side[side] = eligible
             feature_sets = [_json_value(card["feature_json"], {}) for card in eligible]
             summary = _feature_baseline(feature_sets)
             status = "stable" if len(eligible) >= 8 else "insufficient_data"
@@ -325,6 +341,9 @@ class RodPumpHealthEvaluator:
                 "eligible_card_count": len(eligible), "feature_summary_json": json.dumps(summary),
                 "exclusion_summary_json": json.dumps(dict(rejected)),
             }, ["well_id", "card_side", "card_type"])
+        reference = _select_clean_pair_reference(eligible_by_side["surface"], eligible_by_side["downhole"])
+        with self.engine.begin() as connection:
+            connection.execute(text("UPDATE rod_pump_health_card_baselines SET reference_pair_json=:reference,updated_at=:now WHERE well_id=:well_id AND card_type='current'"), {"well_id": well_id, "reference": json.dumps(reference), "now": end})
 
     def _card_rules(self, well_id: int, features: list[dict[str, Any]], daily: dict[str, Any], now: datetime) -> list[dict[str, Any]]:
         """Phase 2 stays review-only; quality/orientation is a hard gate."""
@@ -335,6 +354,12 @@ class RodPumpHealthEvaluator:
         valid_downhole = [row for row in normal_features if row["card_side"] == "downhole" and row["quality_status"] == "valid" and row["orientation"]]
         valid_surface = [row for row in normal_features if row["card_side"] == "surface" and row["quality_status"] == "valid" and row["orientation"]]
         if not valid_downhole and not valid_surface:
+            return []
+        baseline_configuration = self._current_baseline_configuration(well_id)
+        current_configuration = self._configuration_from_daily(daily)
+        # Card-feature drift is meaningful only against comparable operation.
+        # A known controller mode/setpoint change is reported by its own rule.
+        if baseline_configuration and current_configuration and baseline_configuration != current_configuration:
             return []
         baselines = self._card_baselines(well_id)
         result = []
@@ -354,7 +379,7 @@ class RodPumpHealthEvaluator:
         # These two trends need more than the evaluator's two-day pull window;
         # use the persisted, quality-gated feature history rather than fetching
         # a second card source.
-        history = self._normal_state_card_rows(well_id, self._recent_valid_card_features(well_id, now - timedelta(days=14), now))
+        history = self._normal_state_card_rows(well_id, self._recent_valid_card_features(well_id, now - timedelta(days=30), now))
         surface_history = [_json_value(row["feature_json"], {}) for row in history if row["card_side"] == "surface"]
         down_history = [_json_value(row["feature_json"], {}) for row in history if row["card_side"] == "downhole"]
         if len(surface_history) >= 8 and _qualifying_count(surface_history, sbase, "loading_asymmetry", .20) >= 5:
@@ -364,12 +389,79 @@ class RodPumpHealthEvaluator:
         recent_fillage = [float(row["median_fillage"]) for row in fillage_history if _number(row.get("median_fillage"))]
         if len(recent_fillage) >= 10 and _number(base_fillage) and median(recent_fillage[-7:]) < float(base_fillage) * .9 and _low_qualifying_count(down_history, dbase, "normalized_area", .10) >= 3:
             result.append(_episode("declining_pump_performance", "advisory", "Pump Fillage and downhole-card area are below their clean reference patterns.", {"review_only": True, "feature": "normalized_area", "fillage_7_day_median": median(recent_fillage[-7:]), "fillage_30_day_median": base_fillage, "qualifying_valid_cards": _low_qualifying_count(down_history, dbase, "normalized_area", .10), **_card_metric_evidence([row for row in history if row["card_side"] == "downhole"], dbase, "normalized_area")}, state="candidate"))
+        for code, rows, feature, direction, change, summary in (
+            ("progressive_surface_load_spread_increase", [row for row in history if row["card_side"] == "surface"], "load_spread", "up", .15, "Surface-card load spread has increased progressively over eligible current dynographs."),
+            ("progressive_downhole_pickup_delay", [row for row in history if row["card_side"] == "downhole"], "pickup_position_percent", "up", .15, "Downhole pickup position has shifted progressively later over eligible current dynographs."),
+            ("progressive_traveling_valve_transition_change", [row for row in history if row["card_side"] == "downhole"], "upstroke_transition_width", "up", .20, "Downhole upstroke transition width has increased progressively over eligible current dynographs."),
+            ("progressive_standing_valve_transition_change", [row for row in history if row["card_side"] == "downhole"], "bottom_transition_width", "up", .20, "Downhole bottom transition width has increased progressively over eligible current dynographs."),
+            ("progressive_loading_asymmetry_change", [row for row in history if row["card_side"] == "surface"], "loading_asymmetry", "up", .20, "Surface-card loading asymmetry has increased progressively over eligible current dynographs."),
+            ("progressive_dynograph_stroke_span_drift", [row for row in history if row["card_side"] == "surface"], "raw_stroke_span", "either", .10, "Observed surface dynograph stroke span has changed progressively; review stroke calibration and settings."),
+        ):
+            trend = _card_feature_trend(rows, feature, direction=direction, minimum_relative_change=change)
+            if trend:
+                result.append(_episode(code, "advisory", summary, trend, state="candidate"))
         return result
 
     def _card_baselines(self, well_id: int) -> dict[str, dict[str, Any]]:
         with self.engine.connect() as connection:
             rows = connection.execute(text("SELECT card_side,baseline_status,feature_summary_json FROM rod_pump_health_card_baselines WHERE well_id=:well_id AND card_type='current'"), {"well_id": well_id}).mappings().all()
         return {row["card_side"]: _json_value(row["feature_summary_json"], {}) if row["baseline_status"] == "stable" else {} for row in rows}
+
+    def _image_diagnosis_episode(self, well_id: int, features: list[dict[str, Any]], now: datetime) -> dict[str, Any] | None:
+        """Compare one current eligible pair with its persisted clean pair."""
+        if self.dynograph_image_reviewer is None:
+            return None
+        eligible = [row for row in features if row["quality_status"] == "valid" and row["orientation"] and _json_value(row.get("feature_json"), {}).get("state_context", {}).get("eligible") and row.get("_dynograph_image")]
+        by_side = {side: next((row for row in sorted(eligible, key=lambda item: item["observed_at"], reverse=True) if row["card_side"] == side), None) for side in ("surface", "downhole")}
+        if not by_side["surface"] or not by_side["downhole"]:
+            return None
+        surface, downhole = by_side["surface"], by_side["downhole"]
+        reference = self._clean_pair_reference(well_id)
+        if not reference:
+            return None
+        reference_surface = _dynograph_image_data_uri(self._card_source(well_id, reference["surface_card_id"]), "Clean-reference surface")
+        reference_downhole = _dynograph_image_data_uri(self._card_source(well_id, reference["downhole_card_id"]), "Clean-reference downhole")
+        if not reference_surface or not reference_downhole:
+            return None
+        checksum = hashlib.sha256((str(surface["source_card_id"]) + str(downhole["source_card_id"]) + reference_surface + reference_downhole + surface["_dynograph_image"] + downhole["_dynograph_image"]).encode()).hexdigest()
+        try:
+            with self.engine.connect() as connection:
+                cached = connection.execute(text("SELECT result_json FROM rod_pump_health_image_reviews WHERE well_id=:well_id AND image_checksum=:checksum"), {"well_id": well_id, "checksum": checksum}).scalar()
+            result = _json_value(cached, {}) if cached else self.dynograph_image_reviewer({"current_surface_image": surface["_dynograph_image"], "reference_surface_image": reference_surface, "current_downhole_image": downhole["_dynograph_image"], "reference_downhole_image": reference_downhole})
+            if not cached:
+                _upsert(self.engine, "rod_pump_health_image_reviews", {"well_id": well_id, "image_checksum": checksum, "surface_card_id": surface["source_card_id"], "downhole_card_id": downhole["source_card_id"], "result_json": json.dumps(result), "reviewed_at": now, "created_at": now, "updated_at": now}, ["well_id", "image_checksum"])
+        except Exception:
+            return None
+        primary = result.get("primary", {}) if isinstance(result, dict) else {}
+        code = primary.get("diagnosis_code")
+        # A single visual comparison is supporting evidence, not a standalone
+        # mechanical finding. Clear integrity issues can open immediately;
+        # mechanical candidates require agreement from two different current
+        # card pairs reviewed against their respective clean references.
+        if code not in {"dynograph_quality_issue", "incomplete_stroke_candidate"}:
+            with self.engine.connect() as connection:
+                previous = connection.execute(text("SELECT result_json FROM rod_pump_health_image_reviews WHERE well_id=:well_id ORDER BY reviewed_at DESC LIMIT 8"), {"well_id": well_id}).scalars().all()
+            matching = 0
+            for item in previous:
+                prior = _json_value(item, {})
+                if prior.get("comparison_usable") and prior.get("primary", {}).get("diagnosis_code") == code:
+                    matching += 1
+            if matching < 2:
+                return None
+        return _episode("dynograph_image_review", "advisory", str(primary.get("title") or "Dynograph image review candidate"), {"review_only": True, "evidence_sources": ["dynograph_image_review"], "dynograph_image_review": {"image_checksum": checksum, "surface_card_id": surface["source_card_id"], "downhole_card_id": downhole["source_card_id"], "reference_surface_card_id": reference["surface_card_id"], "reference_downhole_card_id": reference["downhole_card_id"], "result": result}}, state="candidate")
+
+    def _clean_pair_reference(self, well_id: int) -> dict[str, Any] | None:
+        with self.engine.connect() as connection:
+            value = connection.execute(text("SELECT reference_pair_json FROM rod_pump_health_card_baselines WHERE well_id=:well_id AND card_side='surface' AND card_type='current'"), {"well_id": well_id}).scalar()
+        reference = _json_value(value, {})
+        return reference if reference.get("surface_card_id") and reference.get("downhole_card_id") else None
+
+    def _card_source(self, well_id: int, card_id: int) -> dict[str, Any]:
+        with self.engine.connect() as connection:
+            row = connection.execute(text("SELECT source_card_id,data_points,info FROM rod_pump_card_archive WHERE well_id=:well_id AND source_card_id=:card_id ORDER BY pull_timestamp DESC LIMIT 1"), {"well_id": well_id, "card_id": card_id}).mappings().first()
+            if not row:
+                row = connection.execute(text("SELECT id source_card_id,data_points,info FROM rod_pump_cards WHERE id=:card_id"), {"card_id": card_id}).mappings().first()
+        return dict(row) if row else {}
 
     def _recent_valid_card_features(self, well_id: int, start: datetime, end: datetime) -> list[dict[str, Any]]:
         with self.engine.connect() as connection:
@@ -395,8 +487,8 @@ class RodPumpHealthEvaluator:
         missing = [key for key in CORE_SAM1_METRICS if coverage.get(key, {}).get("status") != "available"]
         if missing: episodes.append(_episode("diagnostic_data_quality", "advisory", "Required telemetry is unavailable or empty.", {"missing_metrics": missing}))
         if daily["malfunction_event_count"] >= 2: episodes.append(_episode("recurring_malfunction_pattern", "high", "Repeated visible SAM1 malfunction transitions were observed.", {"event_count": daily["malfunction_event_count"], "events": daily["state_events"]}))
-        runtimes = [float(row["runtime_percent"]) for row in history if _number(row.get("runtime_percent"))]
-        cycles = [float(row["cycle_count"]) for row in history if _number(row.get("cycle_count"))]
+        runtimes = [float(row["runtime_percent"]) for row in history[-7:] if _number(row.get("runtime_percent"))]
+        cycles = [float(row["cycle_count"]) for row in history[-7:] if _number(row.get("cycle_count"))]
         base_runtime = baseline["summary"].get("runtime", {}).get("median")
         base_cycles = baseline["summary"].get("cycles", {}).get("median")
         if len(runtimes) >= 5 and len(cycles) >= 5 and base_runtime and base_cycles and median(runtimes) < float(base_runtime) - max(10, float(base_runtime) * .15) and median(cycles) > float(base_cycles) * 1.25:
@@ -404,13 +496,39 @@ class RodPumpHealthEvaluator:
         peak = daily["peak_load"]; limit = daily["peak_load_setpoint"]; base = baseline["summary"].get("peak_load", {}).get("median")
         if _number(peak) and _number(limit) and base and float(peak) > base * 1.08 and (float(limit)-float(peak))/float(limit) < .2:
             episodes.append(_episode("structural_load_creep", "advisory", "Peak polished-rod load is elevated relative to the derived baseline and near its current controller limit.", {"peak_load": peak, "baseline_peak": base, "peak_limit": limit}))
-        if baseline_configuration and current_configuration and baseline_configuration != current_configuration:
+        configuration_changed = bool(baseline_configuration and current_configuration and baseline_configuration != current_configuration)
+        if configuration_changed:
             episodes.append(_episode("configuration_or_override_change", "advisory", "Observed controller configuration differs from the historical baseline.", {"baseline": baseline_configuration, "current": current_configuration}))
+        # Do not treat an intentional setpoint/mode change as a mechanical
+        # trend.  These rules require 20 usable daily summaries and both a
+        # robust month-long slope and a material early-to-recent change.
+        if not configuration_changed:
+            peak_trend = _daily_metric_trend(history, "peak_load", direction="up", minimum_relative_change=.10)
+            if peak_trend:
+                episodes.append(_episode("progressive_polished_rod_load_increase", "advisory", "Yesterday Peak Load has increased progressively over the recent 30-day history.", peak_trend))
+            range_trend = _daily_metric_trend(history, "load_range", direction="up", minimum_relative_change=.15)
+            if range_trend:
+                episodes.append(_episode("progressive_polished_rod_load_range_increase", "advisory", "The daily polished-rod load range has increased progressively over the recent 30-day history.", range_trend))
+            min_load_trend = _daily_metric_trend(history, "min_load", direction="down", minimum_relative_change=.10)
+            if min_load_trend:
+                episodes.append(_episode("progressive_minimum_load_decline", "advisory", "Yesterday Min Load has declined progressively over the recent 30-day history.", min_load_trend))
+            fillage_trend = _daily_metric_trend(history, "median_fillage", direction="down", minimum_relative_change=.10)
+            if fillage_trend:
+                episodes.append(_episode("progressive_pump_fillage_decline", "advisory", "Pump Fillage has declined progressively over the recent 30-day history.", fillage_trend))
+            short_cycle_trend = _paired_daily_trend(history, "cycle_count", "runtime_percent")
+            if short_cycle_trend:
+                episodes.append(_episode("progressive_short_cycling_tendency", "advisory", "Yesterday Cycles has risen while Yesterday Percent has declined across the recent 30-day history.", short_cycle_trend))
+            spm_trend = _daily_metric_trend(history, "median_spm", direction="either", minimum_relative_change=.15)
+            if spm_trend:
+                episodes.append(_episode("progressive_stroke_rate_drift", "advisory", "Observed Stroke Min has changed progressively over the recent 30-day history.", spm_trend))
+            stroke_length_trend = _daily_metric_trend(history, "stroke_length", direction="either", minimum_relative_change=.10)
+            if stroke_length_trend:
+                episodes.append(_episode("progressive_stroke_length_drift", "advisory", "Observed Stroke Length has changed progressively over the recent 30-day history.", stroke_length_trend))
         return episodes
 
-    def _recent_days(self, well_id: int, end: datetime) -> list[dict[str, Any]]:
+    def _recent_days(self, well_id: int, end: datetime, days: int = 7) -> list[dict[str, Any]]:
         with self.engine.connect() as connection:
-            return [dict(row) for row in connection.execute(text("SELECT * FROM rod_pump_health_daily_metrics WHERE well_id=:well_id AND metric_date>=:start AND metric_date<=:end ORDER BY metric_date"), {"well_id": well_id, "start": (end-timedelta(days=6)).date(), "end": end.date()}).mappings().all()]
+            return [dict(row) for row in connection.execute(text("SELECT * FROM rod_pump_health_daily_metrics WHERE well_id=:well_id AND metric_date>=:start AND metric_date<=:end ORDER BY metric_date"), {"well_id": well_id, "start": (end-timedelta(days=days - 1)).date(), "end": end.date()}).mappings().all()]
 
     def _current_baseline_configuration(self, well_id: int) -> dict[str, Any]:
         with self.engine.connect() as connection:
@@ -444,6 +562,29 @@ class RodPumpHealthEvaluator:
             for row in rows:
                 if row["diagnosis_code"] not in seen:
                     connection.execute(text("UPDATE rod_pump_health_episodes SET state='cleared', cleared_at=:now, updated_at=:now WHERE id=:id"), {"id": row["id"], "now": now})
+
+    def _upsert_well_overview(self, well_id: int, episodes: list[dict[str, Any]], now: datetime) -> None:
+        """Persist one combined AI review only when the active evidence changes."""
+        packet = {"review_type": "well_health_overview", "overview_prompt_version": 4, "diagnoses": [
+            {"code": item["code"], "severity": item["severity"], "state": item.get("state", "active"), "summary": item["summary"], "evidence": item["evidence"]}
+            for item in episodes
+        ]}
+        signature = hashlib.sha256(json.dumps(packet, sort_keys=True, default=str).encode()).hexdigest()
+        try:
+            with self.engine.connect() as connection:
+                existing = connection.execute(text("SELECT diagnosis_signature,overview_json FROM rod_pump_health_well_overviews WHERE well_id=:well_id"), {"well_id": well_id}).mappings().first()
+            if existing and existing["diagnosis_signature"] == signature:
+                return
+            overview = self._review(packet) if episodes else {"status": "not_needed"}
+            _upsert(self.engine, "rod_pump_health_well_overviews", {
+                "well_id": well_id, "diagnosis_signature": signature,
+                "diagnosis_codes_json": json.dumps([item["code"] for item in episodes]),
+                "overview_json": json.dumps(overview), "generated_at": now,
+            }, ["well_id"])
+        except Exception:
+            # Deployments may run the evaluator before the accompanying table
+            # migration. Diagnosis persistence must remain available.
+            return
 
     def suppress_out_of_scope_data_quality_episode(self, well_id: int, now: datetime | None = None) -> None:
         """Close an old data-quality episode when the well leaves the configured scope."""
@@ -479,6 +620,106 @@ def _number(value: Any) -> bool:
 
 def _median(values: list[float]) -> float | None: return median(values) if values else None
 
+
+def _daily_metric_trend(rows: list[dict[str, Any]], column: str, *, direction: str, minimum_relative_change: float | None = None, minimum_absolute_change: float | None = None) -> dict[str, Any] | None:
+    """Return evidence only for a persistent, material 30-day daily trend.
+
+    A valid day is one with a numeric value for the metric being tested.  The
+    Theil-Sen median pairwise slope is deliberately used instead of an
+    endpoint difference so isolated controller readings cannot create a trend.
+    """
+    observations: list[tuple[int, float]] = []
+    for row in rows:
+        value = row.get(column)
+        if not _number(value):
+            continue
+        try:
+            metric_day = date.fromisoformat(str(row["metric_date"])).toordinal()
+        except (KeyError, TypeError, ValueError):
+            continue
+        observations.append((metric_day, float(value)))
+    if len(observations) < 20:
+        return None
+    slopes = [(right_value - left_value) / (right_day - left_day)
+              for index, (left_day, left_value) in enumerate(observations)
+              for right_day, right_value in observations[index + 1:]
+              if right_day > left_day]
+    if not slopes:
+        return None
+    early = median(value for _, value in observations[:7])
+    recent = median(value for _, value in observations[-7:])
+    slope = median(slopes)
+    change = recent - early
+    if direction == "up":
+        directional = slope > 0 and change > 0
+    elif direction == "down":
+        directional = slope < 0 and change < 0
+    elif direction == "either":
+        directional = slope != 0 and change != 0 and (slope > 0) == (change > 0)
+    else:
+        raise ValueError(f"Unsupported trend direction: {direction}")
+    if not directional:
+        return None
+    materiality = abs(change)
+    if minimum_relative_change is not None:
+        if abs(early) <= 1e-9 or materiality < abs(early) * minimum_relative_change:
+            return None
+    if minimum_absolute_change is not None and materiality < minimum_absolute_change:
+        return None
+    return {
+        "trend_metric": column,
+        "comparison_window_days": 30,
+        "valid_day_count": len(observations),
+        "early_7_day_median": early,
+        "recent_7_day_median": recent,
+        "theil_sen_slope_per_day": slope,
+        "total_median_change": change,
+    }
+
+
+def _paired_daily_trend(rows: list[dict[str, Any]], increasing_column: str, decreasing_column: str) -> dict[str, Any] | None:
+    rising = _daily_metric_trend(rows, increasing_column, direction="up", minimum_relative_change=.25)
+    falling = _daily_metric_trend(rows, decreasing_column, direction="down", minimum_relative_change=.15)
+    if not rising or not falling:
+        return None
+    return {
+        "trend_metric": "short_cycling_pair",
+        "comparison_window_days": 30,
+        "valid_day_count": min(rising["valid_day_count"], falling["valid_day_count"]),
+        "cycles_early_7_day_median": rising["early_7_day_median"],
+        "cycles_recent_7_day_median": rising["recent_7_day_median"],
+        "runtime_early_7_day_median": falling["early_7_day_median"],
+        "runtime_recent_7_day_median": falling["recent_7_day_median"],
+        "cycles_theil_sen_slope_per_day": rising["theil_sen_slope_per_day"],
+        "runtime_theil_sen_slope_per_day": falling["theil_sen_slope_per_day"],
+    }
+
+
+def _card_feature_trend(rows: list[dict[str, Any]], feature: str, *, direction: str, minimum_relative_change: float) -> dict[str, Any] | None:
+    """Reduce eligible cards to one median feature value per day before trending."""
+    by_day: dict[str, list[float]] = defaultdict(list)
+    for row in rows:
+        observed_at = row.get("observed_at")
+        if not isinstance(observed_at, datetime):
+            continue
+        values = _json_value(row.get("feature_json"), {})
+        value = ((float(row.get("raw_position_max")) - float(row.get("raw_position_min")))
+                 if feature == "raw_stroke_span" and _number(row.get("raw_position_max")) and _number(row.get("raw_position_min"))
+                 else values.get(feature))
+        if _number(value):
+            by_day[observed_at.date().isoformat()].append(float(value))
+    daily = [{"metric_date": day, "feature_value": median(values)} for day, values in sorted(by_day.items())]
+    trend = _daily_metric_trend(daily, "feature_value", direction=direction, minimum_relative_change=minimum_relative_change)
+    if not trend:
+        return None
+    trend.update({
+        "card_feature_name": feature,
+        "card_feature_unit": "raw_position_units" if feature == "raw_stroke_span" else "percent_of_observed_stroke",
+        "eligible_card_count": sum(len(values) for values in by_day.values()),
+        "eligible_card_day_count": len(by_day),
+    })
+    return trend
+
 def _json_value(value: Any, default: Any) -> Any:
     if isinstance(value, (dict, list)):
         return value
@@ -498,6 +739,53 @@ def _as_timezone_datetime(value: Any, timezone: ZoneInfo) -> datetime:
 def _within_paraffin_event_window(card_time: datetime, event_time: datetime) -> bool:
     """A paraffin observation excludes baseline cards from three days before through after it."""
     return event_time - timedelta(days=3) <= card_time <= event_time + timedelta(days=3)
+
+
+def _select_clean_pair_reference(surface_rows: list[dict[str, Any]], downhole_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Choose the real, time-neutral medoid pair; latest wins only a tie."""
+    surface = {int(row["pull_timestamp"]): row for row in surface_rows}
+    downhole = {int(row["pull_timestamp"]): row for row in downhole_rows}
+    pairs = [(timestamp, surface[timestamp], downhole[timestamp]) for timestamp in sorted(surface.keys() & downhole.keys())]
+    if len(pairs) < 8:
+        return {"selection_algorithm": "clean-card-pair-medoid-v1", "status": "insufficient_clean_pairs", "eligible_pair_count": len(pairs)}
+    keys = ("pickup_position_percent", "upstroke_transition_width", "bottom_transition_width", "normalized_area", "load_spread", "loading_asymmetry")
+    def distance(left: tuple[int, dict[str, Any], dict[str, Any]], right: tuple[int, dict[str, Any], dict[str, Any]]) -> float:
+        total = 0.0
+        for lrow, rrow in ((left[1], right[1]), (left[2], right[2])):
+            lf, rf = _json_value(lrow["feature_json"], {}), _json_value(rrow["feature_json"], {})
+            for key in keys:
+                if _number(lf.get(key)) and _number(rf.get(key)):
+                    total += abs(float(lf[key]) - float(rf[key]))
+        return total
+    selected = min(pairs, key=lambda pair: (sum(distance(pair, other) for other in pairs), -pair[0], int(pair[1]["source_card_id"]), int(pair[2]["source_card_id"])))
+    return {"selection_algorithm": "clean-card-pair-medoid-v1", "status": "available", "eligible_pair_count": len(pairs), "pull_timestamp": selected[0], "surface_card_id": selected[1]["source_card_id"], "downhole_card_id": selected[2]["source_card_id"]}
+
+
+def _dynograph_image_data_uri(source: dict[str, Any], side: str) -> str | None:
+    """Render a standardized, image-only card for the multimodal reviewer."""
+    try:
+        from PIL import Image, ImageDraw
+        points = [(float(item["position"]), float(item["load"])) for item in _json_value(source.get("data_points"), []) if isinstance(item, dict) and _number(item.get("position")) and _number(item.get("load"))]
+        if len(points) < 16:
+            return None
+        positions, loads = zip(*points); px, py = max(positions) - min(positions), max(loads) - min(loads)
+        if px <= 0 or py <= 0:
+            return None
+        image = Image.new("RGB", (700, 500), "white"); draw = ImageDraw.Draw(image)
+        left, top, right, bottom = 70, 55, 660, 430
+        draw.rectangle((left, top, right, bottom), outline="#9ca3af", width=1)
+        for ratio in range(1, 5):
+            x, y = left + (right-left)*ratio/5, top + (bottom-top)*ratio/5
+            draw.line((x, top, x, bottom), fill="#e5e7eb"); draw.line((left, y, right, y), fill="#e5e7eb")
+        curve = [(left + (p-min(positions))/px*(right-left), bottom - (l-min(loads))/py*(bottom-top)) for p, l in points]
+        draw.line(curve, fill="#075985", width=4, joint="curve")
+        draw.text((left, 18), f"{side.capitalize()} dynograph", fill="#0f172a")
+        draw.text((270, 455), "Position / stroke", fill="#0f172a")
+        draw.text((8, 210), "Load", fill="#0f172a")
+        buffer = io.BytesIO(); image.save(buffer, format="PNG", optimize=True)
+        return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+    except Exception:
+        return None
 
 def _select_current_card_medoid(cards: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Python equivalent of RodPumpCardArchiveService::selectMedoid."""
@@ -730,15 +1018,19 @@ def _run_cli(operation: str) -> None:
     # The report configuration is authoritative.  Do not fall back to all rod
     # wells when it is absent or empty: those wells are outside this pipeline.
     wanted = configured_well_ids.intersection(args.well_id or configured_well_ids)
-    evaluator = RodPumpHealthEvaluator(client.engine, client.monitoring_url, str(client.timezone), client.http_get, client.health_reviewer)
+    evaluator = RodPumpHealthEvaluator(client.engine, client.monitoring_url, str(client.timezone), client.http_get, client.health_reviewer, client.dynograph_image_reviewer)
+    # Continue closing only the old data-quality findings for wells that were
+    # removed from the configured report scope.
     for row in rows:
         well_id = int(row["id"])
         if well_id not in configured_well_ids:
             evaluator.suppress_out_of_scope_data_quality_episode(well_id)
-            continue
-        if well_id not in wanted:
-            continue
+    selected_rows = [row for row in rows if int(row["id"]) in wanted]
+    for index, row in enumerate(selected_rows, start=1):
+        well_id = int(row["id"])
+        print(f"[{index}/{len(selected_rows)}] {operation}: well {well_id} ({row['well_key']})", flush=True)
         getattr(evaluator, operation)(args.site_id, well_id)
+    print(f"Completed {operation} for {len(selected_rows)} configured well(s).", flush=True)
 
 
 if __name__ == "__main__":
