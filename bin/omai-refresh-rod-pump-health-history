@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+# Resolve the checkout containing this script, regardless of where it is run.
+PROJECT_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+if [ -x "$PROJECT_ROOT/.venv/bin/python" ]; then
+  PYTHON_BIN=${PYTHON_BIN:-"$PROJECT_ROOT/.venv/bin/python"}
+else
+  PYTHON_BIN=${PYTHON_BIN:-python3}
+fi
+
+exec env PYTHONPATH="$PROJECT_ROOT/src${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON_BIN" -c \
+  'from omai.services.rod_pump_health import refresh_history_main; refresh_history_main()' \
+  "$@"

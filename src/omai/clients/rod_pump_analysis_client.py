@@ -59,6 +59,7 @@ class RodPumpAnalysisClient:
         prediction_metadata_path: str | None = None,
         batch_workers: int = 2,
         health_reviewer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        dynograph_image_reviewer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ):
         self.engine = engine
         self.monitoring_url = monitoring_url
@@ -69,6 +70,7 @@ class RodPumpAnalysisClient:
         self.prediction_metadata_path = prediction_metadata_path
         self.batch_workers = max(1, batch_workers)
         self.health_reviewer = health_reviewer
+        self.dynograph_image_reviewer = dynograph_image_reviewer
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "RodPumpAnalysisClient":
@@ -100,6 +102,7 @@ class RodPumpAnalysisClient:
             prediction_metadata_path=os.getenv("ROD_PUMP_MODEL_METADATA") or None,
             batch_workers=int(os.getenv("ROD_PUMP_BATCH_WORKERS", "2")),
             health_reviewer=_health_reviewer(settings),
+            dynograph_image_reviewer=_dynograph_image_reviewer(settings),
         )
 
     def analyze(
@@ -562,6 +565,29 @@ def _health_reviewer(settings: Settings) -> Callable[[dict[str, Any]], dict[str,
         # The explanation is operator-facing. Keep the evidence numerical but
         # compact enough to read, while the database retains full precision.
         reviewed_packet = _round_health_packet({**packet, "metric_units": _health_metric_units(packet)})
+        if packet.get("review_type") == "well_health_overview":
+            result = invoke(
+                "Return JSON only with overview, priority_findings, ranked_differentials, recommended_checks, and limitations. "
+                "This is one well with multiple deterministic health findings. Synthesize them; do not repeat every finding verbatim. "
+                "Use only supplied evidence, identify findings that may share an explanation, and do not claim a confirmed mechanical failure. "
+                "Do not treat automatic pump-off behavior as a fault by itself. Use simple oilfield language, at most two decimal places, "
+                "and make recommended_checks a short prioritized list. overview must be one concise sentence of at most 35 words that begins with "
+                "'Candidate:' and names the most likely candidate or closely related candidate group. Do not repeat measurements, trend values, or "
+                "limitations in overview because the deterministic evidence is displayed above it. Put rationale only in priority_findings and ranked_differentials. "
+                "When lower/downstroke transition evidence supports standing-valve behavior, use wording such as 'Candidate: standing-valve delayed opening or leakage' "
+                "or 'Candidate: standing-valve or related pump-valve issue.' Apply this diagnostic guide "
+                "only when the supplied evidence matches it: increasing surface-card load spread together with rising peak load and/or falling minimum "
+                "load can be consistent with increasing rod friction or drag; paraffin, scale, sand, and rod-on-tubing contact remain alternatives. Delayed "
+                "downhole pickup and reduced card area can be consistent with gas interference. A broad downhole upstroke transition can be consistent with "
+                "traveling-valve leakage or delayed closure. A broad lower/downstroke transition can be consistent with standing-valve leakage or delayed "
+                "opening. A narrowing load range or downhole-card area, with otherwise stable settings, can be consistent with pump wear, valve leakage, or "
+                "tubing leakage. A sharp load spike, a flattened card, or a state-code malfunction must be described as a separate higher-priority integrity "
+                "concern only if present in the supplied evidence. A stroke-rate or stroke-length change may be an intentional controller/physical setting change "
+                "or calibration issue and is not by itself mechanical failure. A declining Pump Fillage trend indicates changing pump intake conditions but is "
+                "not fluid pound by itself. Do not infer production, pressure, motor current, VFD behavior, or a field observation not supplied. Evidence packet: "
+                + json.dumps(reviewed_packet, default=str)
+            )
+            return result
         prompt = (
             "Return JSON only with alert_summary, plain_language_explanation, "
             "ranked_differentials, operator_checks, and data_limitations. "
@@ -590,6 +616,31 @@ def _health_reviewer(settings: Settings) -> Callable[[dict[str, Any]], dict[str,
             return _unit_safe_health_review(packet)
         return result
 
+    return review
+
+
+def _dynograph_image_reviewer(settings: Settings) -> Callable[[dict[str, Any]], dict[str, Any]] | None:
+    """Create the constrained multimodal reviewer for eligible card images."""
+    if not settings.llm_api_key:
+        return None
+    model = ChatOpenAI(api_key=settings.llm_api_key, model=settings.llm_model, base_url=settings.llm_base_url, temperature=0, timeout=20, max_retries=0)
+    allowed = "no_image_diagnosis, fluid_pound_candidate, gas_interference_or_gas_blockage_candidate, traveling_valve_candidate, standing_valve_candidate, mechanical_friction_candidate, tubing_movement_candidate, reduced_pump_action_candidate, incomplete_stroke_candidate, dynograph_quality_issue"
+    prompt = f"""You are a cautious rod-pump dynograph visual reviewer for Lufkin SAM1 wells. You receive four images in this exact order: current surface, clean-reference surface, current calculated downhole, clean-reference calculated downhole. First decide whether each current image materially differs from its same-side clean reference. Do not diagnose a normal-looking loop merely because it is broad. Do not infer production, pressure, motor data, fillage, setpoints, or facts not visible in the images. A single comparison cannot confirm a failure: every mechanical interpretation must use candidate wording. If an image is invalid, prefer dynograph_quality_issue. Allowed diagnosis codes only: {allowed}.\n\nVisual guidance: delayed/rounded downhole pickup with compressed area versus reference can support gas_interference_or_gas_blockage_candidate; a broader upstroke transition versus reference can support traveling_valve_candidate; a broader lower/downstroke transition versus reference can support standing_valve_candidate; materially greater surface loop separation versus reference can support mechanical_friction_candidate; a materially narrower downhole area versus reference can support reduced_pump_action_candidate; incomplete traversal supports incomplete_stroke_candidate; clipping, discontinuity, extra reversal, or impossible traversal supports dynograph_quality_issue. Return no_image_diagnosis when there is no clear material difference. Do not say confirmed, failed, definitely, or certain.\n\nReturn JSON only: {{\"comparison_usable\":true,\"card_usable_for_mechanical_review\":true,\"primary\":{{\"diagnosis_code\":\"one allowed code\",\"title\":\"...\",\"confidence\":\"low|moderate|high\",\"supporting_image\":\"surface|downhole|both\",\"visual_evidence\":[\"visible comparison\"],\"what_it_can_mean\":\"cautious explanation\",\"alternative_explanations\":[\"...\"]}},\"secondary_candidates\":[],\"recommended_checks\":[],\"limitations\":[]}}"""
+    def review(packet: dict[str, Any]) -> dict[str, Any]:
+        content = [{"type": "text", "text": prompt}]
+        for side in ("current_surface", "reference_surface", "current_downhole", "reference_downhole"):
+            image = packet.get(f"{side}_image")
+            if image:
+                content.append({"type": "image_url", "image_url": {"url": image}})
+        # ChatOpenAI expects multimodal blocks inside one user message, not as
+        # a top-level list of message fragments.
+        response = model.invoke([{"role": "user", "content": content}])
+        raw = response.content if isinstance(response.content, str) else ""
+        result = json.loads(raw)
+        primary = result.get("primary", {}) if isinstance(result, dict) else {}
+        if primary.get("diagnosis_code") not in allowed.split(", "):
+            raise ValueError("Image reviewer returned an unsupported diagnosis code.")
+        return result
     return review
 
 
