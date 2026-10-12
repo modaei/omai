@@ -7,7 +7,7 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine, text
 
 from omai.api.app import create_app, is_allowed_client_host
-from omai.api.schemas import ChatRequest, RodPumpHealthReportRequest, WeeklyOverviewRequest
+from omai.api.schemas import ChatRequest, WeeklyOverviewRequest
 from omai.config.settings import Settings
 from omai.repositories.conversation_repository import ConversationRepository
 from omai.services.domain_guard import MAX_CHAT_REQUEST_CHARACTERS, OUT_OF_DOMAIN_RESPONSE
@@ -809,35 +809,8 @@ def test_app_registers_chat_and_health_routes():
 
     assert route_endpoint(app, "/chat", "POST")
     assert route_endpoint(app, "/health", "GET")
-    assert route_endpoint(app, "/rod-pump-health-report", "POST")
+    assert not any(route.path == "/rod-pump-health-report" for route in app.routes)
     assert route_endpoint(app, "/weekly-overview", "POST")
-
-
-def test_rod_pump_report_endpoint_bypasses_conversation_storage():
-    repository = make_conversation_repository()
-    calls = []
-
-    def report_handler(settings, site_id, as_of_time, well_ids):
-        calls.append((site_id, as_of_time, well_ids))
-        return {"site_id": site_id, "wells": []}
-
-    app = create_app(
-        settings=make_settings(),
-        chat_handler=failing_chat_handler,
-        conversation_repository=repository,
-        rod_pump_report_handler=report_handler,
-    )
-    endpoint = route_endpoint(app, "/rod-pump-health-report", "POST")
-    result = endpoint(RodPumpHealthReportRequest.model_validate({
-        "site_id": 4,
-        "well_ids": [10, 10, 11],
-        "as_of_time": "2026-07-06T08:00:00Z",
-    }))
-
-    assert result == {"site_id": 4, "wells": []}
-    assert calls == [(4, "2026-07-06T08:00:00+00:00", [10, 11])]
-    with repository.engine.connect() as connection:
-        assert connection.execute(text("SELECT COUNT(*) FROM ai_conversations")).scalar_one() == 0
 
 
 def test_weekly_overview_endpoint_bypasses_conversation_storage():
