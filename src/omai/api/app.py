@@ -13,11 +13,9 @@ from fastapi.responses import JSONResponse
 from omai.api.schemas import (
     ChatRequest,
     ChatResponse,
-    RodPumpHealthReportRequest,
     WeeklyOverviewRequest,
     WeeklyOverviewResponse,
 )
-from omai.clients.rod_pump_analysis_client import RodPumpAnalysisClient
 from omai.repositories.conversation_repository import (
     ConversationNotFoundError,
     ConversationRepository,
@@ -47,10 +45,6 @@ ChatHandler = Callable[
     [Settings, int, str | None, list[dict[str, str]], str, str],
     tuple[str, list[dict[str, Any]], dict[str, Any]],
 ]
-RodPumpReportHandler = Callable[
-    [Settings, int, str | None, list[int] | None, str],
-    dict[str, Any],
-]
 WeeklyOverviewHandler = Callable[
     [Settings, int, str, str],
     dict[str, str],
@@ -62,7 +56,6 @@ def create_app(
     chat_handler: ChatHandler = answer_chat,
     conversation_repository: ConversationRepository | None = None,
     daily_usage_repository: DailyUsageRepository | None = None,
-    rod_pump_report_handler: RodPumpReportHandler | None = None,
     weekly_overview_handler: WeeklyOverviewHandler | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
@@ -72,14 +65,10 @@ def create_app(
     app.state.chat_handler = chat_handler
     app.state.conversation_repository = conversation_repository
     app.state.daily_usage_repository = daily_usage_repository
-    app.state.rod_pump_report_handler = (
-        rod_pump_report_handler or _run_rod_pump_health_report
-    )
     app.state.weekly_overview_handler = (
         weekly_overview_handler or _run_weekly_overview
     )
     app.state.chat_slots = BoundedSemaphore(settings.omai_max_concurrent)
-    app.state.rod_pump_report_slots = BoundedSemaphore(1)
     app.state.weekly_overview_slots = BoundedSemaphore(1)
 
     @app.middleware("http")
@@ -123,14 +112,10 @@ def create_app(
             )
             conversation_id = payload.conversation_id_text()
             if conversation_id:
-                conversation = (
-                    repository.get_shared(conversation_id, payload.site_id)
-                    if payload.shared_case
-                    else repository.get(
-                        conversation_id,
-                        payload.user_id,
-                        payload.site_id,
-                    )
+                conversation = repository.get(
+                    conversation_id,
+                    payload.user_id,
+                    payload.site_id,
                 )
             else:
                 conversation = None
@@ -182,10 +167,6 @@ def create_app(
                 answer, tool_calls, stats = app.state.chat_handler(
                     *handler_args,
                     current_date=(payload.current_date.isoformat() if payload.current_date else None),
-                    shared_case=payload.shared_case,
-                    read_only=payload.read_only,
-                    case_reassessment_requested=payload.case_reassessment_requested,
-                    case_context=payload.case_context,
                 )
             else:
                 answer, tool_calls, stats = app.state.chat_handler(*handler_args)
@@ -225,32 +206,6 @@ def create_app(
         finally:
             app.state.chat_slots.release()
 
-    @app.post("/rod-pump-health-report")
-    def rod_pump_health_report(payload: RodPumpHealthReportRequest) -> dict[str, Any]:
-        """Run deterministic fleet analysis without creating chat records."""
-        if not app.state.rod_pump_report_slots.acquire(
-            timeout=settings.omai_slot_timeout
-        ):
-            raise HTTPException(
-                status_code=503,
-                detail="A rod-pump health report is already running",
-            )
-        try:
-            args = (settings, payload.site_id, payload.as_of_time.isoformat() if payload.as_of_time else None, payload.well_ids)
-            if payload.analysis_profile == "sam1":
-                return app.state.rod_pump_report_handler(*args, payload.analysis_profile)
-            return app.state.rod_pump_report_handler(*args)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except Exception as exc:
-            logger.exception("Rod-pump health report failed")
-            raise HTTPException(
-                status_code=503,
-                detail="Rod-pump health report failed",
-            ) from exc
-        finally:
-            app.state.rod_pump_report_slots.release()
-
     @app.post("/weekly-overview", response_model=WeeklyOverviewResponse)
     def weekly_overview(payload: WeeklyOverviewRequest) -> WeeklyOverviewResponse:
         """Generate the scheduled weekly email overview without chat state."""
@@ -281,22 +236,6 @@ def create_app(
             app.state.weekly_overview_slots.release()
 
     return app
-
-
-def _run_rod_pump_health_report(
-    settings: Settings,
-    site_id: int,
-    as_of_time: str | None,
-    well_ids: list[int] | None,
-    analysis_profile: str = "generic",
-) -> dict[str, Any]:
-    """Construct the deterministic client outside the chat/conversation path."""
-    return RodPumpAnalysisClient.from_settings(settings).rank_wells(
-        site_id,
-        as_of_time,
-        well_ids=well_ids,
-        analysis_profile=analysis_profile,
-    )
 
 
 def _run_weekly_overview(

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from datetime import date
 from functools import lru_cache
 from pathlib import Path
@@ -38,10 +37,6 @@ from omai.clients.data_entry_client import DataEntryClient
 from omai.clients.onrr_client import OnrrClient, UnavailableOnrrClient
 from omai.clients.reading_client import ReadingClient, UnavailableReadingClient
 from omai.clients.report_client import ReportClient
-from omai.clients.rod_pump_analysis_client import (
-    RodPumpAnalysisClient,
-    UnavailableRodPumpAnalysisClient,
-)
 from omai.clients.shutdown_client import ShutdownClient, UnavailableShutdownClient
 from omai.clients.site_client import SiteClient
 from omai.clients.well_timeline_client import (
@@ -67,7 +62,6 @@ from omai.tools.onrr_tools import build_onrr_tools
 from omai.tools.operational_context_tools import build_operational_context_tools
 from omai.tools.reading_tools import build_reading_tools
 from omai.tools.report_tools import build_report_tools
-from omai.tools.rod_pump_analysis_tools import build_rod_pump_analysis_tools
 from omai.tools.shutdown_tools import build_shutdown_tools
 from omai.tools.well_timeline_tools import build_well_timeline_tools
 from omai.tools.work_order_tools import build_work_order_tools
@@ -75,12 +69,6 @@ from omai.tools.view_navigation_tools import build_view_navigation_tools
 
 
 logger = logging.getLogger(__name__)
-
-ROD_PUMP_FLEET_CHAT_RESPONSE = (
-    "Fleet-wide rod-pump health analysis is delivered through the scheduled "
-    "Rod Pump Health email report. In chat, specify one exact well name, for "
-    "example: ‘Analyze rod-pump health for well 5823.’"
-)
 
 
 def answer_chat(
@@ -91,22 +79,10 @@ def answer_chat(
     question: str,
     response_mode: str = "fast",
     current_date: str | None = None,
-    shared_case: bool = False,
-    read_only: bool = False,
-    case_reassessment_requested: bool = False,
-    case_context: str | None = None,
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     settings.validate()
     effective_today = date.fromisoformat(current_date) if current_date else date.today()
     effective_current_date = effective_today.isoformat()
-    if is_rod_pump_fleet_question(question):
-        return ROD_PUMP_FLEET_CHAT_RESPONSE, [], {
-            "total_seconds": 0.0,
-            "model_seconds": 0.0,
-            "tool_seconds": 0.0,
-            "model_calls": 0,
-            "tool_calls": [],
-        }
     resolved_site_name = site_name or _site_name_from_db(settings, site_id)
 
     report_client = ReportClient(
@@ -145,10 +121,6 @@ def answer_chat(
     except ValueError as exc:
         work_order_client = UnavailableWorkOrderClient(str(exc))
     try:
-        rod_pump_analysis_client = RodPumpAnalysisClient.from_settings(settings)
-    except (ValueError, RuntimeError) as exc:
-        rod_pump_analysis_client = UnavailableRodPumpAnalysisClient(str(exc))
-    try:
         capability_client = CapabilityClient(_knowledge_dir())
     except Exception as exc:
         capability_client = UnavailableCapabilityClient(str(exc))
@@ -162,8 +134,16 @@ def answer_chat(
     data_entry_client = DataEntryClient.from_settings(settings)
     view_navigation_client = ViewNavigationClient.from_settings(settings)
     tools = [
-        *([] if read_only else build_data_entry_tools(data_entry_client, site_id, effective_current_date)),
-        *([] if read_only else build_view_navigation_tools(view_navigation_client, site_id, effective_current_date)),
+        *build_data_entry_tools(
+            data_entry_client,
+            site_id,
+            effective_current_date,
+        ),
+        *build_view_navigation_tools(
+            view_navigation_client,
+            site_id,
+            effective_current_date,
+        ),
         *build_capability_tools(capability_client),
         *build_database_schema_tools(
             database_schema_client,
@@ -186,7 +166,6 @@ def answer_chat(
             site_id,
             operational_context_store=operational_context_store,
         ),
-        *build_rod_pump_analysis_tools(rod_pump_analysis_client, site_id),
         *build_onrr_tools(onrr_client, site_id),
         *build_shutdown_tools(
             shutdown_client,
@@ -278,19 +257,11 @@ def answer_chat(
     if well_test_dependency is not None:
         dependencies.append(well_test_dependency)
     agent_tools = tools
-    authoritative_context = case_context
+    authoritative_context = None
     if dependencies:
-        dependency_context = "\n".join(item["context"] for item in dependencies)
-        authoritative_context = "\n".join(item for item in (case_context, dependency_context) if item)
+        authoritative_context = "\n".join(item["context"] for item in dependencies)
         used_tool_names = {item["tool_name"] for item in dependencies}
         agent_tools = [tool for tool in tools if tool.name not in used_tool_names]
-    agent_tools = _tools_for_shared_case_turn(
-        agent_tools,
-        shared_case=shared_case,
-        read_only=read_only,
-        has_history=bool(history),
-        case_reassessment_requested=case_reassessment_requested,
-    )
     model = build_model(
         api_key=settings.llm_api_key,
         model=settings.llm_model,
@@ -320,40 +291,6 @@ def answer_chat(
         [*dependency_traces, *traces],
         combined_stats,
     )
-
-
-def _tools_for_shared_case_turn(
-    tools: list[Any],
-    *,
-    shared_case: bool,
-    read_only: bool,
-    has_history: bool,
-    case_reassessment_requested: bool,
-) -> list[Any]:
-    """Avoid fresh rod-pump diagnoses for ordinary shared-case follow-ups.
-
-    The opening turn needs ``analyze_rod_pump`` to establish a diagnosis. Later
-    messages normally refine the existing plan and must not pay for, or be
-    distorted by, a fresh analysis unless the user explicitly asks to reassess.
-    """
-    if not (shared_case and read_only and has_history and not case_reassessment_requested):
-        return tools
-
-    return [tool for tool in tools if tool.name != "analyze_rod_pump"]
-
-
-def is_rod_pump_fleet_question(question: str) -> bool:
-    """Reject expensive fleet surveillance before model or tool execution."""
-    normalized = " ".join(question.lower().replace("-", " ").split())
-    fleet_language = bool(re.search(
-        r"\b(rank|ranking|all|fleet|which wells?|highest|lowest|urgent|need(?:s)? attention)\b",
-        normalized,
-    ))
-    health_language = bool(re.search(
-        r"\b(rod pump|mechanical risk|pump health|health score|intervention)\b",
-        normalized,
-    ))
-    return fleet_language and health_language
 
 
 def _merge_chat_stats(
