@@ -36,3 +36,17 @@ def test_invalid_log_level_is_rejected(monkeypatch):
 
     with pytest.raises(ValueError, match="LOG_LEVEL must be one of"):
         settings.validate()
+
+
+def test_archive_options_accept_empty_port_and_explicit_database(monkeypatch):
+    monkeypatch.setenv("DB_ARCHIVE_PORT", "")
+    monkeypatch.setenv("DB_ARCHIVE_HOST", "archive.internal")
+    monkeypatch.setenv("DB_ARCHIVE_DATABASE", "archive_data")
+    monkeypatch.setenv("DB_ARCHIVE_USERNAME", "archive_reader")
+    monkeypatch.setenv("DB_ARCHIVE_PASSWORD", "")
+    settings = Settings.from_env()
+    assert settings.db_archive_port is None
+    assert settings.db_archive_host == "archive.internal"
+    assert settings.db_archive_name == "archive_data"
+    assert settings.db_archive_user == "archive_reader"
+    assert settings.db_archive_password is None

@@ -55,9 +55,20 @@ class Settings:
     data_point_trend_timeout_seconds: float = 20
     data_point_trend_max_data_points: int = 300
 
+    db_archive_host: str = ""
+    db_archive_port: int | None = None
+    db_archive_user: str = ""
+    db_archive_password: str | None = None
+    db_archive_name: str = ""
+
     @classmethod
     def from_env(cls) -> "Settings":
         return cls(
+            db_archive_host=os.getenv("DB_ARCHIVE_HOST", "").strip(),
+            db_archive_port=int(os.getenv("DB_ARCHIVE_PORT", "0") or "0") or None,
+            db_archive_user=os.getenv("DB_ARCHIVE_USERNAME", os.getenv("DB_ARCHIVE_USER", "")).strip(),
+            db_archive_password=os.getenv("DB_ARCHIVE_PASSWORD") or None,
+            db_archive_name=os.getenv("DB_ARCHIVE_DATABASE", "").strip(),
             llm_api_key=os.getenv(
                 "LLM_API_KEY", os.getenv("OPENROUTER_API_KEY", "")
             ).strip(),

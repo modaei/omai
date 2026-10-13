@@ -7,7 +7,8 @@ __pycache__/
 omai.log
 *.egg-info/
 build/
-docs/
+docs/*
+!docs/rod_pump_health/
 .idea/
 eval-results/
 .deepeval/
