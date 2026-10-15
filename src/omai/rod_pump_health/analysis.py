@@ -19,7 +19,7 @@ from omai.rod_pump_health.templates import TEMPLATES, VERSION as TEMPLATE_VERSIO
 
 logger = logging.getLogger(__name__)
 
-VERSION = "rod-pump-health-analysis-v9"
+VERSION = "rod-pump-health-analysis-v10"
 
 
 class Point(BaseModel):
@@ -89,6 +89,7 @@ class Finding(BaseModel):
     template_ids: list[str] = Field(default_factory=list)
     card_ids: list[str | int] = Field(default_factory=list)
     reasoning: str = Field(default="", max_length=1800)
+    actions: str = Field(default="", max_length=1800)
     supporting_features: list[str] = Field(default_factory=list)
     contradicting_features: list[str] = Field(default_factory=list)
     alternatives: list[str] = Field(default_factory=list)
@@ -535,6 +536,7 @@ def analyze(packet: AnalysisRequest, reviewer) -> dict:
     }
     review_status = "unavailable"
     review_error = None
+    token_usage = None
     if any(reviewed_ids.values()):
         stage = "LLM request"
         try:
@@ -543,6 +545,7 @@ def analyze(packet: AnalysisRequest, reviewer) -> dict:
             if isinstance(raw_review, dict):
                 raw_findings = raw_review.get("findings") or []
                 raw_limitations = raw_review.get("limitations") or []
+                token_usage = raw_review.get("token_usage")
             else:
                 raw_findings = [raw_review]
                 raw_limitations = []
@@ -562,6 +565,8 @@ def analyze(packet: AnalysisRequest, reviewer) -> dict:
                 output["title"] = str(title)
                 reasoning = output.get("reasoning", "")
                 output["reasoning"] = " ".join(str(reasoning).split())
+                actions = output.get("actions", "")
+                output["actions"] = " ".join(str(actions).split())
                 findings.append(output)
             review_status = "complete"
         except Exception as exception:
@@ -607,6 +612,7 @@ def analyze(packet: AnalysisRequest, reviewer) -> dict:
         ),
         "measurements": measurements,
         "findings": findings,
+        "token_usage": token_usage,
         "limitations": limitations,
         "templates": TEMPLATES,
     }
@@ -614,13 +620,13 @@ def analyze(packet: AnalysisRequest, reviewer) -> dict:
 
 SYSTEM_PROMPT = (
     "Analyze Lufkin SAM1 rod-pump data without a VFD. Review recent surface/downhole cards, archived "
-    "dynographs, measurements, and same-side template shapes. Identify up to two oil-field problems "
-    "from shape matches, historical trends, or rod-pump knowledge. If none, return no findings "
-    "(Healthy). Give each diagnosis one concise paragraph of reasoning; distinguish possible causes "
-    "from confirmed faults. Return JSON findings with side, kind, scope, title, reasoning, "
-    "template_ids, and card_ids. Use scope=last_eligible_card for diagnoses on the latest eligible "
-    "card, even when history is compared. Use scope=historical for archived conditions/trends, "
-    "including problems absent from the latest card."
+    "dynographs, measurements, and templates. Identify up to two problems from shape matches, "
+    "historical trends, or rod-pump knowledge; no findings means Healthy. Return separate concise "
+    "reasoning and actions paragraphs per diagnosis. Put practical field steps and relevant SAM1 "
+    "setpoint changes in actions; give numeric values only when data supports them. Separate "
+    "suspected causes from confirmed faults. Return JSON findings: side, kind, scope, title, "
+    "reasoning, actions, template_ids, card_ids. Use scope=last_eligible_card for latest findings "
+    "and scope=historical for archive-only findings."
 )
 
 
@@ -646,6 +652,9 @@ def llm_reviewer(settings):
             result = json.loads(response.content)
             if not isinstance(result, dict):
                 raise ValueError("LLM response must be a JSON object.")
+            token_usage = _response_token_usage(response)
+            if token_usage is not None:
+                result["token_usage"] = token_usage
             return result
         except Exception as exception:
             if settings.llm_api_key and settings.llm_api_key in str(exception):
@@ -654,3 +663,35 @@ def llm_reviewer(settings):
             raise
 
     return review
+
+
+def _response_token_usage(response):
+    """Normalize LangChain or OpenAI usage metadata for persistence and cost estimates."""
+    usage = getattr(response, "usage_metadata", None)
+    if not isinstance(usage, dict) or not usage:
+        metadata = getattr(response, "response_metadata", {})
+        usage = metadata.get("token_usage") if isinstance(metadata, dict) else None
+    if not isinstance(usage, dict):
+        return None
+
+    input_tokens = usage.get("input_tokens", usage.get("prompt_tokens"))
+    output_tokens = usage.get("output_tokens", usage.get("completion_tokens"))
+    total_tokens = usage.get("total_tokens")
+    if total_tokens is None and input_tokens is not None and output_tokens is not None:
+        total_tokens = input_tokens + output_tokens
+    normalized = {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+    }
+    details = {}
+    for target, keys in {
+        "input": ("input_token_details", "prompt_tokens_details"),
+        "output": ("output_token_details", "completion_tokens_details"),
+    }.items():
+        value = next((usage[key] for key in keys if usage.get(key)), None)
+        if value is not None:
+            details[target] = value
+    if details:
+        normalized["details"] = details
+    return normalized

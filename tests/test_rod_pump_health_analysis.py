@@ -93,6 +93,7 @@ def test_both_images_and_measured_json_are_sent_and_findings_are_preserved():
                     "template_ids": ["sf_unloading"],
                     "card_ids": [1, 7, 14],
                     "reasoning": "Area decreases through the history.",
+                    "actions": "Review pump-off settings.\nCheck controller fillage data.",
                     "supporting_features": ["Reduced branch separation"],
                     "contradicting_features": [],
                     "alternatives": ["Operating speed changes"],
@@ -100,6 +101,11 @@ def test_both_images_and_measured_json_are_sent_and_findings_are_preserved():
                     "evidence_keys": ["surface.trend.area_in_lb.absolute_change"],
                 }
             ],
+            "token_usage": {
+                "input_tokens": 1200,
+                "output_tokens": 180,
+                "total_tokens": 1380,
+            },
             "limitations": [],
         }
 
@@ -107,6 +113,11 @@ def test_both_images_and_measured_json_are_sent_and_findings_are_preserved():
     assert result["review_status"] == "complete"
     assert result["status"] == "partial"  # Missing pump curves are explicit.
     assert result["findings"][0]["template_ids"] == ["sf_unloading"]
+    assert result["findings"][0]["actions"] == (
+        "Review pump-off settings. Check controller fillage data."
+    )
+    assert result["token_usage"]["input_tokens"] == 1200
+    assert result["token_usage"]["output_tokens"] == 180
     assert received[0]["type"] == "text"
     assert any(c["type"] == "image_url" for c in received)
     assert "period_s" in received[0]["text"]
@@ -414,7 +425,9 @@ def test_prompt_is_concise_and_allows_domain_reasoning():
     assert "archived dynographs" in SYSTEM_PROMPT
     assert "historical trends" in SYSTEM_PROMPT
     assert "rod-pump knowledge" in SYSTEM_PROMPT
-    assert "one concise paragraph" in SYSTEM_PROMPT
+    assert "separate concise reasoning and actions paragraphs" in SYSTEM_PROMPT
+    assert "setpoint changes in actions" in SYSTEM_PROMPT
+    assert "numeric values only when data supports them" in SYSTEM_PROMPT
     assert "scope=last_eligible_card" in SYSTEM_PROMPT
     assert "scope=historical" in SYSTEM_PROMPT
     assert "PDF" not in SYSTEM_PROMPT
@@ -504,3 +517,55 @@ def test_short_history_produces_provisional_trends_without_interpolation():
     assert result["status"] == "available"
     assert result["preliminary"] is True
     assert result["metrics"]["area_in_lb"]["absolute_change"] < 0
+
+
+def test_response_token_usage_normalizes_langchain_and_openai_metadata():
+    from types import SimpleNamespace
+
+    from omai.rod_pump_health.analysis import _response_token_usage
+
+    langchain_response = SimpleNamespace(
+        usage_metadata={"input_tokens": 900, "output_tokens": 120, "total_tokens": 1020}
+    )
+    assert _response_token_usage(langchain_response) == {
+        "input_tokens": 900,
+        "output_tokens": 120,
+        "total_tokens": 1020,
+    }
+
+    openai_response = SimpleNamespace(
+        response_metadata={
+            "token_usage": {"prompt_tokens": 500, "completion_tokens": 50, "total_tokens": 550}
+        }
+    )
+    assert _response_token_usage(openai_response) == {
+        "input_tokens": 500,
+        "output_tokens": 50,
+        "total_tokens": 550,
+    }
+
+
+def test_response_token_usage_normalizes_langchain_and_openai_metadata():
+    from types import SimpleNamespace
+
+    from omai.rod_pump_health.analysis import _response_token_usage
+
+    langchain_response = SimpleNamespace(
+        usage_metadata={"input_tokens": 900, "output_tokens": 120, "total_tokens": 1020}
+    )
+    assert _response_token_usage(langchain_response) == {
+        "input_tokens": 900,
+        "output_tokens": 120,
+        "total_tokens": 1020,
+    }
+
+    openai_response = SimpleNamespace(
+        response_metadata={
+            "token_usage": {"prompt_tokens": 500, "completion_tokens": 50, "total_tokens": 550}
+        }
+    )
+    assert _response_token_usage(openai_response) == {
+        "input_tokens": 500,
+        "output_tokens": 50,
+        "total_tokens": 550,
+    }
