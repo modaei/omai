@@ -24,12 +24,11 @@ current controller settings. Surface analysis can continue if pump calculation f
 
 OMAI computes physical features and Theil–Sen trends, renders field cards, pairwise normalized
 field/template comparisons, and historical overlays, then sends images and measured JSON to its
-configured vision-capable model. A shape candidate must cite a supplied side-specific template and
-card, have moderate or strong match strength, and describe at least two matching features covering
-the upper and lower branches. A shared overall slope alone is insufficient. Weak visual matches are
-discarded as no match. A trend candidate must use measured trends across at least three archived
-baseline cards. A successful empty review is healthy; malformed references and provider or review
-failures remain unavailable.
+configured vision-capable model. The prompt asks it to interpret recent cards against supplied
+templates and explain historical trends using card data and rod-pump knowledge. It returns up to two
+concise diagnoses with one reasoning paragraph each. OMAI preserves returned findings without
+applying evidence-reference or match-strength filters. A successful empty review is healthy;
+provider or review failures remain unavailable.
 The analyzer does not write database records or restore the legacy score/episode pipeline.
 
 OMAI computes the input signature and reads the latest saved analysis from the operational database.
@@ -77,29 +76,27 @@ cards with measured values; missing days are never interpolated.
 ## Failure diagnostics
 
 Failed reviews now return `review_error` and log a warning with the well ID in OMAI's server output.
-Diagnostics distinguish LLM/provider errors, response validation failures, and unusable-card coverage.
-Provider messages are bounded and redact authentication tokens and image blobs. Structured-response
-errors list failing field paths without dumping their input values.
+Diagnostics distinguish LLM/provider errors from unusable-card coverage. Provider messages are
+bounded and redact authentication tokens and image blobs. OMAI preserves the model's returned
+findings instead of dropping them for evidence-reference or match-strength checks.
 
 UMetriqs logs the reason and includes it in the health command's per-well error and saved refresh error.
 Previous successful results remain intact. Deploy both services and restart the OMAI process before
 rerunning `php artisan rod-pump-health:analyze --site-id=...` to see these expanded diagnostics.
 
-## Candidate rules
+## Review guidance
 
-The LLM reviews SAM1 controller data from a unit without a VFD. Shape comparisons pair the latest
-card with one same-side template on normalized axes. A candidate must describe matching upper and
-lower branch features and be moderate or strong; positive or negative overall slope alone does not
-qualify. Weak matches are omitted, allowing a completed review with no matching template to be
-reported as healthy. Trend candidates cite at least three archived baseline cards and require
-measured trend data. Invalid references and provider or review failures remain unavailable.
+The LLM reviews Lufkin SAM1 controller data from a unit without a VFD. It compares recent cards with
+same-side templates and reviews archived cards for patterns and trends. Its prompt requests a
+successful empty review when no problem is identified and asks it to explain the oil-field meaning
+of a historical trend rather than only repeating measurements.
 
 ## Review behavior
 
-The LLM returns a short JSON response including matching and mismatching shape features. SAM1
-pumping-state selection remains ten minutes before and five minutes after the selected current card.
-A new analyzer version invalidates cached reviews so older free-form findings are replaced on the
-next analysis.
+The LLM returns up to two concise diagnoses and one reasoning paragraph for each. UMetriqs shows the
+returned findings without evidence-based filtering. SAM1 pumping-state selection remains ten
+minutes before and five minutes after the selected current card. A new analyzer version invalidates
+cached reviews so older findings are replaced on the next analysis.
 
 UMetriqs no longer rejects responses for an analyzer/template version mismatch. OMAI still includes
 its versions in input signatures so the revised prompt invalidates cached earlier interpretations.

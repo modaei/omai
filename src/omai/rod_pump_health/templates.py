@@ -1,6 +1,6 @@
 """Versioned, illustrative references; these sketches are not field measurements."""
 
-VERSION = "dynograph-templates-v1"
+VERSION = "dynograph-templates-v2"
 PDF_SOURCE = "Downhole Dynamometer Card Guide and Card Review, supplied October 2026, section 2"
 ECHOMETER = "https://www.echometer.com/technical-papers"
 
@@ -19,18 +19,9 @@ def template(key, side, title, points, features, alternatives, source):
 
 TEMPLATES = [
     template(
-        "dh_full",
-        "downhole",
-        "Full-pump pattern",
-        [[0, 0], [0, 1], [1, 1], [1, 0], [0, 0]],
-        "Flat upper and lower branches with prompt load pickup and release.",
-        "A full-looking shape does not establish healthy calibration or equipment.",
-        PDF_SOURCE,
-    ),
-    template(
         "dh_fluid_pound",
         "downhole",
-        "Fluid-pound-like pattern",
+        "Fluid-pound pattern",
         [[0, 0], [0, 1], [1, 1], [0.62, 1], [0.6, 0], [0, 0]],
         "Load remains high into downstroke then falls abruptly.",
         "Gas interference, mixed gas/liquid, stroke orientation or calculation distortion.",
@@ -39,8 +30,18 @@ TEMPLATES = [
     template(
         "dh_gas",
         "downhole",
-        "Gas-interference-like pattern",
-        [[0, 0], [0, 1], [0.96, 1], [1, 0.8], [0.98, 0.55], [0.91, 0.3], [0.8, 0.1], [0.65, 0], [0, 0]],
+        "Gas-interference pattern",
+        [
+            [0, 0],
+            [0, 1],
+            [0.96, 1],
+            [1, 0.8],
+            [0.98, 0.55],
+            [0.91, 0.3],
+            [0.8, 0.1],
+            [0.65, 0],
+            [0, 0],
+        ],
         "Rounded, gradual downstroke release rather than abrupt collapse.",
         "Fluid pound, smoothing or mixed conditions.",
         PDF_SOURCE,
@@ -48,9 +49,9 @@ TEMPLATES = [
     template(
         "dh_gas_lock",
         "downhole",
-        "Gas-lock-like / low fluid-load pattern",
+        "Gas-lock / low fluid-load pattern",
         [[0, 0.45], [0.08, 0.56], [0.95, 0.56], [1, 0.5], [0.95, 0.44], [0.08, 0.44], [0, 0.45]],
-        "Very small branch separation relative to a full-pump reference.",
+        "Very small branch separation relative to the expected full-load card shape.",
         (
             "Valve stuck open, unloading, rod failure or measurement/calculation issues; "
             "not uniquely gas lock."
@@ -60,7 +61,7 @@ TEMPLATES = [
     template(
         "dh_traveling_valve",
         "downhole",
-        "Traveling-valve-leak-like pattern",
+        "Traveling-valve-leak pattern",
         [[0, 0], [0, 1], [1, 0.68], [1, 0], [0, 0]],
         "Upper branch loses load through the upstroke.",
         "Gas, changing fluid load or calculation distortion.",
@@ -69,7 +70,7 @@ TEMPLATES = [
     template(
         "dh_standing_valve",
         "downhole",
-        "Standing-valve-leak-like pattern",
+        "Standing-valve-leak pattern",
         [[0, 0], [0.35, 1], [1, 1], [1, 0], [0, 0]],
         "Delayed or gradual load pickup on the upstroke.",
         "Gas compression, fluid compressibility or calculation smoothing.",
@@ -78,7 +79,7 @@ TEMPLATES = [
     template(
         "dh_tagging",
         "downhole",
-        "Tagging-like pattern",
+        "Tagging pattern",
         [[0, 0], [0, 1], [1, 1], [1, 0], [0.12, 0], [0.02, -0.25], [0, 0]],
         "Localized end-of-stroke spike.",
         "Rod ringing, sampling or reversal artifacts.",
@@ -87,7 +88,7 @@ TEMPLATES = [
     template(
         "dh_tubing",
         "downhole",
-        "Tubing-movement-like pattern",
+        "Tubing-movement pattern",
         [[0, 0], [0.3, 1], [1, 1], [0.7, 0], [0, 0]],
         "Sheared / leaning pump card.",
         "Rod dynamics or incorrect tubing correction/settings.",
@@ -96,7 +97,7 @@ TEMPLATES = [
     template(
         "sf_undertravel",
         "surface",
-        "Undertravel-like slope",
+        "Undertravel slope",
         [[0, 0], [0.2, 0.65], [1, 1], [0.8, 0.35], [0, 0]],
         "Overall positive left-to-right slope.",
         (
@@ -108,7 +109,7 @@ TEMPLATES = [
     template(
         "sf_overtravel",
         "surface",
-        "Overtravel-like slope",
+        "Overtravel slope",
         [[0, 0.35], [0.2, 1], [1, 0.65], [0.8, 0], [0, 0.35]],
         "Overall negative left-to-right slope.",
         "Rod dynamics, speed, unloading, valve conditions or rod failure; not a unique diagnosis.",
@@ -126,7 +127,7 @@ TEMPLATES = [
     template(
         "sf_unloading",
         "surface",
-        "Unloading-like pattern",
+        "Unloading pattern",
         [[0, 0.45], [0.15, 0.58], [1, 0.53], [0.85, 0.42], [0, 0.45]],
         "Reduced branch separation and loading relative to earlier cards.",
         (

@@ -1,7 +1,18 @@
 from datetime import datetime, timedelta, timezone
+import json
 
 import pytest
 from omai.rod_pump_health.analysis import AnalysisRequest, analyze, features, Point, trends
+from omai.rod_pump_health.templates import TEMPLATES, VERSION as TEMPLATE_VERSION
+
+
+def test_templates_remove_full_pump_and_like_from_names():
+    names = [template["title"] for template in TEMPLATES]
+
+    assert len(names) == 11
+    assert all("like" not in name.lower() for name in names)
+    assert all(template["id"] != "dh_full" for template in TEMPLATES)
+    assert TEMPLATE_VERSION == "dynograph-templates-v2"
 
 
 def rectangle(load=1000):
@@ -67,7 +78,7 @@ def test_sparse_history_and_invalid_curves_do_not_become_healthy():
     assert trends(rows)["status"] == "insufficient_history"
 
 
-def test_both_images_and_measured_json_are_sent_and_findings_are_validated():
+def test_both_images_and_measured_json_are_sent_and_findings_are_preserved():
     received = []
 
     def reviewer(content):
@@ -77,7 +88,7 @@ def test_both_images_and_measured_json_are_sent_and_findings_are_validated():
                 {
                     "side": "surface",
                     "kind": "trend",
-                    "title": "Thinning pattern",
+                    "title": "Declining card area",
                     "suspected_problem": "Possible unloading",
                     "template_ids": ["sf_unloading"],
                     "card_ids": [1, 7, 14],
@@ -95,13 +106,16 @@ def test_both_images_and_measured_json_are_sent_and_findings_are_validated():
     result = analyze(packet(), reviewer)
     assert result["review_status"] == "complete"
     assert result["status"] == "partial"  # Missing pump curves are explicit.
-    assert result["findings"][0]["template_ids"] == []
+    assert result["findings"][0]["template_ids"] == ["sf_unloading"]
     assert received[0]["type"] == "text"
     assert any(c["type"] == "image_url" for c in received)
     assert "period_s" in received[0]["text"]
+    templates = json.loads(received[0]["text"])["templates"]
+    assert all(set(template) == {"id", "side", "title", "points"} for template in templates)
+    assert "source" not in received[0]["text"]
 
 
-def test_unresolved_shape_references_do_not_become_a_diagnosed_candidate():
+def test_unresolved_shape_references_are_still_returned_to_the_user():
     def reviewer(_):
         return {
             "findings": [
@@ -125,8 +139,8 @@ def test_unresolved_shape_references_do_not_become_a_diagnosed_candidate():
 
     result = analyze(packet(), reviewer)
     assert result["review_status"] == "complete"
-    assert result["findings"] == []
-    assert result["diagnosis_status"] == "unavailable"
+    assert result["findings"][0]["title"] == "Load fell 99 percent"
+    assert result["diagnosis_status"] == "candidates"
 
 
 def test_timezone_required_and_duplicate_ids_rejected():
@@ -179,7 +193,7 @@ def test_branch_features_require_provenance_and_numeric_prose_is_allowed():
                 {
                     "side": "surface",
                     "kind": "shape",
-                    "title": "Load dropped 10 percent",
+                    "title": "Possible pump unloading",
                     "suspected_problem": "Possible unloading",
                     "template_ids": ["sf_unloading"],
                     "card_ids": [14],
@@ -199,7 +213,7 @@ def test_branch_features_require_provenance_and_numeric_prose_is_allowed():
     assert len(result["findings"]) == 1
 
 
-def test_weak_slope_only_shape_is_a_healthy_no_match():
+def test_weak_slope_only_shape_is_still_shown_to_the_user():
     data = packet().model_dump()
     data["cards"][-1]["roles"] = ["baseline", "recent"]
     payload = AnalysisRequest(**data)
@@ -210,7 +224,7 @@ def test_weak_slope_only_shape_is_a_healthy_no_match():
                 {
                     "side": "surface",
                     "kind": "shape",
-                    "title": "Undertravel-like slope",
+                    "title": "Undertravel slope",
                     "suspected_problem": "Possible undertravel",
                     "template_ids": ["sf_undertravel"],
                     "card_ids": [14],
@@ -223,8 +237,39 @@ def test_weak_slope_only_shape_is_a_healthy_no_match():
 
     result = analyze(payload, reviewer)
     assert result["review_status"] == "complete"
-    assert result["findings"] == []
-    assert result["diagnosis_status"] == "healthy"
+    assert result["findings"][0]["title"] == "Undertravel slope"
+    assert result["diagnosis_status"] == "candidates"
+
+
+def test_review_returns_at_most_two_diagnoses_with_single_paragraph_reasoning():
+    candidates = [
+        {
+            "side": "surface",
+            "kind": "trend",
+            "scope": "historical",
+            "title": f"Declining card metric {index}",
+            "card_ids": [1, 7, 14],
+            "reasoning": "Measured area is declining.\nThe change spans the archive window.",
+        }
+        for index in range(3)
+    ]
+    result = analyze(packet(), lambda _: {"findings": candidates})
+    assert len(result["findings"]) == 2
+    assert result["findings"][0]["scope"] == "historical"
+    assert "\n" not in result["findings"][0]["reasoning"]
+
+
+def test_review_preserves_overlong_reasoning():
+    finding = {
+        "side": "surface",
+        "kind": "trend",
+        "title": "Declining card area",
+        "card_ids": [1, 7, 14],
+        "reasoning": " ".join(["evidence"] * 101),
+    }
+    result = analyze(packet(), lambda _: {"findings": [finding]})
+    assert len(result["findings"][0]["reasoning"].split()) == 101
+    assert result["diagnosis_status"] == "candidates"
 
 
 def test_review_sends_exactly_three_images_and_recent_card_does_not_weight_trends():
@@ -267,7 +312,7 @@ def test_shape_findings_are_labeled_by_recent_or_historical_evidence():
                 {
                     "side": "surface",
                     "kind": "shape",
-                    "title": "Unloading pattern",
+                    "title": "Possible pump unloading",
                     "suspected_problem": "Possible unloading",
                     "template_ids": ["sf_unloading"],
                     "card_ids": ["archive:14"],
@@ -318,7 +363,7 @@ def test_optional_response_fields_may_be_omitted():
     assert result["diagnosis_status"] == "healthy"
 
 
-def test_current_shape_can_cite_historical_comparison_without_losing_recent_anchor():
+def test_current_shape_is_returned_even_without_a_recent_card_anchor():
     data = packet().model_dump()
     data["cards"][-1]["roles"] = ["baseline", "recent"]
     payload = AnalysisRequest(**data)
@@ -331,7 +376,7 @@ def test_current_shape_can_cite_historical_comparison_without_losing_recent_anch
                 {
                     "side": "surface",
                     "kind": "shape",
-                    "title": "Unloading pattern",
+                    "title": "Possible pump unloading",
                     "suspected_problem": "Possible unloading",
                     "template_ids": ["sf_unloading"],
                     "card_ids": ["archive:14", "archive:1"],
@@ -353,21 +398,27 @@ def test_current_shape_can_cite_historical_comparison_without_losing_recent_anch
     assert result["review_status"] == "complete"
     assert result["findings"][0]["card_ids"] == ["archive:14", "archive:1"]
     assert "required_shape_card_ids" in received[0]["text"]
-    # A historical-only shape cannot be diagnosed without the current card.
+    # Historical-only shape claims are shown without code-side evidence rejection.
     without_recent = analyze(packet(), reviewer)
     assert without_recent["review_status"] == "complete"
-    assert without_recent["findings"] == []
-    assert without_recent["diagnosis_status"] == "healthy"
+    assert without_recent["findings"][0]["title"] == "Possible pump unloading"
+    assert without_recent["diagnosis_status"] == "candidates"
 
 
-def test_prompt_limits_diagnoses_to_templates_and_historical_trends():
+def test_prompt_is_concise_and_allows_domain_reasoning():
     from omai.rod_pump_health.analysis import SYSTEM_PROMPT
 
-    assert "SAM1" in SYSTEM_PROMPT
+    assert "Lufkin SAM1" in SYSTEM_PROMPT
     assert "without a VFD" in SYSTEM_PROMPT
-    assert "Do not diagnose from general engineering knowledge" in SYSTEM_PROMPT
-    assert "A shared positive or negative overall slope alone is not a match" in SYSTEM_PROMPT
-    assert "pairwise comparison sheet" in SYSTEM_PROMPT
+    assert "recent surface/downhole cards" in SYSTEM_PROMPT
+    assert "archived dynographs" in SYSTEM_PROMPT
+    assert "historical trends" in SYSTEM_PROMPT
+    assert "rod-pump knowledge" in SYSTEM_PROMPT
+    assert "one concise paragraph" in SYSTEM_PROMPT
+    assert "scope=last_eligible_card" in SYSTEM_PROMPT
+    assert "scope=historical" in SYSTEM_PROMPT
+    assert "PDF" not in SYSTEM_PROMPT
+    assert len(SYSTEM_PROMPT) < 700
     data = packet().model_dump()
     data["cards"][-1]["roles"] = ["baseline", "recent"]
     payload = AnalysisRequest(**data)
@@ -397,18 +448,18 @@ def test_prompt_limits_diagnoses_to_templates_and_historical_trends():
 
     result = analyze(payload, reviewer)
     assert result["review_status"] == "complete"
-    assert result["findings"] == []
-    assert result["diagnosis_status"] == "unavailable"
+    assert result["findings"][0]["title"] == "Loading change"
+    assert result["diagnosis_status"] == "candidates"
 
     def unsupported(_):
         result = reviewer(_)
         result["findings"][0]["supporting_features"] = []
         return result
 
-    assert analyze(payload, unsupported)["diagnosis_status"] == "unavailable"
+    assert analyze(payload, unsupported)["diagnosis_status"] == "candidates"
 
 
-def test_minimal_findings_and_one_bad_item_do_not_reject_the_entire_review():
+def test_minimal_findings_and_non_object_items_are_still_displayable():
     result = analyze(
         packet(),
         lambda _: {
@@ -423,8 +474,9 @@ def test_minimal_findings_and_one_bad_item_do_not_reject_the_entire_review():
         },
     )
     assert result["review_status"] == "complete"
-    assert result["findings"] == []
-    assert result["diagnosis_status"] == "unavailable"
+    assert result["findings"][0]["title"] == "not a finding"
+    assert result["findings"][1]["title"] == "Loading observation"
+    assert result["diagnosis_status"] == "candidates"
     assert result["status"] == "partial"
 
 
