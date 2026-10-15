@@ -10,6 +10,8 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from omai.rod_pump_health.reader import WellAnalysisRequest, analyzer_from_settings
+
 from omai.api.schemas import (
     ChatRequest,
     ChatResponse,
@@ -68,6 +70,7 @@ def create_app(
     app.state.weekly_overview_handler = (
         weekly_overview_handler or _run_weekly_overview
     )
+    app.state.dynograph_slots = BoundedSemaphore(1)
     app.state.chat_slots = BoundedSemaphore(settings.omai_max_concurrent)
     app.state.weekly_overview_slots = BoundedSemaphore(1)
 
@@ -86,6 +89,21 @@ def create_app(
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.post("/rod-pump-dynograph-analysis")
+    def dynograph_analysis(payload: WellAnalysisRequest) -> dict[str, Any]:
+        """Resolve a well ID and analyze its archived cards without database writes."""
+        if not app.state.dynograph_slots.acquire(timeout=settings.omai_slot_timeout):
+            raise HTTPException(status_code=503, detail="Dynograph analysis is busy")
+        try:
+            return analyzer_from_settings(settings).analyze(payload.well_id, payload.recent_card)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:
+            logger.exception("Dynograph analysis failed")
+            raise HTTPException(status_code=503, detail="Dynograph analysis failed") from exc
+        finally:
+            app.state.dynograph_slots.release()
 
     @app.post("/chat", response_model=ChatResponse)
     def chat(payload: ChatRequest) -> ChatResponse:
