@@ -90,6 +90,7 @@ class Finding(BaseModel):
     card_ids: list[str | int] = Field(default_factory=list)
     reasoning: str = Field(default="", max_length=1800)
     actions: str = Field(default="", max_length=1800)
+    confidence: Literal["low", "medium", "high"] | None = None
     supporting_features: list[str] = Field(default_factory=list)
     contradicting_features: list[str] = Field(default_factory=list)
     alternatives: list[str] = Field(default_factory=list)
@@ -625,8 +626,13 @@ SYSTEM_PROMPT = (
     "reasoning and actions paragraphs per diagnosis. Put practical field steps and relevant SAM1 "
     "setpoint changes in actions; give numeric values only when data supports them. Separate "
     "suspected causes from confirmed faults. Return JSON findings: side, kind, scope, title, "
-    "reasoning, actions, template_ids, card_ids. Use scope=last_eligible_card for latest findings "
-    "and scope=historical for archive-only findings."
+    "reasoning, actions, template_ids, card_ids, confidence. Use scope=last_eligible_card "
+    "for latest findings and scope=historical for archive-only findings. "
+    "Confidence is low/medium/high based on defining-feature clarity, template similarity, "
+    "alternative explanations and consistency across cards. A small clear anomaly can have high "
+    "confidence; a large ambiguous anomaly can have low confidence. Size alone must not increase "
+    "confidence or imply equipment damage. Explain confidence briefly in reasoning. Healthy "
+    "findings need no confidence field. Do not add a separate pattern-match rating."
 )
 
 

@@ -93,6 +93,7 @@ def test_both_images_and_measured_json_are_sent_and_findings_are_preserved():
                     "template_ids": ["sf_unloading"],
                     "card_ids": [1, 7, 14],
                     "reasoning": "Area decreases through the history.",
+                    "confidence": "high",
                     "actions": "Review pump-off settings.\nCheck controller fillage data.",
                     "supporting_features": ["Reduced branch separation"],
                     "contradicting_features": [],
@@ -113,6 +114,7 @@ def test_both_images_and_measured_json_are_sent_and_findings_are_preserved():
     assert result["review_status"] == "complete"
     assert result["status"] == "partial"  # Missing pump curves are explicit.
     assert result["findings"][0]["template_ids"] == ["sf_unloading"]
+    assert result["findings"][0]["confidence"] == "high"
     assert result["findings"][0]["actions"] == (
         "Review pump-off settings. Check controller fillage data."
     )
@@ -431,7 +433,10 @@ def test_prompt_is_concise_and_allows_domain_reasoning():
     assert "scope=last_eligible_card" in SYSTEM_PROMPT
     assert "scope=historical" in SYSTEM_PROMPT
     assert "PDF" not in SYSTEM_PROMPT
-    assert len(SYSTEM_PROMPT) < 700
+    assert "severity" not in SYSTEM_PROMPT
+    assert "Confidence is low/medium/high" in SYSTEM_PROMPT
+    assert "Size alone" in SYSTEM_PROMPT
+    assert len(SYSTEM_PROMPT) < 1600
     data = packet().model_dump()
     data["cards"][-1]["roles"] = ["baseline", "recent"]
     payload = AnalysisRequest(**data)
