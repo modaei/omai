@@ -636,7 +636,7 @@ SYSTEM_PROMPT = (
 )
 
 
-def llm_reviewer(settings):
+def llm_reviewer(settings, system_prompt=SYSTEM_PROMPT):
     """Use the configured model's native structured response and image input."""
     from langchain_openai import ChatOpenAI
     from langchain_core.messages import HumanMessage, SystemMessage
@@ -653,7 +653,7 @@ def llm_reviewer(settings):
     def review(content):
         try:
             response = structured.invoke(
-                [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=content)]
+                [SystemMessage(content=system_prompt), HumanMessage(content=content)]
             )
             result = json.loads(response.content)
             if not isinstance(result, dict):

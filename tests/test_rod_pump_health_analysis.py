@@ -175,13 +175,23 @@ def test_internal_api_delegates_only_well_id_to_server_analyzer(monkeypatch):
     calls = []
 
     class Analyzer:
+        def _well(self, well_id):
+            return {"id": well_id, "site_id": 4}
+
         def analyze(self, well_id, recent_card=None):
             calls.append(well_id)
             return {"review_status": "complete", "well_id": well_id}
 
     monkeypatch.setattr(module, "analyzer_from_settings", lambda settings: Analyzer())
+    from types import SimpleNamespace
+    monkeypatch.setattr(module, "parameter_analyzer_from_settings", lambda settings: SimpleNamespace(
+        analyze=lambda well_id: {"status": "complete", "trends": []},
+    ))
+    monkeypatch.setattr(module, "conclusion_analyzer_from_settings", lambda settings: SimpleNamespace(
+        analyze=lambda *args: {"status": "complete", "title": "Healthy", "body": "No problem found."},
+    ))
     app = module.create_app()
-    route = next(r for r in app.routes if r.path == "/rod-pump-dynograph-analysis")
+    route = next(r for r in app.routes if r.path == "/rod-pump-health-analysis")
     result = route.endpoint(WellAnalysisRequest(well_id=23))
     assert result["review_status"] == "complete"
     assert calls == [23]
