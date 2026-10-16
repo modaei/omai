@@ -11,6 +11,10 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from omai.rod_pump_health.reader import WellAnalysisRequest, analyzer_from_settings
+from omai.rod_pump_health.conclusion import conclusion_analyzer_from_settings
+from omai.rod_pump_health.parameter_trends import (
+    parameter_analyzer_from_settings,
+)
 
 from omai.api.schemas import (
     ChatRequest,
@@ -90,18 +94,46 @@ def create_app(
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.post("/rod-pump-dynograph-analysis")
-    def dynograph_analysis(payload: WellAnalysisRequest) -> dict[str, Any]:
-        """Resolve a well ID and analyze its archived cards without database writes."""
+    @app.post("/rod-pump-health-analysis")
+    def rod_pump_health_analysis(payload: WellAnalysisRequest) -> dict[str, Any]:
+        """Run card, parameter-trend and final-conclusion LLM reviews sequentially for one well."""
         if not app.state.dynograph_slots.acquire(timeout=settings.omai_slot_timeout):
-            raise HTTPException(status_code=503, detail="Dynograph analysis is busy")
+            raise HTTPException(status_code=503, detail="Rod-pump health analysis is busy")
         try:
-            return analyzer_from_settings(settings).analyze(payload.well_id, payload.recent_card)
+            analyzer = analyzer_from_settings(settings)
+            well = analyzer._well(payload.well_id)
+            try:
+                result = analyzer.analyze(payload.well_id, payload.recent_card)
+            except Exception:
+                logger.exception("Dynograph analysis failed well_id=%s", payload.well_id)
+                result = {
+                    "well_id": payload.well_id, "site_id": well["site_id"],
+                    "review_status": "failed", "review_error": "Dynograph analysis failed.",
+                }
+            try:
+                parameter_trends = parameter_analyzer_from_settings(settings).analyze(payload.well_id)
+            except Exception:
+                logger.exception("Parameter trend analysis failed well_id=%s", payload.well_id)
+                parameter_trends = {
+                    "well_id": payload.well_id, "site_id": well["site_id"],
+                    "status": "failed", "last_refresh_error": "Parameter trend analysis failed.",
+                }
+            try:
+                conclusion = conclusion_analyzer_from_settings(settings).analyze(
+                    payload.well_id, result, parameter_trends,
+                )
+            except Exception:
+                logger.exception("Conclusion analysis failed well_id=%s", payload.well_id)
+                conclusion = {
+                    "well_id": payload.well_id, "site_id": well["site_id"],
+                    "status": "failed", "last_refresh_error": "Conclusion analysis failed.",
+                }
+            return {**result, "parameter_trends": parameter_trends, "conclusion": conclusion}
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except Exception as exc:
-            logger.exception("Dynograph analysis failed")
-            raise HTTPException(status_code=503, detail="Dynograph analysis failed") from exc
+            logger.exception("Rod-pump health analysis failed")
+            raise HTTPException(status_code=503, detail="Rod-pump health analysis failed") from exc
         finally:
             app.state.dynograph_slots.release()
 
